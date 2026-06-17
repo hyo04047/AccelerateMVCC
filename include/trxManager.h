@@ -32,7 +32,7 @@ namespace mvcc {
         uint64_t trx_id;
         std::vector<trx_t> active_trx_list;
         explicit trx_t(uint64_t trx_id) : trx_id(trx_id){}
-        trx_t(const trx_t& other) : trx_id(other.trx_id) {} // Copy constructor
+        trx_t(const trx_t& other) : trx_id(other.trx_id), active_trx_list(other.active_trx_list) {} // Copy constructor (preserve snapshot)
     };
 
     class Trx_manager {
@@ -49,7 +49,7 @@ namespace mvcc {
         trx_t* startTrx(){
             trx_sys_mutex_enter();
             auto* trx = new trx_t(next_trx_id.fetch_add(1));
-            trx->active_trx_list = copy_active_trx_list(); // 이 부분 고쳐줘! active_trx_list의 active_trx_list는 type을 유지하고 싶어
+            trx->active_trx_list = copy_active_trx_list(); // read-view snapshot (copy ctor now preserves inner active_trx_list)
             active_trx_list.push_back(trx); // Use push_back to add the transaction
             trx_sys_mutex_exit();
             return trx;
@@ -58,6 +58,7 @@ namespace mvcc {
         trx_t* startWriteTrx(){
             trx_sys_mutex_enter();
             auto* trx = new trx_t(next_trx_id.fetch_add(1));
+            trx->active_trx_list = copy_active_trx_list(); // take a read-view snapshot (needed for GC deadzone)
             active_trx_list.push_back(trx); // Use push_back to add the transaction
             trx_sys_mutex_exit();
             return trx;

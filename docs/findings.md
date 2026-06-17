@@ -60,3 +60,22 @@
 **신규 known issue**: `LocFuncTests.Randomness`(Kuku 자체 테스트) 실패 — 동일 seed의 두 `LocFunc` 해시 결과 불일치. KukuTable populate/fill/query 및 우리 insert는 정상이라 실사용 무영향. 원인(gcc15/AES intrinsic/재현성)은 B에서 확인.
 
 남은 정확성 이슈 **#4·#5·#6·#7·#8·#10**은 B단계에서 처리.
+
+## 프로토타입 완성(B) 해결 내역 — 2026-06-18
+DIVA/vDriver deadzone 모델을 멀티에이전트로 정독·분석한 뒤 snapshot·deadzone·GC·search 수정. 6개 정확성 테스트 + ASAN 검증.
+- ✅ #7 `trx_t` 복사 생성자가 `active_trx_list` 보존 (snapshot이 실제 데이터를 갖도록)
+- ✅ #8 `startWriteTrx`가 read-view snapshot 기록 (GC 트리거 경로)
+- ✅ #4 `deadzone` 생성자 `oldest_low_limit_id` 저장 + 빈 snapshot 가드 (UB/throw 제거)
+- ✅ #5 GC 순회 루프 조건 항상-참(`||`) → 정상 종료조건
+- ✅ #6 prune 분기 double-advance / stale `prev_node` / 단방향 splice → 단일 전진 + 양방향 unlink
+- ✅ GC empty table-node 판정 `first_node->next == nullptr` (stale `last_node` 제거)
+- ✅ #6(return) `garbage_collect` 완료 시 `true` 반환, warm-up early-return(epoch 25/50)은 의도된 윈도잉이라 보존
+- ✅ lagging window underflow 가드 추가
+- ✅ **Q1** insert/GC 리스트 방향 통일: dummy=head 고정 + head-insert, `epoch_node_wrapper.next` nullptr 초기화
+- ✅ (신규) `search`가 **최신 가시 버전**(snapshot 이하·비active 중 max trx_id) 반환 — 기존엔 가장 오래된 가시 버전을 반환하던 버그
+
+**테스트** (`correctness_test.cpp`): MvccVisibility 2 / GcDeadzone 2 / GcEndToEnd 2 — 전부 통과, **ASAN(use-after-free·overflow) 클린**. 기존 단일스레드 GC 테스트(`create_1M_dummy_read_transaction`, `*_with_gc`)도 통과(이전엔 크래시 위험).
+
+**deadzone 출처(provenance)**: 공개 DIVA repo 없음 — deadzone 알고리즘 계보는 **vDriver(SIGMOD'20, "Long-lived Transactions Made Less Harmful")**. 우리 코드는 복사가 아니라 **알고리즘 재구현**(자료구조·식별자·언어 상이) → 라이선스 의무 없음, 보고서 인용은 vDriver로 정정 권장(제출 전 `dead_zone.c/.h` 1회 육안 대조 권장).
+
+**B에서 의도적으로 미룬 것**: 멀티스레드 GC 동시성(reclamation/RCU 부재 → `*multi_thread*_trx` 미실행), 빈 snapshot fast-path(Q2), dummy-list 누수, Kuku `LocFuncTests.Randomness`(라이브러리 자체 이슈).

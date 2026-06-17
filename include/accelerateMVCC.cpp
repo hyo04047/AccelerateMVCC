@@ -135,37 +135,40 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
     auto *header = reinterpret_cast<interval_list_header *>(value);
 
 
-    /*Phase 2 : get proper version with traversing epoch-based interval list*/
+    /*Phase 2 : find the LATEST version visible to this read view.
+      Visible == undo_entry->trx_id < our trx_id AND not in our active_trx_list.
+      Among visible versions we want the greatest trx_id (latest committed). The
+      chain is newest-epoch-first but oldest-entry-first within an epoch, so we
+      scan all candidates and keep the maximum rather than returning the first. */
+    bool found = false;
+    uint64_t best_trx_id = 0;
     epoch_node *epoch = header->next.load();
 
     while (epoch != nullptr) {
-        /*Phase 2-1 : skip epoch node*/
-        //skip epoch node whose epoch_number is greater than our transaction's epoch number
+        // skip epochs entirely newer than ours
         if (epoch->epoch_num > epoch_num) {
             epoch = epoch->next.load();
             continue;
-        } else {
-            /*Phase 2-2 : traverse undo log entry node*/
-            undo_entry_node *undo_entry = epoch->first_entry;
-            while (undo_entry != nullptr) {
-                // transaction cannot see higher trx_id version than its trx_id
-                if (undo_entry->trx_id < trx_id) {
-                    // undo log's trx_id is not in active transaction list
-                    if (std::find(active_trx_list.begin(), active_trx_list.end(), undo_entry->trx_id) ==
-                        active_trx_list.end()) {
-                        space_id = undo_entry->space_id;
-                        page_id = undo_entry->page_id;
-                        offset = undo_entry->offset;
-                        return true;
-                    }
-                }
-                undo_entry = undo_entry->next_entry.load();
-            }
-            epoch = epoch->next.load();
         }
+        for (undo_entry_node *undo_entry = epoch->first_entry;
+             undo_entry != nullptr;
+             undo_entry = undo_entry->next_entry.load()) {
+            if (undo_entry->trx_id < trx_id &&
+                std::find(active_trx_list.begin(), active_trx_list.end(), undo_entry->trx_id) ==
+                    active_trx_list.end()) {
+                if (!found || undo_entry->trx_id > best_trx_id) {
+                    found = true;
+                    best_trx_id = undo_entry->trx_id;
+                    space_id = undo_entry->space_id;
+                    page_id = undo_entry->page_id;
+                    offset = undo_entry->offset;
+                }
+            }
+        }
+        epoch = epoch->next.load();
     }
 
-    return false;
+    return found;
 }
 
 

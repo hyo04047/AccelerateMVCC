@@ -58,8 +58,8 @@ flowchart TD
 |---|---|
 | 빌드 | ✅ WSL2 · gcc 15 · cmake 4 에서 성공 |
 | insert 경로 | ✅ 빌드·실행·벤치 통과 |
-| search 경로 | ⚠️ 구현됨, 테스트 없음 |
-| GC / deadzone | ❌ 미완 · 버그 |
+| search 경로 | ✅ 최신 가시버전 반환, 정확성 테스트 통과 |
+| GC / deadzone | ✅ 단일스레드 정확·메모리안전(ASAN), 테스트 통과 (멀티스레드 동시성 추후) |
 | insert 마이크로벤치 | ✅ 실행됨 (1M: vector 7ms · interval-list 53–73ms) |
 | 실험 (HTAP / long-txn) | ❌ 미착수 |
 | MySQL 통합 | ❌ 미착수 |
@@ -72,9 +72,10 @@ flowchart TD
 - **DoD**: WSL2에서 `AccelerateMVCC` + `test_with_google` 컴파일 성공, 기존 테스트/벤치 실행 확인. → 달성(빌드·실행 OK, 안전 테스트 30/31 통과).
 - 작업: WSL2 셋업 → CMake 손상 수정 → include 케이스 정리 → Kuku를 소스에서 빌드·링크 → build 산출물 `.gitignore` 처리.
 
-### B. 프로토타입 완성·검증
-- **DoD**: `feat/deadzone-detector` 병합, GC/deadzone 버그 수정, **insert/search/GC/deadzone 정확성 단위테스트** 통과(올바른 버전 가시성 + deadzone pruning 정확성 검증).
-- 작업: findings 이슈 #4~#10 해결, trx snapshot 일관성, 동시성(원자성) 점검.
+### B. 프로토타입 완성·검증 ✅ (단일스레드 완료 2026-06-18)
+- **DoD**: GC/deadzone 버그 수정, **insert/search/GC/deadzone 정확성 단위테스트** 통과(가시성 + deadzone pruning). → 달성: `correctness_test.cpp` 6개 통과 + ASAN 클린 + 기존 단일스레드 GC 테스트 통과.
+- 완료: snapshot 보존(#7·#8), deadzone 초기화/가드(#4), GC sweep 메모리안전(#5·#6), `garbage_collect` 완료/return, list 방향 통일(Q1), `search` 최신 가시버전 반환.
+- **추후(동시성/하드닝)**: 멀티스레드 GC reclamation, 빈 snapshot fast-path, dummy-list 누수. (deadzone 출처 = vDriver 재구현, findings 참조)
 
 ### C. 실험·결과 산출
 - **DoD**: HTAP(OLTP+OLAP 병렬) / long-transaction 워크로드에서 baseline 대비 search 비용·GC 효과를 **수치 + 차트**로 제시.

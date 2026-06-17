@@ -69,7 +69,8 @@ enable_testing()
 add_executable(
   test_with_google
   "google_test.cpp"
-  ${COMMON_SOURCES} 
+  "correctness_test.cpp"
+  ${COMMON_SOURCES}
 )
 
 # Add the directory containing kuku/kuku.h and kuku/common.h to the include directories
