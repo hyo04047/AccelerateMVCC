@@ -1,0 +1,101 @@
+# AccelerateMVCC — 현황 & 로드맵
+
+> 디스크 기반 DBMS(InnoDB/MySQL)의 MVCC를 가속하는 **인메모리 보조 인덱스**.
+> 하태성의 2023년 졸업프로젝트를 **단독으로** 재개. 이 문서는 진행과 함께 갱신되는 **리빙 도큐먼트**입니다.
+
+- 최종 수정: **2026-06-18**
+- 상세 포렌식·이슈 트래커 → [findings.md](findings.md)
+- 세션별 진행 로그 → [progress-log.md](progress-log.md)
+
+---
+
+## 1. 문제 & 목표
+
+**문제.** HTAP 워크로드에서 long-lived transaction이 존재하면 InnoDB의 version chain(undo log 체인)이 길어진다. 최신 가시 버전을 찾으려 긴 체인을 따라가며 다수의 undo log page를 buffer pool로 읽어야 하고, 이는 ① I/O 비용, ② buffer pool 오염, ③ GC와 long transaction의 경합을 유발한다. 졸프 프로파일링에서 long transaction 존재 시 `row_search_mvcc` 계열이 CPU의 **~45%** 를 차지함을 확인.
+
+**접근.** 실제 데이터가 아니라 undo log의 **메타데이터(space_id, page_id, offset) 포인터**만 인메모리 구조에 보관하여, 올바른 버전의 위치를 빠르게 찾아주는 가속 인덱스를 만든다. DIVA(VLDB'22)의 아이디어를 인메모리로 변형.
+
+**완성 기준(범위).**
+- **1차 목표: A + B + C**
+- **최종 목표: A + B + C + D**
+- 전 과정을 문서/리포트(필요 시 도표·차트)로 정리.
+
+---
+
+## 2. 아키텍처
+
+```mermaid
+flowchart TD
+  R["레코드 (table_id, index)"] --> K["Cuckoo Hash · Kuku"]
+  K -->|"value = header 포인터"| H["interval_list_header"]
+  H --> E0["epoch_node N"]
+  E0 --> E1["epoch_node N-1 ..."]
+  E0 --> U["undo_entry 체인<br/>(trx_id, space/page/offset)"]
+  TM["Trx_manager<br/>active_trx_list snapshot"] --> DZ["deadzone"]
+  E0 -. "epoch_table->insert" .-> ET["Epoch_table"]
+  DZ --> ET
+  ET -. "garbage_collect (pruning)" .-> E1
+```
+
+| 구성요소 | 파일 | 역할 |
+|---|---|---|
+| Cuckoo Hash (Kuku) | [accelerateMVCC.cpp](../include/accelerateMVCC.cpp) | 레코드(table_id, index) → `interval_list_header` 포인터 O(1) 매핑. Kuku item의 value 슬롯에 헤더 주소를 저장 |
+| interval_list / epoch_node | [interval_list.h](../include/interval_list.h) | epoch(=trx_id/EPOCH_SIZE) 단위로 묶인 version chain. `undo_entry_node` = (trx_id, space/page/offset) |
+| Trx_manager | [trxManager.h](../include/trxManager.h) | trx_id 발급, active transaction snapshot(read view) 제공 |
+| Epoch_table | [epoch_table.h](../include/epoch_table.h) | epoch 인덱싱(lock-free 리스트) + deadzone pruning 기반 interval GC (Steam 스타일) |
+
+상수: `EPOCH_SIZE=100`, `EPOCH_TABLE_SIZE=100`, `NUM_DEADZONE=50` ([common.h](../include/common.h), [epoch_table.h](../include/epoch_table.h)).
+
+---
+
+## 3. 현재 상태 (2026-06-18 기준)
+
+- 마지막 코드 활동 **2023-07-28**, 설계 문서는 **2023-07-11**에서 중단.
+- **최신 작업 브랜치 = `feat/deadzone-detector`** (master보다 3커밋 앞섬). `epoch_table`을 interval list에 연결(`epoch_table->insert` 주석 해제 + 인덱싱 `/`→`%` 수정)하던 중 미완 상태로 중단.
+- 자세한 내용은 [findings.md](findings.md).
+
+| 트랙 | 상태 |
+|---|---|
+| 빌드 | ❌ 불가 (블로커 3건) |
+| insert 경로 | ⚠️ 구현됨, 미검증 |
+| search 경로 | ⚠️ 구현됨, 테스트 없음 |
+| GC / deadzone | ❌ 미완 · 버그 |
+| insert 마이크로벤치 | ⚠️ 코드 있음, 실행된 적 없음 |
+| 실험 (HTAP / long-txn) | ❌ 미착수 |
+| MySQL 통합 | ❌ 미착수 |
+
+---
+
+## 4. 로드맵
+
+### A. 빌드 부활
+- **DoD**: WSL2에서 `AccelerateMVCC` + `test_with_google` 컴파일 성공, 기존 테스트/벤치 실행 확인.
+- 작업: WSL2 셋업 → CMake 손상 수정 → include 케이스 정리 → Kuku를 소스에서 빌드·링크 → build 산출물 `.gitignore` 처리.
+
+### B. 프로토타입 완성·검증
+- **DoD**: `feat/deadzone-detector` 병합, GC/deadzone 버그 수정, **insert/search/GC/deadzone 정확성 단위테스트** 통과(올바른 버전 가시성 + deadzone pruning 정확성 검증).
+- 작업: findings 이슈 #4~#10 해결, trx snapshot 일관성, 동시성(원자성) 점검.
+
+### C. 실험·결과 산출
+- **DoD**: HTAP(OLTP+OLAP 병렬) / long-transaction 워크로드에서 baseline 대비 search 비용·GC 효과를 **수치 + 차트**로 제시.
+- 작업: 워크로드 하니스, 지표 정의(search latency, 체인 길이, GC 회수량 등), 결과 리포트.
+
+### D. MySQL/InnoDB 통합 (최종)
+- **DoD**: 실제 InnoDB 소스에 가속 인덱스 연결, sysbench HTAP로 vanilla MySQL 대비 효과 측정.
+- 비고: 규모 큼. C 결과로 가치 입증 후 착수.
+
+---
+
+## 5. 개발 환경
+
+- **결정: WSL2 (Ubuntu).** C(sysbench/perf/MySQL)·D(InnoDB)가 사실상 리눅스 전용이고, 코어 코드는 표준 C++17/20이라 리눅스에서 그대로 빌드되므로 처음부터 리눅스로 토대를 잡는다.
+- 현 상태: 이 PC에 WSL/MSVC/g++/cmake **미설치**. WSL 설치는 관리자 권한 + 재부팅 1회 필요(사용자 1회 실행).
+- 빌드 레시피(WSL 준비 후 확정): `sudo apt install -y build-essential cmake git` → Kuku 빌드 → 프로젝트 빌드. A단계에서 CMake를 리눅스 친화적으로 정리하며 확정.
+
+---
+
+## 6. 문서 인덱스
+- **README.md** (이 문서) — 개요·아키텍처·로드맵·상태
+- **[findings.md](findings.md)** — 포렌식·이슈 트래커
+- **[progress-log.md](progress-log.md)** — 세션별 진행 로그
+- 원자료: Google Drive `AccelerateMVCC` 폴더 (졸프 문서, 미팅 영상, 논문 정리, 테스트 결과)
