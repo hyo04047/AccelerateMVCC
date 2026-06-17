@@ -118,8 +118,37 @@ repo `github.com/hyu-scslab/vDriver_PostgreSQL`(branch `llt`, `#ifdef HYU_LLT`),
 
 ---
 
-## 9. literature 종합 (DIVA / One-shot GC) — 추가 예정
-백그라운드 정독(`read-mvcc-papers` 워크플로) 완료 시 "공통 문제의식 / 방향성 스펙트럼 / 빌려올 것" 종합을 여기 추가.
+## 9. literature 종합 (vDriver / DIVA / One-shot GC)
+
+### 9.1 공통 문제의식 (through-line)
+세 논문 + 우리 = 같은 적: **HTAP/LLT에서 MVCC version space 통제불능 팽창 + version 처리비용 폭증.**
+- 진짜 killer = **GC 중 version traversal 비용**(write throughput에 비례 — 빨리 갈수록 벌받음; One-shot GC 정식화).
+- **LLT가 tail-only GC 무력화**: global-min snapshot을 끝까지 붙잡아 in-middle dead version reclaim 불가 → chain unbounded.
+- 공통 목표 = **LLT-tolerance / compact 유지**. 관통 통찰: version death는 **시간적으로 상관**(같이 시작→같이 끝) → per-version 정밀처리 대신 **epoch/segment batch** = 우리 epoch-list의 근본 근거.
+
+### 9.2 방향성 스펙트럼
+| | 핵심 무기 | 저장 | GC 단위 | LLT 대응 |
+|---|---|---|---|---|
+| vDriver | deadzone + SIRO + classification | disk | version-segment | deadzone in-middle reclaim |
+| DIVA | index/data 분리 + epoch interval **tree** + macro/micro compaction | disk | epoch interval | tree 높이 ≤ **log(LLT lifespan)** |
+| One-shot GC | temporality delta partition + **tagged pointer** | in-memory | start-time cohort | partition consolidation |
+| **우리** | hash + epoch-list + deadzone | **in-memory 인덱스 / 데이터는 InnoDB undo** | epoch(=segment) | deadzone FG+BG |
+
+**우리 좌표**: "disk MVCC(InnoDB) 위 **in-memory acceleration index**" — 독자 포지션(vWeaver "무개조" ~ DIVA "storage 개조" 사이). One-shot GC와 in-memory 인덱스는 공유하나 **우리는 metadata pointer만**(데이터 미소유) → "allocator reset=데이터 free" 트릭은 우리 *인덱스*에만 적용.
+
+### 9.3 빌려오거나 개선할 것
+1. **tagged pointer(epoch id+tag+offset)**: epoch reclaim을 `tag++` 한 번으로 O(1) implicit unlink + reader가 stale epoch 착지 시 tag mismatch로 self-invalidate → **구조적 reclamation 안전성**. → **EBR(§3.5) 보완/대체 후보로 평가 가치 있음.**
+2. **min/max tight segment bound + sifting**: 명목범위 대신 실제 `min/max_trx_id`로 더 timely reclaim (= §8.1).
+3. **multi-granularity 노드(capacity doubling + indirection)**: traversal hop bound + fragmentation↓.
+4. **epoch 개수 = LLT-spread knob**: uniform엔 소수, LLT 강할수록 작고 많은 epoch로 in-middle 기회↑.
+5. **(중장기) list → DIVA식 interval tree**: LLT 하 길이가 list→**log**(DIVA Thm 5.1)로 bound — "epoch-list compact" 목표의 정량 개선 축.
+6. compaction 트리거 = live-interval 수 vs 인덱스 메모리 점유 discrepancy("gap indicator").
+
+### 9.4 이미 정렬됨 (재고 X)
+index↔data 분리 / epoch=GC단위=segment / deadzone 판정 / FG+BG / lock-free+EBR(또는 tagged pointer) / **ephemeral 인덱스**(crash 시 InnoDB undo가 source of truth → logging/recovery·update ordering 불필요, DIVA 논거 차용 가능).
+
+### 9.5 차별화 명제 (향후 기여 주장용)
+One-shot GC(§7.3.2)는 vDriver류 in-memory 인덱스를 "**dataset 비례 메모리 증가 → larger-than-memory 취약**"이라 비판. **우리 방어**: 데이터는 InnoDB undo에 두고 인덱스는 metadata pointer + epoch GC → compactness가 **dataset이 아니라 live-transaction window에만 비례**(DIVA Thm 5.1 정신). 이걸 보이면 그 비판을 무력화하며 "disk MVCC 위 in-memory accelerator" 포지션을 정당화.
 
 ---
 
