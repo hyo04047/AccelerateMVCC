@@ -59,7 +59,8 @@ flowchart TD
 | 빌드 | ✅ WSL2 · gcc 15 · cmake 4 에서 성공 |
 | insert 경로 | ✅ 빌드·실행·벤치 통과 |
 | search 경로 | ✅ 최신 가시버전 반환, 정확성 테스트 통과 |
-| GC / deadzone | ✅ 단일스레드 정확·메모리안전(ASAN), 테스트 통과 (멀티스레드 동시성 추후) |
+| GC / deadzone | ✅ 단일스레드 정확·메모리안전(ASAN), 테스트 통과 |
+| 동시성 GC (멀티스레드) | 🔄 하드닝 중 — per-traversal EBR 프리미티브 ✅(ASan/TSan), GC 통합 다음 ([design-gc.md](design-gc.md)) |
 | insert 마이크로벤치 | ✅ 실행됨 (1M: vector 7ms · interval-list 53–73ms) |
 | 실험 (HTAP / long-txn) | ❌ 미착수 |
 | MySQL 통합 | ❌ 미착수 |
@@ -97,6 +98,7 @@ flowchart TD
 
 ## 6. 문서 인덱스
 - **README.md** (이 문서) — 개요·아키텍처·로드맵·상태
+- **[design-gc.md](design-gc.md)** — GC·동시성 설계 & 결정 근거 (1차 자료 기반)
 - **[findings.md](findings.md)** — 포렌식·이슈 트래커
 - **[progress-log.md](progress-log.md)** — 세션별 진행 로그
 - 원자료: Google Drive `AccelerateMVCC` 폴더 (졸프 문서, 미팅 영상, 논문 정리, 테스트 결과)

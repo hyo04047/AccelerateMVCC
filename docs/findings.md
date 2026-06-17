@@ -76,6 +76,6 @@ DIVA/vDriver deadzone 모델을 멀티에이전트로 정독·분석한 뒤 snap
 
 **테스트** (`correctness_test.cpp`): MvccVisibility 2 / GcDeadzone 2 / GcEndToEnd 2 — 전부 통과, **ASAN(use-after-free·overflow) 클린**. 기존 단일스레드 GC 테스트(`create_1M_dummy_read_transaction`, `*_with_gc`)도 통과(이전엔 크래시 위험).
 
-**deadzone 출처(provenance)**: 공개 DIVA repo 없음 — deadzone 알고리즘 계보는 **vDriver(SIGMOD'20, "Long-lived Transactions Made Less Harmful")**. 우리 코드는 복사가 아니라 **알고리즘 재구현**(자료구조·식별자·언어 상이) → 라이선스 의무 없음, 보고서 인용은 vDriver로 정정 권장(제출 전 `dead_zone.c/.h` 1회 육안 대조 권장).
+**deadzone 출처(provenance)**: vDriver 소스에서 **추출·간소화**(7월 deck "extract dead zone detecting part from vDriver InnoDB part", 정승연 담당). 판정식이 vDriver `IsInDeadZone`(`xmin>left && xmax<right`)과 **동일** → **vDriver 파생** 확정(클린룸 재구현 아님). vDriver 출처·라이선스(PostgreSQL License) 표기 권장. 공개 DIVA repo 없음. 상세 [design-gc.md](design-gc.md) §7.
 
 **B에서 의도적으로 미룬 것**: 멀티스레드 GC 동시성(reclamation/RCU 부재 → `*multi_thread*_trx` 미실행), 빈 snapshot fast-path(Q2), dummy-list 누수, Kuku `LocFuncTests.Randomness`(라이브러리 자체 이슈).
