@@ -56,11 +56,11 @@ flowchart TD
 
 | 트랙 | 상태 |
 |---|---|
-| 빌드 | ❌ 불가 (블로커 3건) |
-| insert 경로 | ⚠️ 구현됨, 미검증 |
+| 빌드 | ✅ WSL2 · gcc 15 · cmake 4 에서 성공 |
+| insert 경로 | ✅ 빌드·실행·벤치 통과 |
 | search 경로 | ⚠️ 구현됨, 테스트 없음 |
 | GC / deadzone | ❌ 미완 · 버그 |
-| insert 마이크로벤치 | ⚠️ 코드 있음, 실행된 적 없음 |
+| insert 마이크로벤치 | ✅ 실행됨 (1M: vector 7ms · interval-list 53–73ms) |
 | 실험 (HTAP / long-txn) | ❌ 미착수 |
 | MySQL 통합 | ❌ 미착수 |
 
@@ -68,8 +68,8 @@ flowchart TD
 
 ## 4. 로드맵
 
-### A. 빌드 부활
-- **DoD**: WSL2에서 `AccelerateMVCC` + `test_with_google` 컴파일 성공, 기존 테스트/벤치 실행 확인.
+### A. 빌드 부활 ✅ (완료 2026-06-18)
+- **DoD**: WSL2에서 `AccelerateMVCC` + `test_with_google` 컴파일 성공, 기존 테스트/벤치 실행 확인. → 달성(빌드·실행 OK, 안전 테스트 30/31 통과).
 - 작업: WSL2 셋업 → CMake 손상 수정 → include 케이스 정리 → Kuku를 소스에서 빌드·링크 → build 산출물 `.gitignore` 처리.
 
 ### B. 프로토타입 완성·검증

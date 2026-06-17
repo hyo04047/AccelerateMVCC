@@ -6,6 +6,7 @@
 #include <mutex>
 #include <vector>
 #include <unordered_map> // Add this header for the std::unordered_map
+#include <algorithm>     // std::remove (erase-remove idiom in commitTrx)
 
 namespace mvcc {
 

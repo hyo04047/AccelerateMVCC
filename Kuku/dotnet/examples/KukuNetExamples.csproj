@@ -11,7 +11,7 @@
 
   <PropertyGroup>
     <PlatformTarget>x64</PlatformTarget>
-    <OutputPath>C:/Users/wjdac/source/repos/AccelerateMVCC/Kuku/build/bin/dotnet/$(Configuration)</OutputPath>
+    <OutputPath>/root/acc-build/Kuku/bin/dotnet/$(Configuration)</OutputPath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -19,9 +19,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <KukuCBinaryFiles Condition="$([MSBuild]::IsOsPlatform(Windows))" Include="C:/Users/wjdac/source/repos/AccelerateMVCC/Kuku/build/bin/Release\kukuc.dll" />
-    <KukuCBinaryFiles Condition="$([MSBuild]::IsOsPlatform(Linux))" Include="C:/Users/wjdac/source/repos/AccelerateMVCC/Kuku/build/lib/libkukuc.so.*" />
-    <KukuCBinaryFiles Condition="$([MSBuild]::IsOsPlatform(OSX))" Include="C:/Users/wjdac/source/repos/AccelerateMVCC/Kuku/build/lib/libkukuc.*.dylib" />
+    <KukuCBinaryFiles Condition="$([MSBuild]::IsOsPlatform(Windows))" Include="/root/acc-build/Kuku/bin\kukuc.dll" />
+    <KukuCBinaryFiles Condition="$([MSBuild]::IsOsPlatform(Linux))" Include="/root/acc-build/Kuku/lib/libkukuc.so.*" />
+    <KukuCBinaryFiles Condition="$([MSBuild]::IsOsPlatform(OSX))" Include="/root/acc-build/Kuku/lib/libkukuc.*.dylib" />
   </ItemGroup>
 
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">

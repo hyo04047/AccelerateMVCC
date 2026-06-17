@@ -1,6 +1,6 @@
 ﻿# CMakeList.txt : CMake project for AccelerateMVCC, include source and define
 # project specific logic here.
-cmake_minimum_required(VERSION 3.1Threads::Threads4)
+cmake_minimum_required(VERSION 3.16)
 
 # Enable Hot Reload for MSVC compilers if supported.
 if (POLICY CMP0141)
@@ -14,10 +14,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 
 project ("AccelerateMVCC")
+
+# Build the vendored Kuku cuckoo-hash library from source (provides target Kuku::kuku,
+# including transitive include dirs for kuku/*.h and the generated config.h)
+add_subdirectory(Kuku)
+
 # Common source files
 set(COMMON_SOURCES
-  "include/accelerateMvcc.h"
-  "include/accelerateMvcc.cpp"
+  "include/accelerateMVCC.h"
+  "include/accelerateMVCC.cpp"
   "include/trxManager.cpp"
   "include/interval_list.h"
   "include/interval_list.cpp"
@@ -42,9 +47,10 @@ if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET AccelerateMVCC PROPERTY CXX_STANDARD 20)
 endif()
 
-# Link the kuku.lib library
+# Link the Kuku library (built from source) and threads
 target_link_libraries(AccelerateMVCC
-  ${CMAKE_CURRENT_SOURCE_DIR}/Kuku/build/lib/Debug/kuku-2.1.lib
+  PRIVATE
+  Kuku::kuku
   Threads::Threads
 )
 
@@ -75,12 +81,11 @@ if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET AccelerateMVCC PROPERTY CXX_STANDARD 20)
 endif()
 
-# Link the kuku.lib library
-target_link_libraries(test_with_google
-  ${CMAKE_CURRENT_SOURCE_DIR}/Kuku/build/lib/Debug/kuku-2.1.lib
-)
+# Link the Kuku library, GoogleTest, and threads
 target_link_libraries(
   test_with_google
+  PRIVATE
+  Kuku::kuku
   GTest::gtest_main
   Threads::Threads
 )

@@ -48,3 +48,15 @@
 
 ## 통합 현황
 - standalone 프로토타입. InnoDB의 `trx_sys`에서 active list copy, undo log 메타데이터 포인터 보관 등 **InnoDB 의존은 설계상 가정**일 뿐 실제 통합 코드 없음.
+
+## 빌드 부활(A) 해결 내역 — 2026-06-18
+환경: WSL2 Ubuntu 26.04 / gcc 15.2 / cmake 4.2 에서 빌드·실행 성공.
+- ✅ #1 CMake 버전 문자열 → `3.16`
+- ✅ #2 kuku 링크 → `add_subdirectory(Kuku)` + `Kuku::kuku`(소스 빌드, transitive include)
+- ✅ #3 include 대소문자 정정 (main.cpp, CMakeLists)
+- ✅ (신규 #12) `trxManager.h`에 `<algorithm>` 누락 → 추가 (gcc15에서 `std::remove` 미해결로 빌드 실패하던 것)
+- ✅ #11 build 산출물 추적 해제 + `.gitignore` 보강
+
+**신규 known issue**: `LocFuncTests.Randomness`(Kuku 자체 테스트) 실패 — 동일 seed의 두 `LocFunc` 해시 결과 불일치. KukuTable populate/fill/query 및 우리 insert는 정상이라 실사용 무영향. 원인(gcc15/AES intrinsic/재현성)은 B에서 확인.
+
+남은 정확성 이슈 **#4·#5·#6·#7·#8·#10**은 B단계에서 처리.

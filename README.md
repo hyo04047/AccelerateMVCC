@@ -39,7 +39,7 @@ flowchart LR
 
 Reviving a 2023 graduate project. Current plan:
 
-- **A. Build revival** — make it compile & run again *(in progress)*
+- **A. Build revival** — compiles & runs on WSL2 / gcc 15 / cmake 4 *(done ✅)*
 - **B. Prototype correctness** — wire up GC, fix bugs, add correctness tests
 - **C. Experiments** — HTAP / long-transaction benchmarks vs. baseline
 - **D. MySQL/InnoDB integration** — final goal
