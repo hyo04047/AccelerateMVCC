@@ -93,3 +93,9 @@ target_link_libraries(
 
 include(GoogleTest)
 gtest_discover_tests(test_with_google)
+
+# Standalone test for the EBR reclamation primitive (header-only, no kuku/mvcc
+# deps -> fast to rebuild under ASan/TSan).
+add_executable(ebr_test "epoch_reclaimer_test.cpp")
+target_include_directories(ebr_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(ebr_test PRIVATE GTest::gtest_main Threads::Threads)
