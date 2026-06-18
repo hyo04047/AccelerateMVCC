@@ -51,35 +51,29 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
             value = kuku::get_value(item);
         }
         auto *header = reinterpret_cast<interval_list_header *>(value);
-        if (header->next.load() == nullptr) {
+        if (header->next.ptr() == nullptr) {
             auto* epoch = new epoch_node();
             update_epoch_node(epoch, epoch_num, trx_id, undo_entry, nullptr);
+            epoch->header = header;
 
             header->next_epoch_num = epoch_num;
-            header->next.store(epoch);
+            header->next.store(epoch, false);
 
             epoch_table->insert(epoch);
         }
         else if (header->next_epoch_num < epoch_num) {
-            // create new epoch and insert it to header
-
-            // concurrency control btw inserting and gc operation
+            // create new epoch and prepend it at the head
             auto *epoch = new epoch_node();
-            header->next.load()->prev.store(epoch);
-            try {
-                update_epoch_node(epoch, epoch_num, trx_id, undo_entry, header->next.load());
-            }
-            catch (std::exception& e) {
-                update_epoch_node(epoch, epoch_num, trx_id, undo_entry, nullptr);
-            }
+            update_epoch_node(epoch, epoch_num, trx_id, undo_entry, header->next.ptr());
+            epoch->header = header;
 
             header->next_epoch_num = epoch_num;
-            header->next.store(epoch);
+            header->next.store(epoch, false);
 
             epoch_table->insert(epoch);
         } else {
             // insert undo log entry to existing epoch
-            epoch_node *epoch = header->next.load();
+            epoch_node *epoch = header->next.ptr();
             epoch->count++;
             undo_entry_node *last_entry = epoch->last_entry.load();
             if (trx_id < epoch->min_trx_id) {
@@ -94,8 +88,9 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
     } else {
         auto *epoch = new epoch_node(epoch_num, trx_id, undo_entry, nullptr);
         auto *header = new interval_list_header();
+        epoch->header = header;
         header->next_epoch_num = epoch_num;
-        header->next.store(epoch);
+        header->next.store(epoch, false);
         auto value = reinterpret_cast<std::uint64_t>(header);
 
         kuku::set_value(value, item);
@@ -146,12 +141,20 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
     EpochReclaimer::Guard guard(epoch_table->reclaimer());
     bool found = false;
     uint64_t best_trx_id = 0;
-    epoch_node *epoch = header->next.load();
+    epoch_node *epoch = header->next.ptr();
 
     while (epoch != nullptr) {
+        // Load the forward word once: ptr = successor, mark = "this epoch is dead".
+        uintptr_t w = epoch->next.load();
+        epoch_node *next_epoch = MarkedPtr<epoch_node>::ptr_of(w);
+        // A marked epoch is logically deleted by GC -> skip its versions.
+        if (MarkedPtr<epoch_node>::mark_of(w)) {
+            epoch = next_epoch;
+            continue;
+        }
         // skip epochs entirely newer than ours
         if (epoch->epoch_num > epoch_num) {
-            epoch = epoch->next.load();
+            epoch = next_epoch;
             continue;
         }
         for (undo_entry_node *undo_entry = epoch->first_entry;
@@ -169,7 +172,7 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
                 }
             }
         }
-        epoch = epoch->next.load();
+        epoch = next_epoch;
     }
 
     return found;

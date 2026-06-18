@@ -256,17 +256,40 @@ namespace mvcc {
                             node = node->next.load();
                             prev_node->next.store(node);                 // splice wrapper out
 
-                            epoch_node *epochNode = dead->epoch;          // unlink epoch from interval list (both directions)
-                            if (epochNode->prev.load() != nullptr) {
-                                epochNode->prev.load()->next.store(epochNode->next.load());
+                            epoch_node *epochNode = dead->epoch;
+                            // Harris unlink from the (forward-only) interval list.
+                            // (1) logical delete: mark epochNode's forward pointer so a concurrent
+                            //     reader skips it and a concurrent insert-behind-it CAS fails.
+                            epoch_node *succ = epochNode->next.ptr();
+                            epochNode->next.set_mark(succ);
+                            // (2) physical unlink: swing the predecessor's next past epochNode.
+                            //     GC reaches nodes via the epoch_table, not the kuku header, so it
+                            //     uses epochNode->header to anchor a forward scan for the predecessor
+                            //     (the header itself for a head epoch). This also fixes the latent
+                            //     head-prune bug (header->next was never updated before).
+                            interval_list_header *hdr = epochNode->header;
+                            if (hdr != nullptr) {
+                                if (hdr->next.ptr() == epochNode) {
+                                    hdr->next.store(succ, false);
+                                } else {
+                                    for (epoch_node *p = hdr->next.ptr(); p != nullptr; p = p->next.ptr()) {
+                                        if (p->next.ptr() == epochNode) {
+                                            p->next.store(succ, false);
+                                            break;
+                                        }
+                                    }
+                                }
                             }
-                            if (epochNode->next.load() != nullptr) {
-                                epochNode->next.load()->prev.store(epochNode->prev.load());
-                            }
-                            // Retire instead of free: epochNode is reachable by concurrent
-                            // guarded readers (search walks the interval list). EBR frees it
-                            // only once no reader that entered before retirement is still active.
-                            reclaimer_.retire([epochNode] { delete epochNode; });
+                            // Retire under EBR grace. One deleter frees the whole epoch: its undo
+                            // entry chain (previously leaked -- epoch_node has no dtor) + the node.
+                            reclaimer_.retire([epochNode] {
+                                for (undo_entry_node *e = epochNode->first_entry; e != nullptr; ) {
+                                    undo_entry_node *nx = e->next_entry.load();
+                                    delete e;
+                                    e = nx;
+                                }
+                                delete epochNode;
+                            });
                             reclaimer_.retire([dead] { delete dead; });
                         } else {
                             prev_node = node;                            // advance prev only over kept nodes

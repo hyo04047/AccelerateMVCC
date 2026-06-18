@@ -15,9 +15,10 @@ void mvcc::update_epoch_node(epoch_node *epoch, uint64_t epoch_num, uint64_t trx
     epoch->count = 1;
     epoch->first_entry = undo_entry;
     epoch->last_entry.store(undo_entry);
-    // if next is not nullptr, next is garbage collected. And next's next is set to epoch's next
-    epoch_node *dummy = nullptr;
-    epoch->next.compare_exchange_strong(dummy, next);
+    // `epoch` is freshly allocated and not yet published to the list, so a plain
+    // store of its forward pointer (unmarked) is sufficient. The publish happens
+    // when the caller CASes/stores header->next to `epoch`.
+    epoch->next.store(next, false);
 }
 
 mvcc::EpochNode::EpochNode(uint64_t epochNumber) {
