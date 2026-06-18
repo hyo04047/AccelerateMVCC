@@ -18,7 +18,10 @@ namespace mvcc {
 
     struct epoch_node_wrapper {
         epoch_node *epoch;
-        std::atomic<epoch_node_wrapper *> next;
+        // Harris marked pointer (low bit = wrapper logically spliced out). The wrapper
+        // list is not reader-traversed; the mark guards the insert-head CAS vs a
+        // concurrent GC splice (so insert never lands behind a wrapper being removed).
+        MarkedPtr<epoch_node_wrapper> next;
 
         explicit epoch_node_wrapper(epoch_node *epoch)
                 : epoch(epoch), next(nullptr) {}
@@ -71,15 +74,19 @@ namespace mvcc {
                 auto *epoch_wrapper = new epoch_node_wrapper(epoch);
                 // Head-insert right after the stable dummy head (first_node).
                 // GC (Phase 2) walks first_node->next forward, so insert on the same side.
+                // Marked-pointer CAS: fails (and retries) if the head's next moved or was
+                // marked by a concurrent GC splice -> no lost wrapper.
                 epoch_node_wrapper *head = table_node->first_node.load();
                 while (true) {
-                    epoch_node_wrapper *first_real = head->next.load();
-                    epoch_wrapper->next.store(first_real);
-                    if (head->next.compare_exchange_weak(first_real, epoch_wrapper)) {
+                    uintptr_t hw = head->next.load();
+                    epoch_node_wrapper *first_real = MarkedPtr<epoch_node_wrapper>::ptr_of(hw);
+                    epoch_wrapper->next.store(first_real, false);
+                    uintptr_t expected = MarkedPtr<epoch_node_wrapper>::pack(first_real, false);
+                    if (head->next.cas(expected, MarkedPtr<epoch_node_wrapper>::pack(epoch_wrapper, false))) {
                         table_node->count.fetch_sub(1);
                         return true;
                     }
-                    // The compare_exchange_weak failed, retry the operation.
+                    // CAS failed (head->next moved or marked); retry.
                 }
             };
         }
@@ -250,11 +257,13 @@ namespace mvcc {
                     // Prune every epoch wrapper whose interval is fully inside a dead zone.
                     // first_node is a stable dummy head; walk forward keeping prev_node so we can splice.
                     epoch_node_wrapper *prev_node = table_node->first_node.load();
-                    for (epoch_node_wrapper *node = prev_node->next.load(); node != nullptr; ) {
+                    for (epoch_node_wrapper *node = prev_node->next.ptr(); node != nullptr; ) {
                         if (can_operate_gc(node, deadzone)) {
                             epoch_node_wrapper *dead = node;
-                            node = node->next.load();
-                            prev_node->next.store(node);                 // splice wrapper out
+                            epoch_node_wrapper *wsucc = node->next.ptr();
+                            dead->next.set_mark(wsucc);                  // logical splice (Harris mark)
+                            prev_node->next.store(wsucc, false);         // physical splice (store; concurrent -> CAS in inc4)
+                            node = wsucc;
 
                             epoch_node *epochNode = dead->epoch;
                             // Harris unlink from the (forward-only) interval list.
@@ -293,13 +302,13 @@ namespace mvcc {
                             reclaimer_.retire([dead] { delete dead; });
                         } else {
                             prev_node = node;                            // advance prev only over kept nodes
-                            node = node->next.load();
+                            node = node->next.ptr();
                         }
                     }
 
                     // No concurrent inserter and list drained to just the dummy head -> reclaim table node.
                     if (table_node->count.load() == 0 &&
-                        table_node->first_node.load()->next.load() == nullptr) {
+                        table_node->first_node.load()->next.ptr() == nullptr) {
                         epoch_node_wrapper *dummy_head = table_node->first_node.load();
                         reclaimer_.retire([dummy_head] { delete dummy_head; });
                         deleteIndexes.push_back(table_node);
@@ -336,7 +345,7 @@ namespace mvcc {
             while (true) {
                 epoch_node_wrapper *last = last_dummy_node.load();
                 epoch_node_wrapper *expected_last = last;
-                epoch_wrapper->next.store(expected_last);
+                epoch_wrapper->next.store(expected_last, false);
                 if (last_dummy_node.compare_exchange_weak(last, epoch_wrapper)) {
                     return;
                 }
