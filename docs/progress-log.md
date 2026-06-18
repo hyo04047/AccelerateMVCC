@@ -16,7 +16,9 @@
 **증분 2 ✅**(`ecd46a4`) 인터벌 리스트 Harris 전환: `epoch_node.next`/`header.next`를 `MarkedPtr`로, `prev` 제거(forward-only), `header` 역포인터 추가(GC가 header에서 predecessor forward-scan + head-prune dangling 수리), GC unlink mark→splice, search marked skip, undo 체인 단일 deleter(누수 해소). 8개 회귀 Release/ASan green.
 **증분 3 ✅**(`c7993cd`) wrapper 리스트 Harris 전환: `epoch_node_wrapper.next` `MarkedPtr`, GC splice mark→store, insert head-insert MarkedPtr CAS. 8개 회귀 Release/ASan/TSan(reader-search‖GC-unlink) green.
 
-**증분 순서·결정 상세 = [NEXT-SESSION.md](NEXT-SESSION.md) §2.** 다음 = 증분 4(전용 BG GC 스레드 + 인라인 트리거 제거 + 동시 테스트 + 적대적 동시성 하드닝 → 동시성 최종 검증, 1b 완료).
+**증분 4 ✅**(`9fcac82`) 전용 BG GC 스레드(`Accelerate_mvcc`가 start/stop 수명관리, dtor join) + 인라인 GC 트리거 제거(단일 GC 액터 → "동시 GC" 부작용 소멸) + `run_gc_once`(결정적). **GC가 head epoch skip** → 단일 writer에서 insert‖GC가 disjoint word만 만져 insert 하드닝 불필요. 테스트가 진짜 BG GC ‖ writer ‖ readers로 동작: 8개 Release(hang 0)/ASan(UAF 0)/TSan(race 0) green. **단일-writer 1b 동시성 검증 완료.**
+
+**증분 순서·결정 상세 = [NEXT-SESSION.md](NEXT-SESSION.md) §2.** 다음 = 증분 5(다중 writer lock-free 하드닝: insert head-link CAS-재시도 + insert/GC Guard + append 재검증 + count/min/max 원자화 + GC splice CAS → 완전한 1b. 또는 단일-writer로 1b 완료 간주 — 범위 결정).
 
 ---
 
