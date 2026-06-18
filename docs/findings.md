@@ -88,4 +88,14 @@ DIVA/vDriver deadzone 모델을 멀티에이전트로 정독·분석한 뒤 snap
 
 **테스트**: `GcEbrIntegration.SingleThread`(retire/reclaim 배선) + `ConcurrentReaders`(writer 1=GC + reader 4 guarded search) — Release/ASan/TSan 전부 클린(총 8개). 진단 도구 gdb를 WSL에 설치.
 
+## Step 1b 완료 + 적대적 코드 리뷰 — 2026-06-18
+marked-pointer(Harris) 양 리스트 + 다중-producer EBR + 전용 BG GC 스레드 → multi-writer‖BG GC‖readers Release/ASan(UAF 0)/TSan(race 0)/hang 0 검증(9개 테스트). 증분 0–5 (`0e98a4c`~`b15d60e`).
+
+**적대적 코드 리뷰**(워크플로 57에이전트: 5관점 attack → finding별 독립 verify → 종합; 51발견 중 28 false-positive 기각): 핵심 설계는 검증 경로에서 건전 확인. 확정 잠복결함 8건 중 **7건 수정**(커밋 `49f28b7`) — ① EBR `my_slot` 256+스레드 aliasing에 interim assert ② dummy-head ctor 99개 누수 hoist ③ `Epoch_table::insert`를 EBR Guard로(table_node swap‖느린 inserter UAF 창) ④ BG GC cadence를 PERIOD별 catch-up으로(boundary 영구 skip 방지) ⑤ `min_reservation` seq_cst load(ordering gap) ⑥ `start_background_gc` 예외안전 ⑦ `run_gc_once` BG 중복 가드.
+
+**🔴 stage C 전 필수(보류 3건)**:
+- **#1 EBR slot lease**: `my_slot`의 creation-order round-robin을 *동시-생존* 스레드 기준 per-instance 슬롯 lease로 교체(thread 종료 시 반납). C가 reader 스레드 수↑(FG-by-readers)면 256+에서 잠복 UAF 실제화. (현재 interim assert로 loud-fail.)
+- **#2 dummy-overflow 리스트 consumer**: `insert`가 epoch_num mismatch 시 wrapper를 dummy로 보내면 GC가 영원히 안 거둠 → 누수 + 영구 un-prune. insert가 swap된 버킷 재로드/재시도로 strand 방지하거나, GC 진입부에서 dummy 체인 drain+reclaim.
+- **#5 cold-record dead head prune**: GC-skips-head 때문에 다시 안 쓰이는 레코드의 dead head epoch이 영구 미회수(공간 누수). header->next CAS로 head도 prune 가능하게(insert head-link도 CAS 필요 — multi-writer lock-free와 묶임).
+
 **1a-ii 단계 제약(의도)**: 단일 unlinker(=GC 한 스레드)만 retire/reclaim(EBR 단일 producer). reader는 GC를 트리거하는 `start_read_trx` 대신 `start_trx`를 써 단일 producer 전제를 지킴. 다중 unlinker/협조적 FG unlink는 **1b(marked pointer, Harris)**.

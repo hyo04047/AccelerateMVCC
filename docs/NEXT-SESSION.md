@@ -49,11 +49,11 @@
 - **4 ✅**(`9fcac82`) **전용 BG GC 스레드**(`Accelerate_mvcc`가 `start/stop_background_gc`로 수명관리, dtor join; 옛 inline 트리거와 같은 trx-id 케이던스) + `insert_trx`/`start_read_trx`/`dummy_read_trx`의 **인라인 GC 트리거 제거**(단일 GC 액터 → "동시 GC" 부작용 소멸) + `run_gc_once()`(결정적 단일스레드용). **GC가 head epoch을 skip** → 단일 writer에서 insert‖GC가 disjoint word만 만져 insert-side 하드닝 불필요(wrapper 리스트는 insert=현재 버킷/GC=long_live 버킷이라 애초 disjoint). 테스트: `ConcurrentReaders`=BG GC‖1 writer‖4 readers, `GcEndToEnd.*` BG GC 켬, `SingleThread`=run_gc_once. 8개 Release(hang 없음)/ASan(UAF 0)/TSan(race 0) green. → **단일-writer 1b 동시성 검증 완료.**
 - **5 ✅**(`b15d60e`) **다중 writer 검증** (production 변경 0): `ConcurrentWritersReadersBgGc`(4 writer + 3 reader + BG GC, 8 레코드 12만 insert) Release/ASan/TSan green. **큰 하드닝이 불필요한 이유**: 같은-레코드 insert는 레코드 락(`get_mutex`, = InnoDB record write-lock)이 직렬화, 다른-레코드는 disjoint interval list, 공유 wrapper 버킷은 Treiber CAS, insert‖GC는 GC-skips-head가 커버 → 레코드당 ≤1 writer라 단일-writer 분석 그대로. (예고했던 head-link CAS·append 재검증·count 원자화는 *같은 레코드도* lock-free로 만들 때 = 레코드 락 제거 시에만 필요 — lock-free 버전 인덱스와 직교, 1b 밖.)
 
-**→ Step 1b 완료**: lock-free read + 전용 BG GC 스레드 + 동시 writer가 marked-pointer 버전/wrapper 리스트 + EBR 회수 위에서 ASan(UAF 0)/TSan(race 0)/진행성 검증됨. 잔여(1c/후속): FG-협조-unlink(reader도 청소), `my_slot()` 257-thread aliasing, empty-table-node sealing, GC-skips-head로 안 지워지는 dead head(다음 prepend 때 회수 — 경미). 다음 단계는 §6 로드맵(C 벤치 또는 1c).
+**→ Step 1b 완료**: lock-free read + 전용 BG GC 스레드 + 동시 writer가 marked-pointer 버전/wrapper 리스트 + EBR 회수 위에서 ASan(UAF 0)/TSan(race 0)/진행성 검증됨. 다음 단계는 §6 로드맵(C 벤치 또는 1c).
 
-**1b 밖(1c 선결로 미룸)**: `my_slot()` 257번째 스레드 aliasing, empty-table-node reclaim TOCTOU sealing — FG-by-readers가 스레드 수 늘릴 때 필요.
+**적대적 코드 리뷰 완료**(`49f28b7`, 워크플로 57에이전트, 51발견→28 false-positive 기각): 핵심 설계 건전 확인 + 값싼 7건 수정(EBR slot interim assert·dummy ctor 누수·insert Guard·GC cadence catch-up·min_reservation seq_cst·thread 예외안전·run_gc_once 가드). 상세 [findings.md](findings.md).
 
-**1b 밖(1c 선결로 미룸)**: `my_slot()` 257번째 스레드 aliasing, empty-table-node reclaim TOCTOU sealing — FG-by-readers가 스레드 수 늘릴 때 필요.
+**🔴 stage C 전 필수(보류 3건, findings.md 참조)**: ① **EBR slot lease**(my_slot creation-order → 동시-생존 기준 per-instance lease; C가 reader 스레드↑면 256+ aliasing UAF 실제화; 현재 interim assert로 loud-fail) ② **dummy-overflow 리스트 consumer**(GC가 안 거둬 누수+영구 un-prune) ③ **cold-record dead head prune**(GC-skips-head 미회수; header->next CAS 필요 = multi-writer lock-free와 묶임).
 
 ### (참고) 1a-ii에서 한 일 — 완료, 재작업 불필요
 - GC `delete`→`reclaimer_.retire()`, `search` 순회 `EpochReclaimer::Guard`, `garbage_collect` 진입부 `reclaim()`. `Epoch_table`에 `reclaimer_`+`reclaimer()`.

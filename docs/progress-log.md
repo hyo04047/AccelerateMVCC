@@ -20,7 +20,9 @@
 
 **증분 5 ✅**(`b15d60e`) 다중 writer 검증(production 변경 0): `ConcurrentWritersReadersBgGc`(4 writer+3 reader+BG GC, 8레코드 12만 insert) Release/ASan/TSan green. 큰 하드닝 불필요 — 같은-레코드 insert는 레코드 락이 직렬화(=정상 MVCC), 다른-레코드 disjoint, wrapper는 Treiber CAS, insert‖GC는 GC-skips-head 커버.
 
-**→ Step 1b 완료**: lock-free read + 전용 BG GC 스레드 + 동시 multi-writer가 marked-pointer 버전/wrapper 리스트 + EBR 회수 위에서 ASan(UAF 0)/TSan(race 0)/진행성 검증. 잔여(1c/후속): FG 협조 unlink, my_slot aliasing, empty-node sealing, GC-skips-head dead-head 경미 누수. **다음 = C(벤치) 또는 1c** — 상세 [NEXT-SESSION.md](NEXT-SESSION.md) §2·§6.
+**→ Step 1b 완료**: lock-free read + 전용 BG GC 스레드 + 동시 multi-writer가 marked-pointer 버전/wrapper 리스트 + EBR 회수 위에서 ASan(UAF 0)/TSan(race 0)/진행성 검증.
+
+**적대적 코드 리뷰 ✅**(`49f28b7`, 워크플로 57에이전트: 5관점 attack→finding별 verify→종합; 51발견 중 28 false-positive 기각 = 핵심 설계 건전 확인): 잠복결함 8건 중 **값싼 7건 수정**(EBR slot interim assert·dummy ctor 99누수·insert Guard·GC cadence catch-up·min_reservation seq_cst·thread 예외안전·run_gc_once 가드, Release/ASan/TSan 9개 green 유지). **🔴 stage C 전 필수 3건 문서화**: EBR slot lease / dummy-overflow consumer / cold-head prune (findings.md). **다음 = C(벤치, 권장) 또는 1c** — 상세 [NEXT-SESSION.md](NEXT-SESSION.md) §2·§6.
 
 ---
 
