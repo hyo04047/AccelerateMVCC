@@ -196,3 +196,46 @@ TEST(GcEbrIntegration, ConcurrentReaders) {
 
     EXPECT_GT(reads.load(), 0);
 }
+
+// Multi-writer (stage 1b increment 5): several writer threads insert concurrently
+// while the BG GC prunes and readers search. Same-record writes serialize on the
+// per-record lock (InnoDB-style record write-lock = correct MVCC); different-record
+// writes run concurrently (disjoint interval lists; the shared per-epoch wrapper
+// bucket is handled by the Treiber head-insert CAS). insert||GC is the per-record
+// single-writer||GC case GC-skips-head already covers. This validates the full
+// concurrent model end-to-end: ASan (UAF 0) + TSan (race 0) + progress (completes).
+TEST(GcEbrIntegration, ConcurrentWritersReadersBgGc) {
+    Accelerate_mvcc mvcc(8);
+    mvcc.start_background_gc();
+    std::atomic<bool> done{false};
+    std::atomic<long> reads{0};
+    std::atomic<long> writes{0};
+
+    auto reader = [&] {
+        while (!done.load(std::memory_order_acquire)) {
+            trx_t* rd = mvcc.start_trx();
+            uint64_t s = 0, p = 0, o = 0;
+            (void) mvcc.search_operation(1, rd->trx_id % 8, rd, s, p, o);
+            mvcc.commit_trx(rd);
+            reads.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    auto writer = [&](int seed) {
+        for (int i = 0; i < 30000; i++) {
+            mvcc.insert_trx((seed + i) % 8);   // writers overlap on records -> lock contention + cross-record concurrency
+            writes.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    std::vector<std::thread> readers, writers;
+    for (int i = 0; i < 3; i++) readers.emplace_back(reader);
+    for (int i = 0; i < 4; i++) writers.emplace_back(writer, i * 3);
+
+    for (auto& t : writers) t.join();          // 4 concurrent writers finish
+    done.store(true, std::memory_order_release);
+    for (auto& t : readers) t.join();
+    mvcc.stop_background_gc();
+
+    EXPECT_EQ(writes.load(), 4L * 30000);
+    EXPECT_GT(reads.load(), 0);
+}
