@@ -2,7 +2,7 @@
 
 > **새 세션은 이 파일을 가장 먼저 읽으세요.** 이전 대화 없이 그대로 이어가기 위한 핸드오프.
 > 배경·설계근거 → [design-gc.md](design-gc.md) / 상태·로드맵 → [README.md](README.md) / 이력 → [progress-log.md](progress-log.md) / 이슈 → [findings.md](findings.md)
-> 갱신: 2026-06-18 (세션 2, Step 1b 설계 패스 + 증분 0·1 완료 후)
+> 갱신: 2026-06-18 (세션 2, **Step 1b 완료 + 적대적 코드 리뷰 + 하드닝** 후, origin push 완료)
 
 ---
 
@@ -31,14 +31,14 @@
 
 ---
 
-## 2. Step 1b 계획 — 설계 패스 완료(세션2), 결정 확정 / 증분 0·1 완료, 증분 2부터
+## 2. Step 1b — 완료 기록 (증분 0–5 ✅ + 적대적 리뷰)
 
-> 설계 패스(병렬 하자드 매핑 + 적대적 검증 3관점) 완료. 아래 순서·결정은 **사용자 확인 끝남**. 구현은 작은 증분 + 매 증분 체크포인트.
+> **1b는 끝났다.** 아래는 무엇을 어떻게 했는지의 기록(증분별 커밋 포함)과, **다음 단계(C) 진입 전 반드시 처리할 🔴 보류 3건**이다. 새 세션의 실제 액션은 "🔴 stage C 전 필수" + §6 로드맵.
 
 **확정 설계(왜)** — 세 축 분리: 논리(어느 버전이 dead)=deadzone / 물리 회수 안전=EBR(1a-ii 완료) / 물리 unlink 일관성=**marked pointer(Harris)**.
 - "동시 GC"는 프로토타입이 GC를 트랜잭션 스레드에서 **인라인 트리거**(`trx_id % 2500==0`)하던 **부작용**이지 설계가 아님. → GC를 **단일 BG GC 액터(전용 스레드)**로 만들고 인라인 트리거 제거. 스레드 하나라 동시 GC 없음 → **GC lock 불필요**. (InnoDB purge / vDriver Cutter와 같은 정석.)
 - marked pointer의 역할 = 그 단일 BG GC의 unlink를 **동시 lock-free insert/read**로부터 안전하게(insert는 head에 끼고, reader는 순회 중). **hot path(read·insert)는 lock-free 유지.**
-- **GC는 epoch_table 경유로 노드를 잡아 레코드 `header`에 못 닿음** → head epoch prune 시 `header->next` dangling(기존 잠복버그). 해결: **epoch_node에 `header` 역포인터** 추가, unlink를 header 기준으로(head는 `header->next` CAS).
+- **GC는 epoch_table 경유로 노드를 잡아 레코드 `header`에 못 닿음** → 그래서 **epoch_node에 `header` 역포인터** 추가(GC가 forward-scan으로 predecessor 찾기). head epoch을 prune하면 `header->next` dangling 위험 + insert‖GC 경합 → **inc4에서 GC가 head epoch을 아예 skip**으로 정착(아래 증분 4). head도 prune하려면 header->next CAS = multi-writer lock-free와 묶임 → cold-head 보류건(🔴 아래).
 - FG 협조 unlink(reader도 거듦)는 **1c**로 분리 = marked-pointer 토대 위 **additive**(BG는 reclaim+backstop sweep로 남음, teardown 아님). reader는 자기 read-view만 들어 dead 판정 불가 → 1c는 **공유 deadzone 디스크립터**가 선결.
 
 **증분 순서(각 커밋 분리, 매번 ASan/TSan 또는 단일스레드 회귀 green)**:
@@ -74,7 +74,7 @@
 - min/max 기반 tight segment 경계(§8.1), multi-granularity 노드, **(중장기) list→DIVA interval tree**(§9.3), 빈 snapshot fast-path, dummy-list 누수.
 
 ## 5. 현재 repo 상태
-- branch **master**, HEAD **= 1b 증분 5 (`b15d60e`) + 이 docs 커밋**, working tree **clean**. 원격(origin/master)은 `c4b474d`까지 → **로컬 미push 10커밋**(inc0 `0e98a4c` … inc5 `b15d60e` + docs). push는 사용자 확인 후.
+- branch **master**, HEAD **`28a5c6b`**(docs: 1b 적대적 리뷰 기록), working tree **clean**, **origin/master까지 push 완료**(세션2 전체 = `0e98a4c`(inc0)~`28a5c6b`). 빌드 캐시(`~/acc-build*`)는 WSL에 있으나 헤더 바뀌었으니 새 세션은 재빌드.
 - 신규 파일: `include/marked_ptr.h`, `marked_ptr_test.cpp`(+CMake 타깃). `epoch_node`: `prev` 제거·`header` 추가·`next` `MarkedPtr`. `epoch_node_wrapper.next` `MarkedPtr`. `Accelerate_mvcc`: `gc_thread_`/`start_background_gc`/`stop_background_gc`/`run_gc_once`/dtor.
 - 핵심 파일: `include/epoch_table.h`(GC/deadzone + EBR retire/reclaim) · `include/accelerateMVCC.cpp`(insert/search + EBR Guard) · `include/trxManager.h`(trx/평탄 read-view) · `include/interval_list.h`(epoch_node) · `include/epoch_reclaimer.h`(**EBR, 검증·통합됨**) · `correctness_test.cpp`(GcEbrIntegration 포함) · `epoch_reclaimer_test.cpp` · `CMakeLists.txt`.
 - 빌드 산출물·`build/`·`.claude/`는 gitignore됨. WSL에 `~/acc-build`(Release)·`~/acc-build-asan`·`~/acc-build-tsan` 캐시 존재. gdb 설치됨.
