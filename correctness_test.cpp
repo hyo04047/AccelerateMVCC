@@ -5,6 +5,8 @@
 //   - end-to-end GC under churn / long-lived reader (memory safety; run under ASAN)
 #include <gtest/gtest.h>
 #include <vector>
+#include <thread>
+#include <atomic>
 #include "include/accelerateMVCC.h"
 
 using namespace mvcc;
@@ -129,4 +131,63 @@ TEST(GcEndToEnd, LongLivedReaderSurvivesGc) {
     (void) mvcc.search_operation(1, 1, llt, s, p, o);
     mvcc.end_read_trx(llt);
     SUCCEED();
+}
+
+// ---------------------------------------------------------------------------
+// (e) EBR integration (stage 1a-ii): GC retires dead epoch nodes instead of
+//     freeing them inline; search traversals are wrapped in an EBR Guard; GC
+//     reclaims on each cycle. These assert the integration is memory-safe.
+// ---------------------------------------------------------------------------
+
+// Sanity: heavy GC churn with retire/reclaim wired in must not crash, and the
+// structure stays searchable afterward. (single-threaded: GC + search never
+// overlap, so reclaim drains immediately -- the real value is the concurrent
+// test below; this just guards the retire/reclaim plumbing on the GC path.)
+TEST(GcEbrIntegration, SingleThread) {
+    Accelerate_mvcc mvcc(4);
+    for (uint64_t i = 0; i < 100000; i++) {
+        mvcc.insert_trx(i % 4);   // garbage_collect retires + reclaims periodically
+    }
+    uint64_t s = 0, p = 0, o = 0;
+    trx_t* rd = mvcc.start_trx();
+    (void) mvcc.search_operation(1, 1, rd, s, p, o);
+    mvcc.commit_trx(rd);
+    SUCCEED();
+}
+
+// Core 1a-ii validation: ONE writer (the sole GC unlinker/retirer, satisfying
+// EBR's single-producer invariant) churns the list while N readers run guarded
+// searches concurrently. The Guard must keep GC-retired nodes alive for the
+// span of each traversal. Run under ASan (use-after-free == 0) and TSan
+// (data race == 0).
+//
+// NOTE: readers use start_trx()/commit_trx(), NOT start_read_trx(): the latter
+// can itself trigger garbage_collect(), which would make GC multi-producer and
+// break the single-producer retire/reclaim assumption. Only the writer below
+// is allowed to drive GC in this stage.
+TEST(GcEbrIntegration, ConcurrentReaders) {
+    Accelerate_mvcc mvcc(4);
+    std::atomic<bool> done{false};
+    std::atomic<long> reads{0};
+
+    auto reader = [&] {
+        while (!done.load(std::memory_order_acquire)) {
+            trx_t* rd = mvcc.start_trx();
+            uint64_t s = 0, p = 0, o = 0;
+            (void) mvcc.search_operation(1, rd->trx_id % 4, rd, s, p, o);
+            mvcc.commit_trx(rd);
+            reads.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    std::vector<std::thread> readers;
+    for (int i = 0; i < 4; i++) readers.emplace_back(reader);
+
+    for (uint64_t i = 0; i < 100000; i++) {   // single writer == single GC actor
+        mvcc.insert_trx(i % 4);
+    }
+    done.store(true, std::memory_order_release);
+    for (auto& t : readers) t.join();
+
+    EXPECT_GT(reads.load(), 0);
 }

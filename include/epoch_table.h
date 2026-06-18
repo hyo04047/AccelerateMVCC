@@ -10,6 +10,7 @@
 #include "common.h"
 #include "interval_list.h"
 #include "trxManager.h"
+#include "epoch_reclaimer.h"
 
 #define NUM_DEADZONE (50)
 
@@ -205,6 +206,10 @@ namespace mvcc {
         // <- (epoch_num - epoch_table_size/4)  ~ (epoch_num)
         // Phase2 : processing gc in LLT vector
         bool garbage_collect(uint64_t epoch_num, std::vector<trx_t> vector) {
+            // BG reclaim: free anything retired in a previous cycle that no
+            // currently-active reader (Guard) can still reach. Safe to run every
+            // call, including the warm-up early-returns below.
+            reclaimer_.reclaim();
             if (epoch_num == EPOCH_TABLE_SIZE / 4) {
                 return false;
             }
@@ -258,8 +263,11 @@ namespace mvcc {
                             if (epochNode->next.load() != nullptr) {
                                 epochNode->next.load()->prev.store(epochNode->prev.load());
                             }
-                            delete epochNode;
-                            delete dead;
+                            // Retire instead of free: epochNode is reachable by concurrent
+                            // guarded readers (search walks the interval list). EBR frees it
+                            // only once no reader that entered before retirement is still active.
+                            reclaimer_.retire([epochNode] { delete epochNode; });
+                            reclaimer_.retire([dead] { delete dead; });
                         } else {
                             prev_node = node;                            // advance prev only over kept nodes
                             node = node->next.load();
@@ -269,7 +277,8 @@ namespace mvcc {
                     // No concurrent inserter and list drained to just the dummy head -> reclaim table node.
                     if (table_node->count.load() == 0 &&
                         table_node->first_node.load()->next.load() == nullptr) {
-                        delete table_node->first_node.load();
+                        epoch_node_wrapper *dummy_head = table_node->first_node.load();
+                        reclaimer_.retire([dummy_head] { delete dummy_head; });
                         deleteIndexes.push_back(table_node);
                     }
                 }
@@ -279,7 +288,7 @@ namespace mvcc {
                     if (it != long_live_epochs.end()) {
                         long_live_epochs.erase(it);
                     }
-                    delete node;
+                    reclaimer_.retire([node] { delete node; });
                 }
             }
 
@@ -287,10 +296,15 @@ namespace mvcc {
             return true;
         }
 
+        // EBR used by GC (retire/reclaim) and search readers (Guard). Single
+        // producer/reclaimer in stage 1a: only the GC actor retires/reclaims.
+        EpochReclaimer& reclaimer() { return reclaimer_; }
+
 
     private:
         std::array<std::atomic<epoch_table_node *>, EPOCH_TABLE_SIZE> table{};
         std::vector<epoch_table_node *> long_live_epochs;
+        EpochReclaimer reclaimer_;
         std::atomic<epoch_node_wrapper *> first_dummy_node;
         std::atomic<epoch_node_wrapper *> last_dummy_node;
 

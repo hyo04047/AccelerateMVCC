@@ -140,6 +140,10 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
       Among visible versions we want the greatest trx_id (latest committed). The
       chain is newest-epoch-first but oldest-entry-first within an epoch, so we
       scan all candidates and keep the maximum rather than returning the first. */
+    // EBR reservation: from here until return we dereference epoch_node /
+    // undo_entry pointers that GC may concurrently unlink+retire. The Guard
+    // pins reclamation for this traversal's span so GC cannot free them under us.
+    EpochReclaimer::Guard guard(epoch_table->reclaimer());
     bool found = false;
     uint64_t best_trx_id = 0;
     epoch_node *epoch = header->next.load();
