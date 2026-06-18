@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-06-18 — 세션 2 (이어서): Step 1b 설계 패스 + 증분 0·1
+
+**설계 패스(워크플로 9에이전트: 병렬 하자드 매핑 → 설계 합성 → 적대적 검증 3관점 → 정리)**: marked-pointer(Harris) 도입안 확정. 적대적 검증이 잡은 핵심 — mark 비트만으론 부족: insert도 EBR Guard 필요(ABA/UAF), "기존 epoch에 undo 추가" 경로 쓰기 전 재검증 + count/min/max 원자화, GC의 `prev` deref는 UAF, undo 체인 누수, **reclaim 동시진입 이중free**, retire stamp는 물리 unlink CAS 이후.
+
+**중요 정정(사용자 지적)**: "동시 GC"는 프로토타입이 GC를 트랜잭션 스레드에서 **인라인 트리거**(`trx_id%2500==0`)하던 부작용 — 설계가 아님. 설계대로 **GC를 단일 BG GC 액터(전용 스레드)로** 만들고 인라인 트리거 제거 → 동시 GC 없음·GC lock 불필요(InnoDB purge/vDriver Cutter 정석). FG 협조 unlink는 1c(marked-pointer 토대 위 additive). GC가 레코드 `header`에 못 닿는 구조라 head-prune 시 `header->next` dangling(잠복버그) → epoch_node에 `header` 역포인터로 해결(증분 2).
+
+**증분 0 ✅** `include/marked_ptr.h`(Harris mark-bit 헬퍼: pack/ptr_of/mark_of/cas/set_mark) + 정렬 static_assert + 단위테스트. 리스트 미배선=동작 변경 0. Release/ASan green. 커밋 `0e98a4c`.
+**증분 1 ✅** EBR retire를 다중-producer(lock-free Treiber 스택)로, reclaim을 try-lock 단일소비자로(consumer-local survivors). 적대적 검증이 잡은 reclaim 동시진입 이중free 제거. 4 retirer + 동시 reclaim + 3 reader 스트레스 — Release/ASan(누수 탐지 포함)/TSan green, deleter 정확히 1회. 커밋 `63ef424`.
+
+**증분 순서·결정 상세 = [NEXT-SESSION.md](NEXT-SESSION.md) §2.** 다음 = 증분 2(인터벌 리스트 Harris: header 역포인터 + marked-pointer + GC unlink Harris + search skip + guard + undo 단일 deleter).
+
+---
+
 ## 2026-06-18 — 세션 2: EBR 통합 (Step 1a-ii) ✅ + read-view 평탄화 fix
 
 **구현(1a-ii) ✅**: 검증된 per-traversal EBR을 GC·search에 통합. GC가 prune한 노드를 inline `delete` 대신 `EpochReclaimer`로 **retire**(epoch_node + 내부 wrapper/table-node), `search`의 interval-list 순회를 **`Guard`**로 보호, `garbage_collect` 진입부에서 **`reclaim`**. 단일 unlinker(=GC 한 스레드)·EBR 단일 producer 전제 유지. 커밋 `e1a45c4`.
