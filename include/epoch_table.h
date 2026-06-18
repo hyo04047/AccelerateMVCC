@@ -49,13 +49,19 @@ namespace mvcc {
         explicit Epoch_table() {
             for (int i = 0; i < EPOCH_TABLE_SIZE; i++) {
                 table.at(i).store(new epoch_table_node(i));
-                auto* wrapper_dummy = new epoch_node_wrapper(nullptr);
-                first_dummy_node.store(wrapper_dummy);
-                last_dummy_node.store(wrapper_dummy);
             }
+            // Single shared dummy-overflow head. (Was allocated inside the loop above,
+            // so 99 of 100 dummy heads leaked at construction.)
+            auto* wrapper_dummy = new epoch_node_wrapper(nullptr);
+            first_dummy_node.store(wrapper_dummy);
+            last_dummy_node.store(wrapper_dummy);
         }
 
         bool insert(epoch_node *epoch) {
+            // Pin reclamation for this insert's span: the BG GC's reclaim() must not free a
+            // table_node/dummy this inserter has captured. Without it, the load->count++ gap
+            // below is a UAF window (the count gate only protects AFTER the increment).
+            EpochReclaimer::Guard g(reclaimer_);
             uint64_t epoch_num = epoch->epoch_num;
             uint64_t index = epoch_num % EPOCH_TABLE_SIZE;
             epoch_table_node *table_node = table.at(index).load();

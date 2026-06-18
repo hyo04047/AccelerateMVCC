@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <utility>
+#include <cassert>
 
 namespace mvcc {
 
@@ -130,17 +131,29 @@ private:
 
     // Smallest epoch any active reader is reserving; if none, "everything".
     uint64_t min_reservation() const {
-        uint64_t m = global_epoch_.load(std::memory_order_acquire) + 1;
+        // seq_cst loads pair with the Guard's seq_cst reservation publish (same total
+        // order), so a just-published reservation is always observed by this scan.
+        // (Acquire alone is not formally paired with the seq_cst store; seq_cst loads
+        // are the clean fix -- and TSan models them, unlike a standalone fence.)
+        uint64_t m = global_epoch_.load(std::memory_order_seq_cst) + 1;
         for (auto &r : reservations_) {
-            uint64_t v = r.load(std::memory_order_acquire);
+            uint64_t v = r.load(std::memory_order_seq_cst);
             if (v < m) m = v;  // NOT_READING is max -> never lowers m
         }
         return m;
     }
 
     unsigned my_slot() const {
-        thread_local unsigned slot =
-            next_slot_.fetch_add(1, std::memory_order_relaxed) % MAX_THREADS;
+        thread_local unsigned slot = [] {
+            unsigned raw = next_slot_.fetch_add(1, std::memory_order_relaxed);
+            // Interim guard: creation-order round-robin aliases slots once >MAX_THREADS
+            // lifetime threads take a Guard, which would clobber a live reader's reservation
+            // (UAF). Stage 1c replaces this with a per-instance slot lease bounded by
+            // CONCURRENTLY-LIVE threads. Until then, fail loudly instead of silently aliasing.
+            assert(raw < MAX_THREADS &&
+                   "EBR reservation slots exhausted (>256 lifetime threads); needs slot-lease (stage 1c)");
+            return raw % MAX_THREADS;
+        }();
         return slot;
     }
 

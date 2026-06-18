@@ -40,7 +40,10 @@ namespace mvcc
         ~Accelerate_mvcc() { stop_background_gc(); }
 
         // Run one GC pass synchronously (deterministic; for single-threaded tests).
+        // Single-unlinker precondition: no-op while the BG GC thread is active, since
+        // garbage_collect mutates the non-atomic long_live_epochs vector and table[].
         void run_gc_once() {
+            if (gc_started_.load(std::memory_order_acquire)) return;
             uint64_t trx_id = trxManger->get_next_trx_id();
             epoch_table->garbage_collect(get_epoch_num(trx_id), trxManger->get_copy_active_trx_list());
         }
@@ -52,21 +55,31 @@ namespace mvcc
             bool expected = false;
             if (!gc_started_.compare_exchange_strong(expected, true)) return;  // already running
             gc_stop_.store(false, std::memory_order_release);
-            gc_thread_ = std::thread([this] {
-                constexpr uint64_t PERIOD = static_cast<uint64_t>(EPOCH_SIZE) * EPOCH_TABLE_SIZE / 4;
-                uint64_t last_boundary = 0;
-                while (!gc_stop_.load(std::memory_order_acquire)) {
-                    uint64_t cur = trxManger->get_next_trx_id();
-                    uint64_t boundary = (cur / PERIOD) * PERIOD;
-                    if (boundary > last_boundary) {
-                        epoch_table->garbage_collect(get_epoch_num(boundary),
-                                                     trxManger->get_copy_active_trx_list());
-                        last_boundary = boundary;
-                    } else {
-                        std::this_thread::sleep_for(std::chrono::microseconds(50));
+            try {
+                gc_thread_ = std::thread([this] {
+                    constexpr uint64_t PERIOD = static_cast<uint64_t>(EPOCH_SIZE) * EPOCH_TABLE_SIZE / 4;
+                    uint64_t last_boundary = 0;
+                    while (!gc_stop_.load(std::memory_order_acquire)) {
+                        uint64_t cur = trxManger->get_next_trx_id();
+                        uint64_t boundary = (cur / PERIOD) * PERIOD;
+                        if (boundary > last_boundary) {
+                            // Drain every MISSED boundary one PERIOD at a time (don't jump to the
+                            // latest): each garbage_collect must advance the epoch by exactly
+                            // EPOCH_TABLE_SIZE/4 so the Phase-1 table swaps stay in their cadence.
+                            for (uint64_t b = last_boundary + PERIOD; b <= boundary; b += PERIOD) {
+                                epoch_table->garbage_collect(get_epoch_num(b),
+                                                             trxManger->get_copy_active_trx_list());
+                            }
+                            last_boundary = boundary;
+                        } else {
+                            std::this_thread::sleep_for(std::chrono::microseconds(50));
+                        }
                     }
-                }
-            });
+                });
+            } catch (...) {
+                gc_started_.store(false, std::memory_order_release);  // roll back: no actor is running
+                throw;
+            }
         }
 
         void stop_background_gc() {
