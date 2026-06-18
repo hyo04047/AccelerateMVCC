@@ -6,6 +6,14 @@
 
 ---
 
+## ⏩ 재개 레시피 (새 세션은 이 순서로)
+1. **맥락 복원**: 이 파일(§0→§2→§3) → [findings.md](findings.md)(특히 **🔴 stage C 전 필수 3건**) → [progress-log.md](progress-log.md)·[design-gc.md](design-gc.md).
+2. **검증(맹신 금지)**: `git log --oneline -5` + `git status`로 HEAD가 §5와 맞는지 확인 → §1 레시피로 **Release + ASan + TSan** 빌드·테스트해 **9개 green** 확인(헤더 바뀌어 캐시 있어도 재빌드됨).
+3. **보고 후 결정**: 위 결과를 짧게 보고 → 다음 단계 **C(HTAP 벤치, 권장) vs 1c**를 사용자에게 권고와 함께 확인. C로 가면 §2 끝의 **🔴 stage C 전 필수 3건**부터.
+- 작업 방식: **작게 + 중간 체크포인트**(한 번에 몰아서 X) / 설명은 **알고리즘·설계 레벨**(함수·코드명 나열 X).
+
+---
+
 ## 0. 30초 요약
 - **프로젝트**: 디스크 DBMS(InnoDB) MVCC를 가속하는 in-memory 인덱스(Kuku hash → epoch 기반 interval list of undo metadata pointers) + deadzone GC. InnoDB undo는 안 건드리고 메타데이터 포인터만 들고 compact 유지.
 - **완료**: A ✅ · B ✅ · 1a ✅ · **1b ✅ (증분 0–5)** — marked-pointer 양 리스트(Harris) + 다중-producer EBR + 전용 BG GC 스레드 + 동시 multi-writer‖BG GC‖readers ASan(UAF 0)/TSan(race 0)/hang 0 검증.
