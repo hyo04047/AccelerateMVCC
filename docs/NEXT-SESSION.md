@@ -1,16 +1,16 @@
-# 다음 세션 핸드오프 — Step 1a-ii부터 시작
+# 다음 세션 핸드오프 — Step 1b부터 시작
 
 > **새 세션은 이 파일을 가장 먼저 읽으세요.** 이전 대화 없이 그대로 이어가기 위한 핸드오프.
 > 배경·설계근거 → [design-gc.md](design-gc.md) / 상태·로드맵 → [README.md](README.md) / 이력 → [progress-log.md](progress-log.md) / 이슈 → [findings.md](findings.md)
-> 작성: 2026-06-18
+> 갱신: 2026-06-18 (세션 2, Step 1a-ii 완료 후)
 
 ---
 
 ## 0. 30초 요약
 - **프로젝트**: 디스크 DBMS(InnoDB) MVCC를 가속하는 in-memory 인덱스(Kuku hash → epoch 기반 interval list of undo metadata pointers) + deadzone GC. InnoDB undo는 안 건드리고 메타데이터 포인터만 들고 compact 유지.
-- **완료**: A(빌드 부활) ✅ · B(단일스레드 정확성: snapshot/deadzone/GC sweep/search + correctness 테스트) ✅ · 동시성 **1a-i**(per-traversal EBR 프리미티브 구현·ASan/TSan 검증) ✅
-- **다음 = Step 1a-ii**: 검증된 EBR을 **GC·search에 통합**(단일 unlinker, 동시 reader 안전).
-- **결정은 다 끝났다(재논의 금지)** → §3. **작업 방식: 작게 + 중간 체크포인트**(한 번에 몰아서 X, 사용자가 개입할 틈을 줄 것).
+- **완료**: A(빌드 부활) ✅ · B(단일스레드 정확성) ✅ · 동시성 **1a-i**(per-traversal EBR 프리미티브·ASan/TSan) ✅ · **1a-ii**(EBR을 GC·search에 통합 + read-view 평탄화 fix, 동시 reader ASan/TSan 클린) ✅
+- **다음 = Step 1b**: 동시 unlink 일관성용 **marked pointer**(Harris) → 다중 unlinker/협조적 FG unlink. (현재는 GC 단일 unlinker 한정.)
+- **결정은 다 끝났다(재논의 금지)** → §3. **작업 방식: 작게 + 중간 체크포인트**(한 번에 몰아서 X, 사용자가 개입할 틈을 줄 것). **설명은 알고리즘/설계/구현 레이어로**(함수·코드 이름 나열 X — 사용자 요청).
 
 ---
 
@@ -26,32 +26,33 @@
 - **TSan**: 위에서 `address`→`thread`. (ASan·TSan 동시 불가, 별도 빌드 디렉토리.)
 - **EBR 단독 타깃**(kuku/mvcc 의존 없어 빠름): `--target ebr_test` → `~/acc-build-xxx/ebr_test`.
 - gcc 15.2 / cmake 4.2. 알려진 무해 경고: googletest `cmake_minimum_required` deprecation, FetchContent CMP0135.
+- **동시성 디버깅 교훈(세션2)**: hang vs 크래시 구분은 `timeout -s KILL N <bin>; echo $?`(124=hang). 행 상태 스택은 **gdb 설치됨**(`gdb -p <pid> -batch -ex 'thread apply all bt'`). ⚠️ **ASan 바이너리에 `stdbuf`(LD_PRELOAD) 쓰지 말 것** — "ASan runtime does not come first" 에러. ASan/TSan 리포트는 stderr라 `2>&1`로 받고, 리포트가 0건이면 메모리 오류/레이스 아님(→ hang 의심).
 
 ---
 
-## 2. Step 1a-ii 구현 계획 (구체적으로 — 이대로 하면 됨)
+## 2. Step 1b 계획 (다음 — 먼저 짧은 설계 패스 필요)
 
-**목표**: GC가 dead epoch을 inline `delete`하는 대신 **EBR로 retire**, search 순회를 **`Guard`로 보호**, BG/주기적 **`reclaim()`**. → 동시 reader가 GC가 미는 노드를 안전하게 읽음. (이번엔 **단일 unlinker** = GC 한 스레드. 다중 unlinker+marked pointer는 1b.)
+> 1a-ii와 달리 1b는 라인 단위까지 사전확정돼 있지 않음. **구현 전 설계 패스 먼저 하고 사용자 확인** 받을 것.
 
-**파일별 변경**:
-1. `include/epoch_table.h`
-   - `#include "epoch_reclaimer.h"`. `Epoch_table`에 멤버 `EpochReclaimer reclaimer_;` + 접근자 `EpochReclaimer& reclaimer() { return reclaimer_; }`.
-   - `garbage_collect`의 Phase 2: `delete epochNode; delete dead;` → `reclaimer_.retire([epochNode]{ delete epochNode; }); reclaimer_.retire([dead]{ delete dead; });`. empty table-node의 `delete first_node` / `delete node`도 retire로.
-   - `garbage_collect` 진입부(warm-up return 전·후 위치는 무방)에서 `reclaimer_.reclaim();` 호출(이전에 retire된 것 중 안전한 것 free).
-2. `include/accelerateMVCC.cpp`
-   - `search()`의 Phase 2 순회 직전에 `EpochReclaimer::Guard g(epoch_table->reclaimer());` (순회 동안 epoch_node 포인터를 잡으므로 guard가 그 구간을 덮어야 함). `search_operation`은 `search`를 호출하므로 그쪽만 감싸면 됨.
-   - (1a-ii는 search reader만 guard. insert의 concurrent 보호는 1b.)
-3. `correctness_test.cpp` — 신규 테스트:
-   - `GcEbrIntegration.SingleThread`: insert_trx 다수(예 10만) → GC가 retire/reclaim, 끝나고 `search` 정상 + 크래시 없음.
-   - `GcEbrIntegration.ConcurrentReaders`: **writer 1스레드**(insert_trx, 유일한 GC unlinker) + **reader N스레드**(guarded `search` 루프). **ASan(UAF 0) + TSan(race 0)**. 이게 EBR 통합의 핵심 검증(동시 reader가 GC free로부터 보호되는지).
-   - 기존 `MvccVisibility/GcDeadzone/GcEndToEnd` + 단일스레드 GC 테스트 전부 여전히 통과해야 함.
+**목표(알고리즘)**: 동시 **unlink 일관성**을 위한 **marked pointer(Harris linked list)**. 현재는 unlinker가 GC 한 스레드뿐이라 단일 CAS unlink가 안전하지만, **다중 unlinker(협조적 FG unlink) 또는 insert↔GC 동시 변형**에선 단일 CAS가 동시 삽입 노드를 유실시킴 → 노드의 next에 **mark 비트**를 세워 논리삭제(CAS) 후 물리 unlink(CAS), 순회자는 marked 노드를 skip/help. (근거: design-gc §, Herlihy&Shavit.)
 
-**주의/함정**:
-- EBR `retire/reclaim`은 **단일 producer 가정**(현재). 그래서 1a-ii 테스트는 **writer(=GC) 1스레드**로 유지. 멀티 writer 동시 GC는 1b(다중 producer retire + marked pointer 필요).
-- single-thread 테스트에선 GC·search가 안 겹쳐 reclaim이 즉시 다 됨 — EBR의 진짜 이득(동시 reader 보호)은 `ConcurrentReaders` 테스트로 본다.
-- guard 범위: epoch_node/undo_entry를 deref하는 전체 순회를 덮을 것(early return 경로 포함 — RAII라 자동).
+**설계(왜·무엇)**:
+- 논리=deadzone(어느 버전이 죽었나) / 물리 안전=EBR(이미 1a-ii 통합) / **물리 일관성=marked pointer(1b)** — 세 축이 분리됨.
+- 대상 포인터: interval-list `epoch_node.next`(reader가 순회) 및/또는 epoch_table wrapper 리스트. mark 비트는 포인터 하위 비트 packing 또는 `atomic<tagged_ptr>`.
 
-**완료 기준(DoD)**: 위 테스트 통과 + ASan/TSan 클린 + 기존 테스트 통과 → 커밋 → **멈추고 사용자에게 보고**.
+**구현 스케치(높은 수준)**:
+1. unlink를 2단계로: (a) 대상 노드 next에 mark CAS(논리삭제) → (b) 앞 노드 next를 대상의 next로 CAS(물리 분리, 실패 시 재시도/도움).
+2. `search` 순회가 marked 노드를 만나면 건너뛰고(가능하면 help-unlink), 그 다음에야 EBR `retire`.
+3. **선결 의존성**: EBR `retire/reclaim`은 현재 **단일 producer**(`epoch_reclaimer.h` 주석 참조). 다중 unlinker가 retire하려면 **lock-free retire 큐(다중 producer)**가 필요 → 1b 범위에 포함.
+
+**검증**: `GcEbrIntegration.ConcurrentReaders`를 **다중 writer/unlinker**로 확장(현재는 writer 1). ASan(UAF 0)+TSan(race 0)+무한루프/유실 없음(`timeout` 가드). 기존 8개 유지.
+
+**완료 기준(DoD)**: 설계 확인 → 구현 → 위 검증 통과 → 커밋(분리) → **멈추고 보고**.
+
+### (참고) 1a-ii에서 한 일 — 이미 완료, 재작업 불필요
+- GC `delete`→`reclaimer_.retire()`(epoch_node+wrapper/table-node), `search` 순회 `EpochReclaimer::Guard`, `garbage_collect` 진입부 `reclaim()`. `Epoch_table`에 `reclaimer_` 멤버+`reclaimer()` 접근자.
+- **read-view 평탄화**(선행 fix): `trx_t.active_trx_list`(재귀 `vector<trx_t>`) → `active_trx_ids`(`vector<uint64_t>`). 동시 트랜잭션 hang의 원인이었음. deadzone 소비부/`search_operation`/`GcDeadzone` 테스트가 평탄 id 사용.
+- reader는 `start_trx`/`commit_trx` 사용(`start_read_trx`는 내부에서 GC 트리거 → 단일 producer 전제 깨짐, 주의).
 
 ---
 
@@ -67,9 +68,9 @@
 - min/max 기반 tight segment 경계(§8.1), multi-granularity 노드, **(중장기) list→DIVA interval tree**(§9.3), 빈 snapshot fast-path, dummy-list 누수.
 
 ## 5. 현재 repo 상태
-- branch **master**, HEAD **58463ca**(docs), working tree **clean**. 원격 push 완료.
-- 핵심 파일: `include/epoch_table.h`(GC/deadzone) · `include/accelerateMVCC.cpp`(insert/search) · `include/trxManager.h`(trx/snapshot) · `include/interval_list.h`(epoch_node) · `include/epoch_reclaimer.h`(**EBR, 검증됨**) · `correctness_test.cpp` · `epoch_reclaimer_test.cpp` · `CMakeLists.txt`.
-- 빌드 산출물·`build/`·`.claude/`는 gitignore됨. WSL에 `~/acc-build*` 빌드 캐시 존재.
+- branch **master**, HEAD **e1a45c4**(1a-ii EBR 통합), working tree **clean**. **로컬 2커밋 미push**: `0797855`(read-view 평탄화) → `e1a45c4`(EBR 통합). 원격 push는 사용자 확인 후.
+- 핵심 파일: `include/epoch_table.h`(GC/deadzone + EBR retire/reclaim) · `include/accelerateMVCC.cpp`(insert/search + EBR Guard) · `include/trxManager.h`(trx/평탄 read-view) · `include/interval_list.h`(epoch_node) · `include/epoch_reclaimer.h`(**EBR, 검증·통합됨**) · `correctness_test.cpp`(GcEbrIntegration 포함) · `epoch_reclaimer_test.cpp` · `CMakeLists.txt`.
+- 빌드 산출물·`build/`·`.claude/`는 gitignore됨. WSL에 `~/acc-build`(Release)·`~/acc-build-asan`·`~/acc-build-tsan` 캐시 존재. gdb 설치됨.
 
 ## 6. 로드맵 위치
-A ✅ → B ✅ → **동시성 하드닝(1a-i ✅ → 1a-ii(여기) → 1b marked pointer → 1c 멀티스레드 테스트 녹색화)** → C(HTAP/long-txn 벤치, vDriver Zipfian+60s LLT 하니스 이식, chain-length CDF) → (최종) D(InnoDB 통합). 1차 목표 A+B+C, 최종 +D.
+A ✅ → B ✅ → **동시성 하드닝(1a-i ✅ → 1a-ii ✅ → 1b marked pointer(여기/다음) → 1c 멀티스레드 테스트 녹색화)** → C(HTAP/long-txn 벤치, vDriver Zipfian+60s LLT 하니스 이식, chain-length CDF) → (최종) D(InnoDB 통합). 1차 목표 A+B+C, 최종 +D.

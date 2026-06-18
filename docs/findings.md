@@ -37,6 +37,7 @@
 | 9 | [accelerateMVCC.cpp](../include/accelerateMVCC.cpp) | master에서 `epoch_table->insert` 주석처리 → GC와 interval list **단절**. `feat/deadzone-detector` 병합으로 해소 예정 | 🟡 | 브랜치에 수정본 존재 |
 | 10 | [google_test.cpp](../google_test.cpp) | **정확성 테스트 부재**: AccelerateMVCC 관련 테스트는 insert 타이밍 벤치 + `ASSERT_EQ(true,true)` 뿐. search/GC/deadzone 검증 0건 | 🟠 | 미해결 |
 | 11 | `build/`, `Kuku/build/` | CMake 빌드 산출물이 git에 커밋됨 → `.gitignore` + 추적 해제 필요 | 🟡 | 미해결 |
+| 13 | [trxManager.h](../include/trxManager.h) | **read-view 무한중첩 hang**: `trx_t.active_trx_list`가 `vector<trx_t>`(값) 재귀 → 동시 트랜잭션이 겹치면 스냅샷 복사가 세대마다 폭발해 `copy_active_trx_list()`가 끝나지 않음(동시성 테스트 hang). B단계 #7 수정(복사 보존)이 재귀를 활성화. 단일 활성 트랜잭션에선 무해해 그동안 잠복 | 🟠 | ✅ 1a-ii 해결 |
 
 ## 테스트 현황
 - Kuku 라이브러리 자체 테스트(common/table/locfunc/value)는 다수 존재, 정상으로 보임.
@@ -79,3 +80,12 @@ DIVA/vDriver deadzone 모델을 멀티에이전트로 정독·분석한 뒤 snap
 **deadzone 출처(provenance)**: vDriver 소스에서 **추출·간소화**(7월 deck "extract dead zone detecting part from vDriver InnoDB part", 정승연 담당). 판정식이 vDriver `IsInDeadZone`(`xmin>left && xmax<right`)과 **동일** → **vDriver 파생** 확정(클린룸 재구현 아님). vDriver 출처·라이선스(PostgreSQL License) 표기 권장. 공개 DIVA repo 없음. 상세 [design-gc.md](design-gc.md) §7.
 
 **B에서 의도적으로 미룬 것**: 멀티스레드 GC 동시성(reclamation/RCU 부재 → `*multi_thread*_trx` 미실행), 빈 snapshot fast-path(Q2), dummy-list 누수, Kuku `LocFuncTests.Randomness`(라이브러리 자체 이슈).
+
+## 동시성 하드닝 — EBR 통합(1a-ii) 해결 내역 — 2026-06-18
+검증된 per-traversal EBR(`epoch_reclaimer.h`, 1a-i)을 GC·search에 통합하고, 동시 reader 하에서 ASan/TSan으로 검증.
+- ✅ **EBR 통합**: GC prune 시 `delete`→`reclaimer_.retire()`(epoch_node + wrapper/table-node), `search` 순회를 `EpochReclaimer::Guard`로 보호, `garbage_collect` 진입부 `reclaim()`. 동시 reader가 GC가 미는 노드를 안전하게 읽음(논리=deadzone / 물리=EBR). 커밋 `e1a45c4`.
+- ✅ **#13 read-view 평탄화**: `trx_t`의 read-view를 재귀 `vector<trx_t>` → 평탄 `vector<uint64_t> active_trx_ids`로. deadzone 소비부(`generate_dead_zone`/`can_pruning`/`get_dead_up_limit_id`)와 `search_operation`·`GcDeadzone` 테스트를 평탄 id로 갱신. 커밋 `0797855`. **이 hang이 동시성을 막던 진짜 벽**이었고 EBR과 무관(트랜잭션 레이어 결함). gdb 스택 덤프로 원인 규명.
+
+**테스트**: `GcEbrIntegration.SingleThread`(retire/reclaim 배선) + `ConcurrentReaders`(writer 1=GC + reader 4 guarded search) — Release/ASan/TSan 전부 클린(총 8개). 진단 도구 gdb를 WSL에 설치.
+
+**1a-ii 단계 제약(의도)**: 단일 unlinker(=GC 한 스레드)만 retire/reclaim(EBR 단일 producer). reader는 GC를 트리거하는 `start_read_trx` 대신 `start_trx`를 써 단일 producer 전제를 지킴. 다중 unlinker/협조적 FG unlink는 **1b(marked pointer, Harris)**.
