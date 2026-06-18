@@ -258,7 +258,19 @@ namespace mvcc {
                     // first_node is a stable dummy head; walk forward keeping prev_node so we can splice.
                     epoch_node_wrapper *prev_node = table_node->first_node.load();
                     for (epoch_node_wrapper *node = prev_node->next.ptr(); node != nullptr; ) {
-                        if (can_operate_gc(node, deadzone)) {
+                        bool prune = can_operate_gc(node, deadzone);
+                        if (prune) {
+                            // Single-writer 1b: never prune a record's HEAD epoch. header->next is the
+                            // only interval-list word insert and GC could write concurrently, and the
+                            // newest epoch is normally live. Skipping it makes insert||GC touch disjoint
+                            // words (no insert-side hardening). A dead head is reclaimed on a later pass
+                            // once a newer epoch is prepended. (Multi-writer hardening = increment 5.)
+                            epoch_node *en = node->epoch;
+                            if (en != nullptr && en->header != nullptr && en->header->next.ptr() == en) {
+                                prune = false;
+                            }
+                        }
+                        if (prune) {
                             epoch_node_wrapper *dead = node;
                             epoch_node_wrapper *wsucc = node->next.ptr();
                             dead->next.set_mark(wsucc);                  // logical splice (Harris mark)

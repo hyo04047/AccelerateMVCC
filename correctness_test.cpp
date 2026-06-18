@@ -114,22 +114,26 @@ TEST(GcDeadzone, EmptySnapshotPrunesNothing) {
 // ---------------------------------------------------------------------------
 TEST(GcEndToEnd, HeavyChurnNoCrash) {
     Accelerate_mvcc mvcc(4);
+    mvcc.start_background_gc();                   // dedicated BG GC prunes concurrently
     for (uint64_t i = 0; i < 100000; i++) {
-        mvcc.insert_trx(i % 4);   // triggers garbage_collect every 2500 trx
+        mvcc.insert_trx(i % 4);
     }
+    mvcc.stop_background_gc();
     SUCCEED();
 }
 
 TEST(GcEndToEnd, LongLivedReaderSurvivesGc) {
     Accelerate_mvcc mvcc(4);
+    mvcc.start_background_gc();
     trx_t* llt = mvcc.start_read_trx();          // early, long-lived snapshot
     for (uint64_t i = 0; i < 100000; i++) {
         mvcc.insert_trx(i % 4);
     }
     uint64_t s = 0, p = 0, o = 0;
-    // Must not crash with a stale snapshot held open across many GC cycles.
+    // Must not crash with a stale snapshot held open across many concurrent GC cycles.
     (void) mvcc.search_operation(1, 1, llt, s, p, o);
     mvcc.end_read_trx(llt);
+    mvcc.stop_background_gc();
     SUCCEED();
 }
 
@@ -146,7 +150,8 @@ TEST(GcEndToEnd, LongLivedReaderSurvivesGc) {
 TEST(GcEbrIntegration, SingleThread) {
     Accelerate_mvcc mvcc(4);
     for (uint64_t i = 0; i < 100000; i++) {
-        mvcc.insert_trx(i % 4);   // garbage_collect retires + reclaims periodically
+        mvcc.insert_trx(i % 4);
+        if (i % 2500 == 0) mvcc.run_gc_once();   // deterministic single-threaded GC (retire + reclaim)
     }
     uint64_t s = 0, p = 0, o = 0;
     trx_t* rd = mvcc.start_trx();
@@ -155,18 +160,17 @@ TEST(GcEbrIntegration, SingleThread) {
     SUCCEED();
 }
 
-// Core 1a-ii validation: ONE writer (the sole GC unlinker/retirer, satisfying
-// EBR's single-producer invariant) churns the list while N readers run guarded
-// searches concurrently. The Guard must keep GC-retired nodes alive for the
-// span of each traversal. Run under ASan (use-after-free == 0) and TSan
-// (data race == 0).
+// Core 1b validation (stage 1b increment 4): the dedicated BG GC thread prunes
+// concurrently while ONE writer churns the list (head-inserts) and N readers run
+// guarded searches. EBR keeps GC-retired nodes alive for each traversal's span;
+// the marked-pointer lists + GC-skips-head make BG-GC || insert || read touch
+// disjoint words. Run under ASan (use-after-free == 0) and TSan (data race == 0).
 //
-// NOTE: readers use start_trx()/commit_trx(), NOT start_read_trx(): the latter
-// can itself trigger garbage_collect(), which would make GC multi-producer and
-// break the single-producer retire/reclaim assumption. Only the writer below
-// is allowed to drive GC in this stage.
+// Single writer in this stage: multi-writer lock-free insert hardening is
+// increment 5. Readers use start_trx()/commit_trx() (no GC side effects).
 TEST(GcEbrIntegration, ConcurrentReaders) {
     Accelerate_mvcc mvcc(4);
+    mvcc.start_background_gc();              // dedicated BG GC actor (the only unlinker)
     std::atomic<bool> done{false};
     std::atomic<long> reads{0};
 
@@ -183,11 +187,12 @@ TEST(GcEbrIntegration, ConcurrentReaders) {
     std::vector<std::thread> readers;
     for (int i = 0; i < 4; i++) readers.emplace_back(reader);
 
-    for (uint64_t i = 0; i < 100000; i++) {   // single writer == single GC actor
+    for (uint64_t i = 0; i < 100000; i++) {   // single writer; BG GC prunes concurrently
         mvcc.insert_trx(i % 4);
     }
     done.store(true, std::memory_order_release);
     for (auto& t : readers) t.join();
+    mvcc.stop_background_gc();
 
     EXPECT_GT(reads.load(), 0);
 }
