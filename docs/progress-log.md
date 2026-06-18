@@ -13,7 +13,10 @@
 **증분 0 ✅** `include/marked_ptr.h`(Harris mark-bit 헬퍼: pack/ptr_of/mark_of/cas/set_mark) + 정렬 static_assert + 단위테스트. 리스트 미배선=동작 변경 0. Release/ASan green. 커밋 `0e98a4c`.
 **증분 1 ✅** EBR retire를 다중-producer(lock-free Treiber 스택)로, reclaim을 try-lock 단일소비자로(consumer-local survivors). 적대적 검증이 잡은 reclaim 동시진입 이중free 제거. 4 retirer + 동시 reclaim + 3 reader 스트레스 — Release/ASan(누수 탐지 포함)/TSan green, deleter 정확히 1회. 커밋 `63ef424`.
 
-**증분 순서·결정 상세 = [NEXT-SESSION.md](NEXT-SESSION.md) §2.** 다음 = 증분 2(인터벌 리스트 Harris: header 역포인터 + marked-pointer + GC unlink Harris + search skip + guard + undo 단일 deleter).
+**증분 2 ✅**(`ecd46a4`) 인터벌 리스트 Harris 전환: `epoch_node.next`/`header.next`를 `MarkedPtr`로, `prev` 제거(forward-only), `header` 역포인터 추가(GC가 header에서 predecessor forward-scan + head-prune dangling 수리), GC unlink mark→splice, search marked skip, undo 체인 단일 deleter(누수 해소). 8개 회귀 Release/ASan green.
+**증분 3 ✅**(`c7993cd`) wrapper 리스트 Harris 전환: `epoch_node_wrapper.next` `MarkedPtr`, GC splice mark→store, insert head-insert MarkedPtr CAS. 8개 회귀 Release/ASan/TSan(reader-search‖GC-unlink) green.
+
+**증분 순서·결정 상세 = [NEXT-SESSION.md](NEXT-SESSION.md) §2.** 다음 = 증분 4(전용 BG GC 스레드 + 인라인 트리거 제거 + 동시 테스트 + 적대적 동시성 하드닝 → 동시성 최종 검증, 1b 완료).
 
 ---
 

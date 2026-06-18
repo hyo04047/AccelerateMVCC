@@ -8,8 +8,8 @@
 
 ## 0. 30초 요약
 - **프로젝트**: 디스크 DBMS(InnoDB) MVCC를 가속하는 in-memory 인덱스(Kuku hash → epoch 기반 interval list of undo metadata pointers) + deadzone GC. InnoDB undo는 안 건드리고 메타데이터 포인터만 들고 compact 유지.
-- **완료**: A ✅ · B ✅ · 1a-i(EBR 프리미티브) ✅ · 1a-ii(EBR 통합 + read-view 평탄화) ✅ · **1b 설계 패스 + 증분 0(marked-ptr 헬퍼)·1(다중-producer EBR) ✅**
-- **다음 = Step 1b 증분 2**: 인터벌 리스트 Harris 전환(header 역포인터 + marked-pointer + GC unlink Harris + search skip + guard + undo 단일 deleter). 그 뒤 증분 3(wrapper 리스트) → 4(전용 BG GC 스레드 + 동시 테스트). §2 참조.
+- **완료**: A ✅ · B ✅ · 1a-i ✅ · 1a-ii ✅ · **1b 설계 패스 + 증분 0·1·2(인터벌 리스트 Harris)·3(wrapper 리스트 Harris) ✅** (전부 단일스레드 회귀 + ASan/TSan green)
+- **다음 = Step 1b 증분 4**: 전용 BG GC 스레드 도입 + 인라인 GC 트리거 제거 + 동시 테스트(BG GC ‖ insert ‖ read) + 적대적 검증 동시성 하드닝(insert/GC Guard, append 재검증, splice CAS) → **동시성 최종 검증, 1b 완료**. §2 참조.
 - **GC는 단일 BG 액터(전용 스레드)** 로 — "동시 GC"는 인라인 트리거 부작용이지 설계가 아님. FG 협조 unlink는 1c(additive).
 - **결정은 다 끝났다(재논의 금지)** → §3. **작업 방식: 작게 + 중간 체크포인트**(한 번에 몰아서 X, 사용자가 개입할 틈을 줄 것). **설명은 알고리즘/설계/구현 레이어로**(함수·코드 이름 나열 X — 사용자 요청).
 
@@ -44,11 +44,12 @@
 **증분 순서(각 커밋 분리, 매번 ASan/TSan 또는 단일스레드 회귀 green)**:
 - **0 ✅** marked-pointer 헬퍼 `include/marked_ptr.h`(pack/ptr_of/mark_of/cas/set_mark) + 정렬 static_assert + 단위테스트 `marked_ptr_test.cpp` (커밋 `0e98a4c`)
 - **1 ✅** 다중-producer EBR retire(lock-free Treiber 스택) + try-lock 단일소비자 reclaim(consumer-local survivors) + 다중-producer 스트레스 테스트 (커밋 `63ef424`)
-- **2 (다음, 핵심)** 인터벌 리스트 Harris 전환: epoch_node에 `header` 역포인터(insert가 설정) + head-prune 시 `header->next` CAS; `epoch_node.next`/`interval_list_header.next`를 `MarkedPtr`로(모든 접근 accessor 경유 — raw deref는 와일드포인터); GC 인터벌 unlink를 mark→predecessor CAS(predecessor 위치는 `prev`로 파악, 권위 체인은 forward); **search가 marked epoch skip**; GC·insert를 **EBR Guard** 안에서; undo 체인 **단일 deleter**(현재 누수 해소). GC는 아직 메서드(단일스레드 구동) → 기존 8개 회귀 green으로 검증.
-- **3** wrapper 리스트(epoch_table) Harris 전환: `epoch_node_wrapper.next` `MarkedPtr` + GC wrapper splice를 dummy head에서 CAS + insert wrapper head-CAS가 marked 인지. 단일스레드 green.
-- **4** **전용 BG GC 스레드** 도입(`Accelerate_mvcc` 수명관리) + `insert_trx`/`start_read_trx`/`dummy_read_trx`의 **인라인 GC 트리거 제거** + 동시 테스트(BG GC ‖ insert ‖ read, 같은 레코드) ASan(UAF 0)/TSan(race 0)/진행성(`timeout`). ← **동시성 최종 검증**. 끝나면 1b 완료.
+- **2 ✅**(`ecd46a4`) 인터벌 리스트 Harris 전환: epoch_node에 `header` 역포인터(insert가 설정) + head-prune 시 `header->next` store(dangling 잠복버그 수리, GC가 header에서 forward-scan으로 predecessor 찾음 — `prev` 완전 제거, forward-only); `epoch_node.next`/`interval_list_header.next`를 `MarkedPtr`로; GC unlink mark→splice; **search가 marked epoch skip**; undo 체인 **단일 deleter**(누수 해소); `update_epoch_node` plain store로 단순화. 8개 회귀 Release/ASan green.
+- **3 ✅**(`c7993cd`) wrapper 리스트(epoch_table) Harris 전환: `epoch_node_wrapper.next` `MarkedPtr` + GC wrapper splice mark→store + insert head-insert MarkedPtr CAS. 8개 회귀 Release/ASan/**TSan**(reader-search‖GC-unlink) green.
+- **4 (다음)** **전용 BG GC 스레드** 도입(`Accelerate_mvcc` 수명관리) + `insert_trx`/`start_read_trx`/`dummy_read_trx`의 **인라인 GC 트리거 제거** + 동시 테스트(BG GC ‖ insert ‖ read, 같은 레코드) ASan(UAF 0)/TSan(race 0)/진행성(`timeout`). ← **동시성 최종 검증**. 끝나면 1b 완료. **여기서 동시성 하드닝(아래 ※)을 함께 반영** — inc2/3는 단일스레드라 GC 메서드의 store splice를 썼지만, BG 스레드로 GC가 insert와 진짜 동시 실행되면 splice를 CAS+재시도로, insert/GC를 EBR Guard로 감싸고, 적대적 검증 필수사항을 반영해야 함.
+  - ※ 적대적 검증 필수사항: insert도 Guard(ABA/UAF) · "기존 epoch에 undo 추가" 경로 쓰기 전 epoch 살아있나 재검증 + `count/min/max` 원자화 · GC wrapper splice store→CAS · retire stamp는 물리 unlink CAS **이후**.
 
-**적대적 검증이 잡은 필수사항(증분 2에 반영)**: insert도 Guard 필요(ABA/UAF) · "기존 epoch에 undo 추가" 경로는 쓰기 전 epoch 살아있나 재검증 + `count/min/max` 원자화 · retire stamp는 물리 unlink CAS **이후** · `next_epoch_num`을 head-CAS 재시도에 커플링.
+**적대적 검증이 잡은 필수사항(증분 4에 반영 — inc2/3는 단일스레드라 GC 메서드 store splice 사용, 아직 미적용)**: insert도 Guard 필요(ABA/UAF) · "기존 epoch에 undo 추가" 경로는 쓰기 전 epoch 살아있나 재검증 + `count/min/max` 원자화 · GC splice store→CAS · retire stamp는 물리 unlink CAS **이후** · `next_epoch_num`을 head-CAS 재시도에 커플링.
 
 **1b 밖(1c 선결로 미룸)**: `my_slot()` 257번째 스레드 aliasing, empty-table-node reclaim TOCTOU sealing — FG-by-readers가 스레드 수 늘릴 때 필요.
 
@@ -71,8 +72,8 @@
 - min/max 기반 tight segment 경계(§8.1), multi-granularity 노드, **(중장기) list→DIVA interval tree**(§9.3), 빈 snapshot fast-path, dummy-list 누수.
 
 ## 5. 현재 repo 상태
-- branch **master**, HEAD **63ef424**(1b 증분 1), working tree **clean**. 원격(origin/master)은 `c4b474d`까지 push됨 → **로컬 2커밋 미push**: `0e98a4c`(1b inc0 marked-ptr 헬퍼) → `63ef424`(1b inc1 다중-producer EBR). push는 사용자 확인 후.
-- 신규 파일: `include/marked_ptr.h`, `marked_ptr_test.cpp`. CMake에 `marked_ptr_test` 타깃 추가.
+- branch **master**, HEAD **c7993cd**(1b 증분 3), working tree **clean**. 원격(origin/master)은 `c4b474d`까지 → **로컬 5커밋 미push**: `0e98a4c`(inc0) `63ef424`(inc1) `d6d2616`(docs) `ecd46a4`(inc2) `c7993cd`(inc3). push는 사용자 확인 후.
+- 신규 파일: `include/marked_ptr.h`, `marked_ptr_test.cpp`. CMake에 `marked_ptr_test` 타깃. `epoch_node`에서 `prev` 제거·`header` 추가, `next`/wrapper `next`는 `MarkedPtr`.
 - 핵심 파일: `include/epoch_table.h`(GC/deadzone + EBR retire/reclaim) · `include/accelerateMVCC.cpp`(insert/search + EBR Guard) · `include/trxManager.h`(trx/평탄 read-view) · `include/interval_list.h`(epoch_node) · `include/epoch_reclaimer.h`(**EBR, 검증·통합됨**) · `correctness_test.cpp`(GcEbrIntegration 포함) · `epoch_reclaimer_test.cpp` · `CMakeLists.txt`.
 - 빌드 산출물·`build/`·`.claude/`는 gitignore됨. WSL에 `~/acc-build`(Release)·`~/acc-build-asan`·`~/acc-build-tsan` 캐시 존재. gdb 설치됨.
 
