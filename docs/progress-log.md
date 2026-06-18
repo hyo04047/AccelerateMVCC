@@ -18,7 +18,9 @@
 
 **증분 4 ✅**(`9fcac82`) 전용 BG GC 스레드(`Accelerate_mvcc`가 start/stop 수명관리, dtor join) + 인라인 GC 트리거 제거(단일 GC 액터 → "동시 GC" 부작용 소멸) + `run_gc_once`(결정적). **GC가 head epoch skip** → 단일 writer에서 insert‖GC가 disjoint word만 만져 insert 하드닝 불필요. 테스트가 진짜 BG GC ‖ writer ‖ readers로 동작: 8개 Release(hang 0)/ASan(UAF 0)/TSan(race 0) green. **단일-writer 1b 동시성 검증 완료.**
 
-**증분 순서·결정 상세 = [NEXT-SESSION.md](NEXT-SESSION.md) §2.** 다음 = 증분 5(다중 writer lock-free 하드닝: insert head-link CAS-재시도 + insert/GC Guard + append 재검증 + count/min/max 원자화 + GC splice CAS → 완전한 1b. 또는 단일-writer로 1b 완료 간주 — 범위 결정).
+**증분 5 ✅**(`b15d60e`) 다중 writer 검증(production 변경 0): `ConcurrentWritersReadersBgGc`(4 writer+3 reader+BG GC, 8레코드 12만 insert) Release/ASan/TSan green. 큰 하드닝 불필요 — 같은-레코드 insert는 레코드 락이 직렬화(=정상 MVCC), 다른-레코드 disjoint, wrapper는 Treiber CAS, insert‖GC는 GC-skips-head 커버.
+
+**→ Step 1b 완료**: lock-free read + 전용 BG GC 스레드 + 동시 multi-writer가 marked-pointer 버전/wrapper 리스트 + EBR 회수 위에서 ASan(UAF 0)/TSan(race 0)/진행성 검증. 잔여(1c/후속): FG 협조 unlink, my_slot aliasing, empty-node sealing, GC-skips-head dead-head 경미 누수. **다음 = C(벤치) 또는 1c** — 상세 [NEXT-SESSION.md](NEXT-SESSION.md) §2·§6.
 
 ---
 

@@ -1,4 +1,4 @@
-# 다음 세션 핸드오프 — Step 1b 진행 중 (단일-writer 완료, 다음=증분 5 다중 writer)
+# 다음 세션 핸드오프 — Step 1b 완료, 다음은 C(벤치) 또는 1c(FG 협조 unlink)
 
 > **새 세션은 이 파일을 가장 먼저 읽으세요.** 이전 대화 없이 그대로 이어가기 위한 핸드오프.
 > 배경·설계근거 → [design-gc.md](design-gc.md) / 상태·로드맵 → [README.md](README.md) / 이력 → [progress-log.md](progress-log.md) / 이슈 → [findings.md](findings.md)
@@ -8,8 +8,8 @@
 
 ## 0. 30초 요약
 - **프로젝트**: 디스크 DBMS(InnoDB) MVCC를 가속하는 in-memory 인덱스(Kuku hash → epoch 기반 interval list of undo metadata pointers) + deadzone GC. InnoDB undo는 안 건드리고 메타데이터 포인터만 들고 compact 유지.
-- **완료**: A ✅ · B ✅ · 1a-i ✅ · 1a-ii ✅ · **1b 증분 0·1·2·3·4 ✅** — marked-pointer 양 리스트 + 다중-producer EBR + **전용 BG GC 스레드**(동시 BG GC ‖ 단일 writer ‖ readers, ASan/TSan/hang 0 검증). **단일-writer 1b 동시성 완료.**
-- **다음 = Step 1b 증분 5(다중 writer lock-free 하드닝)**: insert head-link CAS-재시도 + insert/GC Guard + append 재검증 + count/min/max 원자화 + GC splice CAS. 끝나면 완전한 1b. (또는 단일-writer로 1b 완료 간주 — 범위 결정.) §2 참조.
+- **완료**: A ✅ · B ✅ · 1a ✅ · **1b ✅ (증분 0–5)** — marked-pointer 양 리스트(Harris) + 다중-producer EBR + 전용 BG GC 스레드 + 동시 multi-writer‖BG GC‖readers ASan(UAF 0)/TSan(race 0)/hang 0 검증.
+- **다음 = §6 로드맵**: **C(HTAP/long-txn 벤치** — vDriver Zipfian + 60s LLT 하니스 이식, chain-length CDF) 또는 **1c(FG 협조 unlink** — reader도 dead epoch 청소, 공유 deadzone 디스크립터 필요). 범위/우선순위 결정 필요.
 - **GC는 단일 BG 액터(전용 스레드)** 로 — "동시 GC"는 인라인 트리거 부작용이지 설계가 아님. FG 협조 unlink는 1c(additive).
 - **결정은 다 끝났다(재논의 금지)** → §3. **작업 방식: 작게 + 중간 체크포인트**(한 번에 몰아서 X, 사용자가 개입할 틈을 줄 것). **설명은 알고리즘/설계/구현 레이어로**(함수·코드 이름 나열 X — 사용자 요청).
 
@@ -47,7 +47,9 @@
 - **2 ✅**(`ecd46a4`) 인터벌 리스트 Harris 전환: epoch_node에 `header` 역포인터(insert가 설정) + head-prune 시 `header->next` store(dangling 잠복버그 수리, GC가 header에서 forward-scan으로 predecessor 찾음 — `prev` 완전 제거, forward-only); `epoch_node.next`/`interval_list_header.next`를 `MarkedPtr`로; GC unlink mark→splice; **search가 marked epoch skip**; undo 체인 **단일 deleter**(누수 해소); `update_epoch_node` plain store로 단순화. 8개 회귀 Release/ASan green.
 - **3 ✅**(`c7993cd`) wrapper 리스트(epoch_table) Harris 전환: `epoch_node_wrapper.next` `MarkedPtr` + GC wrapper splice mark→store + insert head-insert MarkedPtr CAS. 8개 회귀 Release/ASan/**TSan**(reader-search‖GC-unlink) green.
 - **4 ✅**(`9fcac82`) **전용 BG GC 스레드**(`Accelerate_mvcc`가 `start/stop_background_gc`로 수명관리, dtor join; 옛 inline 트리거와 같은 trx-id 케이던스) + `insert_trx`/`start_read_trx`/`dummy_read_trx`의 **인라인 GC 트리거 제거**(단일 GC 액터 → "동시 GC" 부작용 소멸) + `run_gc_once()`(결정적 단일스레드용). **GC가 head epoch을 skip** → 단일 writer에서 insert‖GC가 disjoint word만 만져 insert-side 하드닝 불필요(wrapper 리스트는 insert=현재 버킷/GC=long_live 버킷이라 애초 disjoint). 테스트: `ConcurrentReaders`=BG GC‖1 writer‖4 readers, `GcEndToEnd.*` BG GC 켬, `SingleThread`=run_gc_once. 8개 Release(hang 없음)/ASan(UAF 0)/TSan(race 0) green. → **단일-writer 1b 동시성 검증 완료.**
-- **5 (다음) = 다중 writer lock-free 하드닝** (이게 끝나야 "insert lock-free" 완전한 1b): 여러 writer가 동시에 insert해도 안전하도록 — insert head-link CAS-재시도 + insert/GC **EBR Guard** + "기존 epoch에 undo 추가" 경로 쓰기 전 epoch 살아있나 **재검증** + `count/min/max` **원자화** + `next_epoch_num` head-CAS 재시도 **커플링** + GC head-prune 재개(header->next CAS) + GC splice store→**CAS**. 테스트: 다중 writer ‖ BG GC ‖ readers, 같은 레코드, ASan/TSan/진행성. (적대적 검증 §의 필수사항이 전부 여기로.) ※ 단일-writer로 충분하다고 보면 1b를 inc4에서 완료로 간주하고 다중 writer를 후속(평가단계)으로 미루는 것도 가능 — 범위 결정 사항.
+- **5 ✅**(`b15d60e`) **다중 writer 검증** (production 변경 0): `ConcurrentWritersReadersBgGc`(4 writer + 3 reader + BG GC, 8 레코드 12만 insert) Release/ASan/TSan green. **큰 하드닝이 불필요한 이유**: 같은-레코드 insert는 레코드 락(`get_mutex`, = InnoDB record write-lock)이 직렬화, 다른-레코드는 disjoint interval list, 공유 wrapper 버킷은 Treiber CAS, insert‖GC는 GC-skips-head가 커버 → 레코드당 ≤1 writer라 단일-writer 분석 그대로. (예고했던 head-link CAS·append 재검증·count 원자화는 *같은 레코드도* lock-free로 만들 때 = 레코드 락 제거 시에만 필요 — lock-free 버전 인덱스와 직교, 1b 밖.)
+
+**→ Step 1b 완료**: lock-free read + 전용 BG GC 스레드 + 동시 writer가 marked-pointer 버전/wrapper 리스트 + EBR 회수 위에서 ASan(UAF 0)/TSan(race 0)/진행성 검증됨. 잔여(1c/후속): FG-협조-unlink(reader도 청소), `my_slot()` 257-thread aliasing, empty-table-node sealing, GC-skips-head로 안 지워지는 dead head(다음 prepend 때 회수 — 경미). 다음 단계는 §6 로드맵(C 벤치 또는 1c).
 
 **1b 밖(1c 선결로 미룸)**: `my_slot()` 257번째 스레드 aliasing, empty-table-node reclaim TOCTOU sealing — FG-by-readers가 스레드 수 늘릴 때 필요.
 
@@ -72,10 +74,11 @@
 - min/max 기반 tight segment 경계(§8.1), multi-granularity 노드, **(중장기) list→DIVA interval tree**(§9.3), 빈 snapshot fast-path, dummy-list 누수.
 
 ## 5. 현재 repo 상태
-- branch **master**, HEAD **= 1b 증분 4 (`9fcac82`) + 이 docs 커밋**, working tree **clean**. 원격(origin/master)은 `c4b474d`까지 → **로컬 미push**: inc0 `0e98a4c` · inc1 `63ef424` · docs `d6d2616` · inc2 `ecd46a4` · inc3 `c7993cd` · docs `de63973` · inc4 `9fcac82` (+ docs). push는 사용자 확인 후.
+- branch **master**, HEAD **= 1b 증분 5 (`b15d60e`) + 이 docs 커밋**, working tree **clean**. 원격(origin/master)은 `c4b474d`까지 → **로컬 미push 10커밋**(inc0 `0e98a4c` … inc5 `b15d60e` + docs). push는 사용자 확인 후.
 - 신규 파일: `include/marked_ptr.h`, `marked_ptr_test.cpp`(+CMake 타깃). `epoch_node`: `prev` 제거·`header` 추가·`next` `MarkedPtr`. `epoch_node_wrapper.next` `MarkedPtr`. `Accelerate_mvcc`: `gc_thread_`/`start_background_gc`/`stop_background_gc`/`run_gc_once`/dtor.
 - 핵심 파일: `include/epoch_table.h`(GC/deadzone + EBR retire/reclaim) · `include/accelerateMVCC.cpp`(insert/search + EBR Guard) · `include/trxManager.h`(trx/평탄 read-view) · `include/interval_list.h`(epoch_node) · `include/epoch_reclaimer.h`(**EBR, 검증·통합됨**) · `correctness_test.cpp`(GcEbrIntegration 포함) · `epoch_reclaimer_test.cpp` · `CMakeLists.txt`.
 - 빌드 산출물·`build/`·`.claude/`는 gitignore됨. WSL에 `~/acc-build`(Release)·`~/acc-build-asan`·`~/acc-build-tsan` 캐시 존재. gdb 설치됨.
 
 ## 6. 로드맵 위치
-A ✅ → B ✅ → **동시성 하드닝(1a-i ✅ → 1a-ii ✅ → 1b marked pointer(여기/다음) → 1c 멀티스레드 테스트 녹색화)** → C(HTAP/long-txn 벤치, vDriver Zipfian+60s LLT 하니스 이식, chain-length CDF) → (최종) D(InnoDB 통합). 1차 목표 A+B+C, 최종 +D.
+A ✅ → B ✅ → **동시성 하드닝(1a-i ✅ → 1a-ii ✅ → 1b marked pointer + 전용 BG GC ✅) → [선택] 1c FG 협조 unlink** → C(HTAP/long-txn 벤치, vDriver Zipfian+60s LLT 하니스 이식, chain-length CDF) → (최종) D(InnoDB 통합). 1차 목표 A+B+C, 최종 +D.
+- **1b 완료**, 다음 우선순위 미정: **C(벤치/결과 산출)** 가 1차 목표(A+B+C)에 직접 기여 / **1c**는 동시성 완성도(reader 협조 청소)지만 1차 목표 밖. → C를 먼저 권장(졸프 결과물), 1c는 여력 시.
