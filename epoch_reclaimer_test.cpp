@@ -69,3 +69,44 @@ TEST(EpochReclaimer, ConcurrentReadersNoUseAfterFree) {
     delete shared.load();
     EXPECT_GT(reads.load(), 0);
 }
+
+// Stage 1b: multi-producer retire + try-lock single-consumer reclaim. Many
+// threads retire concurrently while several also call reclaim() concurrently
+// (the try-lock must serialize consumers so nothing is double-freed), with
+// guarded readers running throughout. Under ASan (UAF/leak) and TSan (race) this
+// must be clean, and every retired deleter must run EXACTLY once.
+TEST(EpochReclaimer, MultiProducerRetireSingleConsumerReclaim) {
+    EpochReclaimer r;
+    std::atomic<long> retired{0};
+    std::atomic<long> freed{0};
+    std::atomic<bool> done{false};
+
+    auto reader = [&] {
+        while (!done.load(std::memory_order_acquire)) {
+            EpochReclaimer::Guard g(r);          // repeated short guarded sections
+            std::this_thread::yield();
+        }
+    };
+
+    const int W = 4, N = 20000;
+    auto worker = [&] {
+        for (int i = 0; i < N; i++) {
+            r.retire([&freed] { freed.fetch_add(1, std::memory_order_relaxed); });
+            retired.fetch_add(1, std::memory_order_relaxed);
+            if ((i & 31) == 0) r.reclaim();      // concurrent consumers -> exercise try-lock
+        }
+    };
+
+    std::vector<std::thread> readers, workers;
+    for (int i = 0; i < 3; i++) readers.emplace_back(reader);
+    for (int i = 0; i < W; i++) workers.emplace_back(worker);
+
+    for (auto& t : workers) t.join();
+    done.store(true, std::memory_order_release);
+    for (auto& t : readers) t.join();
+
+    while (r.pending() != 0) r.reclaim();        // quiescent -> drain remaining
+    EXPECT_EQ(retired.load(), static_cast<long>(W) * N);
+    EXPECT_EQ(freed.load(), retired.load());     // each retired deleter ran exactly once
+    EXPECT_EQ(r.pending(), 0u);
+}
