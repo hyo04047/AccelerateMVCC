@@ -30,9 +30,14 @@ namespace mvcc {
 
     struct trx_t{
         uint64_t trx_id;
-        std::vector<trx_t> active_trx_list;
+        // Read-view snapshot: ids of transactions that were active when this one
+        // started. Flat list of ids (no recursive trx_t nesting) -- the deadzone
+        // only ever needs these ids. A recursive vector<trx_t> made each snapshot
+        // embed full copies of other transactions' snapshots, which compounded
+        // unboundedly under concurrency (copy_active_trx_list never finished).
+        std::vector<uint64_t> active_trx_ids;
         explicit trx_t(uint64_t trx_id) : trx_id(trx_id){}
-        trx_t(const trx_t& other) : trx_id(other.trx_id), active_trx_list(other.active_trx_list) {} // Copy constructor (preserve snapshot)
+        // default copy/move are correct now (active_trx_ids copies cheaply).
     };
 
     class Trx_manager {
@@ -49,7 +54,7 @@ namespace mvcc {
         trx_t* startTrx(){
             trx_sys_mutex_enter();
             auto* trx = new trx_t(next_trx_id.fetch_add(1));
-            trx->active_trx_list = copy_active_trx_list(); // read-view snapshot (copy ctor now preserves inner active_trx_list)
+            trx->active_trx_ids = snapshot_active_ids(); // read-view: ids active right now (flat)
             active_trx_list.push_back(trx); // Use push_back to add the transaction
             trx_sys_mutex_exit();
             return trx;
@@ -58,7 +63,7 @@ namespace mvcc {
         trx_t* startWriteTrx(){
             trx_sys_mutex_enter();
             auto* trx = new trx_t(next_trx_id.fetch_add(1));
-            trx->active_trx_list = copy_active_trx_list(); // take a read-view snapshot (needed for GC deadzone)
+            trx->active_trx_ids = snapshot_active_ids(); // read-view: ids active right now (flat)
             active_trx_list.push_back(trx); // Use push_back to add the transaction
             trx_sys_mutex_exit();
             return trx;
@@ -122,9 +127,19 @@ namespace mvcc {
             std::vector<trx_t> copied_list;
             copied_list.reserve(active_trx_list.size());
             for (const auto& trx : active_trx_list) {
-                copied_list.push_back(*trx); // Use copy constructor of trx_t
+                copied_list.push_back(*trx); // flat copy (id + active_trx_ids), cheap
             }
             return copied_list;
+        }
+
+        // Flat ids of currently-active transactions -- a new transaction's read-view.
+        std::vector<uint64_t> snapshot_active_ids() {
+            std::vector<uint64_t> ids;
+            ids.reserve(active_trx_list.size());
+            for (const auto* trx : active_trx_list) {
+                ids.push_back(trx->trx_id);
+            }
+            return ids;
         }
     };
 

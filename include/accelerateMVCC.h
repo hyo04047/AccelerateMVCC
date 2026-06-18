@@ -106,11 +106,8 @@ namespace mvcc
         }
 
         bool search_operation(uint64_t table_id, uint64_t index, trx_t *trx, uint64_t &space_id, uint64_t &page_id, uint64_t &offset) {
-            std::vector<uint64_t> active_trx_list;
-            for (auto i: trx->active_trx_list) {
-                active_trx_list.emplace_back(i.trx_id);
-            }
-            return search(table_id, index, trx->trx_id, space_id, page_id, offset, active_trx_list);
+            // read-view is already a flat id list -> pass it straight through.
+            return search(table_id, index, trx->trx_id, space_id, page_id, offset, trx->active_trx_ids);
         }
 
         void end_read_trx(trx_t* trx){

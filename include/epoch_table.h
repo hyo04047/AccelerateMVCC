@@ -84,25 +84,25 @@ namespace mvcc {
         }
 
         struct deadzone {
-            deadzone(std::vector<trx_t> oldest_active_trx_list, uint64_t oldest_low_limit_id)
+            deadzone(std::vector<uint64_t> oldest_active_trx_ids, uint64_t oldest_low_limit_id)
                 : oldest_low_limit_id(oldest_low_limit_id), len(0) {
                 memset(range, 0x00, sizeof(uint64_t) * NUM_DEADZONE * 2);
-                this->oldest_active_trx_list = std::move(oldest_active_trx_list);
+                this->oldest_active_trx_ids = std::move(oldest_active_trx_ids);
             }
 
             uint64_t range[2 * NUM_DEADZONE]{};
             uint64_t  oldest_low_limit_id;
             uint64_t len;
-            std::vector<trx_t> oldest_active_trx_list;
+            std::vector<uint64_t> oldest_active_trx_ids;
 
         };
 
 
-        uint64_t get_dead_up_limit_id(uint64_t limit_id, const std::vector<trx_t> &vector, const uint64_t trx_id) const {
+        uint64_t get_dead_up_limit_id(uint64_t limit_id, const std::vector<uint64_t> &ids, const uint64_t trx_id) const {
 
-            for (uint64_t i = 0; i < vector.size(); ++i) {
-                if (vector.at(i).trx_id > limit_id) {
-                    return (vector.at(i).trx_id);
+            for (uint64_t i = 0; i < ids.size(); ++i) {
+                if (ids.at(i) > limit_id) {
+                    return (ids.at(i));
                 }
             }
 
@@ -115,18 +115,18 @@ namespace mvcc {
 
             if (vector.empty()) {
                 // No active transaction -> empty zone (len 0) -> prune nothing (safe default).
-                return new deadzone(std::vector<trx_t>{}, 0);
+                return new deadzone(std::vector<uint64_t>{}, 0);
             }
 
             uint64_t oldest_low_limit_id;
 
-            if(vector.at(0).active_trx_list.empty()){
+            if(vector.at(0).active_trx_ids.empty()){
                 oldest_low_limit_id = vector.at(0).trx_id;
             }else{
-                oldest_low_limit_id = vector.at(0).active_trx_list.at(0).trx_id;
+                oldest_low_limit_id = vector.at(0).active_trx_ids.at(0);
             }
             /* 1. Get free deadzone structure */
-            auto* zone = new deadzone(vector.at(0).active_trx_list,oldest_low_limit_id);
+            auto* zone = new deadzone(vector.at(0).active_trx_ids,oldest_low_limit_id);
 
             /* 2. Update "zone 1" */
             zone->range[0] = 0;
@@ -138,7 +138,7 @@ namespace mvcc {
             /* 3. Update other deadzone */
             for (uint64_t i = 1; i < vector.size(); ++i) {
                 low_limit_id = vector.at(i - 1).trx_id;
-                dead_up_limit_id = get_dead_up_limit_id(low_limit_id, vector.at(i).active_trx_list,
+                dead_up_limit_id = get_dead_up_limit_id(low_limit_id, vector.at(i).active_trx_ids,
                                                         vector.at(i).trx_id);
 
                 zone->range[2 * zone->len] = low_limit_id;
@@ -155,7 +155,7 @@ namespace mvcc {
 
             /* compare its v_start & v_end to deadzone */
             for (uint64_t i = 0; i < zone->len; ++i) {
-                if (i == 0 && zone->oldest_active_trx_list.size() != 0) {
+                if (i == 0 && zone->oldest_active_trx_ids.size() != 0) {
                     if (v_end < zone->range[1]) {
                         ret = true;
                         break;
@@ -164,8 +164,8 @@ namespace mvcc {
                         continue;
                     }
 
-                    for (int j = 0; j < zone->oldest_active_trx_list.size(); ++j) {
-                        if (zone->oldest_active_trx_list.at(j).trx_id == v_end) {
+                    for (int j = 0; j < zone->oldest_active_trx_ids.size(); ++j) {
+                        if (zone->oldest_active_trx_ids.at(j) == v_end) {
                             flag = false;
                             break;
                         }

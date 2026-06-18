@@ -69,9 +69,9 @@ static bool epoch_prunable(Epoch_table& et, Epoch_table::deadzone* zone, uint64_
 TEST(GcDeadzone, RangesAndPruningDecision) {
     Epoch_table et;
     trx_t a(550);
-    a.active_trx_list.push_back(trx_t(500));    // a's low-limit id = 500
+    a.active_trx_ids.push_back(500);    // a's low-limit id = 500
     trx_t b(1550);
-    b.active_trx_list.push_back(trx_t(1000));   // b still sees 1000 as active
+    b.active_trx_ids.push_back(1000);   // b still sees 1000 as active
     std::vector<trx_t> snap;
     snap.push_back(a);
     snap.push_back(b);
