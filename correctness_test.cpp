@@ -516,3 +516,27 @@ TEST(GcFgUnlink, HotRecordCoopUnlinkShrinksChain) {
     EXPECT_EQ(mvcc.epochs_detached(), mvcc.epochs_retired());  // conservation (FG unlink + BG retire)
     EXPECT_LT(mvcc.chain_length(1, 0), 256u);                  // cooperative unlink kept it bounded
 }
+
+// Stage 1c-5 (#5 cold dead head) is RESOLVED by the 1c-4 tight-bound fix, not a new increment.
+// A record's HEAD epoch holds its current value: it is never yet superseded (superseded_ts =
+// infinity), so it is NEVER judged dead -- even when its nominal trx-id window sits deep inside
+// a dead zone. So GC correctly retains exactly the head and prunes everything older; there is no
+// "cold dead head" to reclaim. (That leak was an artifact of the old nominal over-pruning, which
+// mis-judged the live head as dead and then needed GC-skips-head + a future head-prune to mop up.
+// Tight bounds removes the misjudgment, so the whole head-prune-vs-append concurrency problem in
+// design-1c.md s3 dissolves.)
+TEST(GcDeadzone, HeadEpochIsNeverPruned) {
+    Epoch_table et;
+    trx_t a(9000);                              // single active txn at 9000
+    std::vector<trx_t> snap; snap.push_back(a);
+    auto* zone = et.generate_dead_zone(snap);   // dead zone [0, 9000)
+
+    epoch_node head;
+    head.epoch_num = 5;                         // nominal window [500,599] -- deep inside the dead zone
+    head.min_trx_id = 500;
+    // superseded_ts stays UINT64_MAX (default): this is the head / current value, not superseded.
+    epoch_node_wrapper w(&head);
+    EXPECT_FALSE(et.can_operate_gc(&w, zone))
+        << "a head epoch (current value, not yet superseded) must never be judged prunable";
+    delete zone;
+}

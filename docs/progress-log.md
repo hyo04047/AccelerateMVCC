@@ -29,7 +29,9 @@
   - **deadzone over-prune (tight bounds, 깊은 correctness)**: nominal epoch 범위를 xmax로 써서 reader/LLT가 보는 version을 dead로 오판(pre-existing BG 잠복, 1c-4가 증폭 → LLT correctness 깨짐). 수정: `epoch_node.superseded_ts`(insert prepend가 옛 head에 기록) + `can_prune_epoch`이 실제 `[min_trx_id, superseded_ts]`로 판정(FG·BG 공통 경로 → 한 곳 수정). **고치기 전 깨지는 테스트 먼저**(`GcDeadzone.TightBoundDoesNotOverPruneNeededVersion`: nominal FAIL → tight PASS)로 경험적 확인. = design-gc §8.1을 perf 개선에서 **correctness 필수**로 격상.
 - **17개 Release/ASan(UAF/double-free 0)/TSan(race 0) green.** 새 경고 0.
 
-**다음**: 1c-5(cold head prune[insert head-prepend CAS 선행, §3], #5) → 1c-6(스케일 + perf: tombstone 압축, 짧은 LLT Guard, FG dead-scan skip 최적화).
+**증분 1c-5 — 불필요(tight bounds가 #5를 해소) ✅**: head epoch은 record의 **현재 값**이라 아직 안 덮임(`superseded_ts=∞`) → tight bounds에서 **절대 dead 판정 안 됨**. 즉 GC가 head를 올바르게 보존하고 나머지만 prune — "cold dead head"는 nominal over-pruning이 살아있는 head를 dead로 오판한 artifact였고, 1c-4 tight bounds가 그 오판을 없애 #5 자체가 사라짐. design §3의 head-prune vs append headline 동시성 문제, insert head-prepend CAS 선행 요구, BG single-attempt-defer 다 같이 dissolve(head-prune이 없으니까). 확인 테스트 `GcDeadzone.HeadEpochIsNeverPruned`(head: nominal range가 dead zone 깊숙이 있어도 superseded_ts=∞라 prunable 아님). 18개 green. (잔여: cold record의 head wrapper가 bucket을 살려둬 long_live_epochs가 천천히 자라는 건 **correctness 아니라 perf** — 1c-6 tombstone 압축으로.)
+
+**다음**: **1c-6(스케일 + perf 마감)** — tombstone 압축/별도 pending list, 짧은 LLT Guard(reclaim 굶음 방지), FG dead-scan skip 최적화, 고스레드 skew 통합 검증. 그 후 stage C 벤치 준비.
 
 ---
 

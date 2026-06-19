@@ -93,9 +93,9 @@ marked-pointer(Harris) 양 리스트 + 다중-producer EBR + 전용 BG GC 스레
 
 **적대적 코드 리뷰**(워크플로 57에이전트: 5관점 attack → finding별 독립 verify → 종합; 51발견 중 28 false-positive 기각): 핵심 설계는 검증 경로에서 건전 확인. 확정 잠복결함 8건 중 **7건 수정**(커밋 `49f28b7`) — ① EBR `my_slot` 256+스레드 aliasing에 interim assert ② dummy-head ctor 99개 누수 hoist ③ `Epoch_table::insert`를 EBR Guard로(table_node swap‖느린 inserter UAF 창) ④ BG GC cadence를 PERIOD별 catch-up으로(boundary 영구 skip 방지) ⑤ `min_reservation` seq_cst load(ordering gap) ⑥ `start_background_gc` 예외안전 ⑦ `run_gc_once` BG 중복 가드.
 
-**🔴 stage C 전 필수(보류 3건)**:
-- **#1 EBR slot lease**: `my_slot`의 creation-order round-robin을 *동시-생존* 스레드 기준 per-instance 슬롯 lease로 교체(thread 종료 시 반납). C가 reader 스레드 수↑(FG-by-readers)면 256+에서 잠복 UAF 실제화. (현재 interim assert로 loud-fail.)
-- **#2 dummy-overflow 리스트 consumer**: `insert`가 epoch_num mismatch 시 wrapper를 dummy로 보내면 GC가 영원히 안 거둠 → 누수 + 영구 un-prune. insert가 swap된 버킷 재로드/재시도로 strand 방지하거나, GC 진입부에서 dummy 체인 drain+reclaim.
-- **#5 cold-record dead head prune**: GC-skips-head 때문에 다시 안 쓰이는 레코드의 dead head epoch이 영구 미회수(공간 누수). header->next CAS로 head도 prune 가능하게(insert head-link도 CAS 필요 — multi-writer lock-free와 묶임).
+**🔴 stage C 전 필수(보류 3건) — 전부 1c에서 해소 ✅** (상세 [progress-log](progress-log.md)·[design-1c.md](design-1c.md)):
+- **#1 EBR slot lease ✅ (1c-0)**: creation-order round-robin → per-thread 슬롯 lease(전역 풀, thread 종료 시 반납 → *동시생존* 스레드 기준) + pool 고갈 시 보수적 seq_cst overflow pin. churn 517 / 동시 272→overflow 16 테스트.
+- **#2 dummy-overflow consumer ✅ (1c-3)**: dummy-overflow를 single-head Treiber stack으로 리팩터 + BG drain(dead orphan은 retire[소유권 transfer], live는 re-queue). full-bucket backstop도 같이.
+- **#5 cold-record dead head ✅ — dissolved by 1c-4 tight bounds**: head는 record의 **현재 값**이라 `superseded_ts=∞` → tight bounds에서 절대 dead 아님 = prune 대상이 아예 없음(보존이 맞음, 누수 아님). 원래 "dead head"는 nominal over-pruning이 살아있는 head를 dead로 오판한 artifact였고 1c-4가 그 오판을 제거. head-prune vs append 동시성 문제도 같이 사라짐. (잔여 long_live_epochs 성장은 perf — 1c-6.) 테스트 `GcDeadzone.HeadEpochIsNeverPruned`.
 
 **1a-ii 단계 제약(의도)**: 단일 unlinker(=GC 한 스레드)만 retire/reclaim(EBR 단일 producer). reader는 GC를 트리거하는 `start_read_trx` 대신 `start_trx`를 써 단일 producer 전제를 지킴. 다중 unlinker/협조적 FG unlink는 **1b(marked pointer, Harris)**.
