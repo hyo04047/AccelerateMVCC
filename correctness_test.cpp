@@ -362,3 +362,49 @@ TEST(GcRetireOnce, ConservationSingleThread) {
     EXPECT_GT(mvcc.epochs_retired(), 0u);
     EXPECT_EQ(mvcc.epochs_detached(), mvcc.epochs_retired());
 }
+
+// ---------------------------------------------------------------------------
+// Stage 1c-3: full-bucket backstop sweep + dummy-overflow drain (#2). 4 writers race the
+// BG bucket-swap (epoch_num != bucket epoch_num) -> orphan wrappers pile into the dummy
+// stack; readers keep the deadzone non-empty. The drain must reclaim dead orphans (not leak
+// them) and the backstop must revisit cold buckets, all while conservation (detached ==
+// retired) holds across the windowed + backstop + drain retire paths, and the dummy stack
+// must not grow without bound. Run under ASan (double-free/UAF 0) + TSan (race 0).
+// ---------------------------------------------------------------------------
+TEST(GcBackstopDrain, DummyOverflowDrainsAndConserves) {
+    Accelerate_mvcc mvcc(8);
+    mvcc.start_background_gc();
+    std::atomic<bool> done{false};
+    std::atomic<long> reads{0};
+
+    auto reader = [&] {
+        while (!done.load(std::memory_order_acquire)) {
+            trx_t* rd = mvcc.start_trx();
+            uint64_t s = 0, p = 0, o = 0;
+            (void) mvcc.search_operation(1, rd->trx_id % 8, rd, s, p, o);
+            mvcc.commit_trx(rd);
+            reads.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    auto writer = [&](int seed) {
+        for (int i = 0; i < 40000; i++) mvcc.insert_trx((seed + i) % 8);
+    };
+
+    std::vector<std::thread> readers, writers;
+    for (int i = 0; i < 2; i++) readers.emplace_back(reader);
+    for (int i = 0; i < 4; i++) writers.emplace_back(writer, i * 2);
+    for (auto& t : writers) t.join();
+    done.store(true, std::memory_order_release);
+    for (auto& t : readers) t.join();
+    mvcc.stop_background_gc();
+
+    // BG off -> run_gc_once drives final drain/backstop passes. A reader started now snapshots
+    // above everything, so all remaining non-head epochs/orphans are dead and get reclaimed.
+    trx_t* rd = mvcc.start_trx();
+    for (int i = 0; i < 80; i++) mvcc.run_gc_once();
+    mvcc.commit_trx(rd);
+
+    EXPECT_GT(mvcc.epochs_retired(), 0u);                       // GC actually reclaimed
+    EXPECT_EQ(mvcc.epochs_detached(), mvcc.epochs_retired());   // conservation across all paths
+    EXPECT_LT(mvcc.dummy_pending(), 256u);                      // dummy drained (no unbounded leak)
+}

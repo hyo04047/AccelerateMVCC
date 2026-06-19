@@ -50,11 +50,8 @@ namespace mvcc {
             for (int i = 0; i < EPOCH_TABLE_SIZE; i++) {
                 table.at(i).store(new epoch_table_node(i));
             }
-            // Single shared dummy-overflow head. (Was allocated inside the loop above,
-            // so 99 of 100 dummy heads leaked at construction.)
-            auto* wrapper_dummy = new epoch_node_wrapper(nullptr);
-            first_dummy_node.store(wrapper_dummy);
-            last_dummy_node.store(wrapper_dummy);
+            // dummy-overflow list is a lock-free Treiber stack (dummy_head_, nullptr = empty),
+            // drained by the BG GC actor each cycle (stage 1c-3); no sentinel needed.
         }
 
         bool insert(epoch_node *epoch) {
@@ -259,90 +256,39 @@ namespace mvcc {
                 return false;
             }
             deadzone* deadzone = generate_dead_zone(vector);
+            ++backstop_counter_;
             {
-                //get size of long_live_epochs and operate gc from (size - EPOCH_TABLE_SIZE / 2) to (size - EPOCH_TABLE_SIZE / 4 - 1)
                 uint64_t llt_size = long_live_epochs.size();
                 if (llt_size < (uint64_t)(EPOCH_TABLE_SIZE / 2)) {   // not enough lag accumulated yet
-                    publish_deadzone(deadzone);   // publish even when no sweep ran this cycle
+                    drain_dummy(deadzone);        // still drain orphans before a window exists
+                    publish_deadzone(deadzone);
                     return false;
                 }
-                uint64_t start_index = llt_size - (EPOCH_TABLE_SIZE / 2);
-                uint64_t end_index = llt_size - (EPOCH_TABLE_SIZE / 4) - 1;
-                std::vector<epoch_table_node *> deleteIndexes;
-
-                int i_start = static_cast<int>(start_index);
-                int i_end = static_cast<int>(end_index);
-                for(int i = i_start;  i <= i_end; i++){
-                    epoch_table_node * table_node = long_live_epochs.at(i);
-
-                    // Prune every epoch wrapper whose interval is fully inside a dead zone.
-                    // first_node is a stable dummy head; walk forward keeping prev_node so we can splice.
-                    epoch_node_wrapper *prev_node = table_node->first_node.load();
-                    for (epoch_node_wrapper *node = prev_node->next.ptr(); node != nullptr; ) {
-                        bool prune = can_operate_gc(node, deadzone);
-                        if (prune) {
-                            // Single-writer 1b: never prune a record's HEAD epoch. header->next is the
-                            // only interval-list word insert and GC could write concurrently, and the
-                            // newest epoch is normally live. Skipping it makes insert||GC touch disjoint
-                            // words (no insert-side hardening). A dead head is reclaimed on a later pass
-                            // once a newer epoch is prepended. (Multi-writer hardening = increment 5.)
-                            epoch_node *en = node->epoch;
-                            if (en != nullptr && en->header != nullptr && en->header->next.ptr() == en) {
-                                prune = false;
-                            }
-                        }
-                        if (prune) {
-                            epoch_node_wrapper *dead = node;
-                            epoch_node_wrapper *wsucc = node->next.ptr();
-                            dead->next.set_mark(wsucc);                  // logical splice (Harris mark)
-                            // Wrapper list is single-unlinker (BG only; FG never touches it). The
-                            // windowed sweep + the 1c-3 backstop run on this one BG actor over
-                            // disjoint ranges, so the plain store stays valid (no CAS needed).
-                            prev_node->next.store(wsucc, false);
-                            node = wsucc;
-
-                            epoch_node *epochNode = dead->epoch;
-                            // Version-chain unlink, now multi-unlinker-safe (ahead of FG unlink in
-                            // 1c-4): (1) logical mark the forward word; (2) CAS the predecessor's
-                            // next past it (Harris), found by forward scan from the header.
-                            epoch_node *succ = epochNode->next.ptr();
-                            epochNode->next.set_mark(succ);
-                            unlink_epoch_from_chain(epochNode->header, epochNode, succ);
-                            // Claim CHAIN_DETACHED (the version-chain splicer's role). In 1c-2 BG is
-                            // the only splicer; 1c-4 lets an FG reader win this CAS instead.
-                            uint8_t expLive = EPOCH_LIVE;
-                            if (epochNode->state.compare_exchange_strong(
-                                    expLive, EPOCH_CHAIN_DETACHED, std::memory_order_acq_rel))
-                                epochs_detached_.fetch_add(1, std::memory_order_relaxed);
-                            // Retire through the SINGLE state-gated authority (never on deadness
-                            // alone). Exactly-once holds because each node has one swept wrapper
-                            // (see retire_epoch_once); FG detach in 1c-4 routes its retire here too.
-                            retire_epoch_once(epochNode);
-                            reclaimer_.retire([dead] { delete dead; });
-                        } else {
-                            prev_node = node;                            // advance prev only over kept nodes
-                            node = node->next.ptr();
-                        }
-                    }
-
-                    // No concurrent inserter and list drained to just the dummy head -> reclaim table node.
-                    if (table_node->count.load() == 0 &&
-                        table_node->first_node.load()->next.ptr() == nullptr) {
-                        epoch_node_wrapper *dummy_head = table_node->first_node.load();
-                        reclaimer_.retire([dummy_head] { delete dummy_head; });
-                        deleteIndexes.push_back(table_node);
+                // Windowed sweep: only the buckets that have aged into the window. Bounded
+                // O(EPOCH_TABLE_SIZE/4) buckets per cycle -> amortized GC work stays bounded.
+                int i_start = static_cast<int>(llt_size - (EPOCH_TABLE_SIZE / 2));
+                int i_end   = static_cast<int>(llt_size - (EPOCH_TABLE_SIZE / 4) - 1);
+                for (int i = i_start; i <= i_end; i++) {
+                    epoch_table_node *tn = long_live_epochs.at(i);
+                    if (tn == nullptr) continue;                     // tombstoned (already reclaimed)
+                    sweep_bucket(tn, deadzone);
+                    try_reclaim_bucket(static_cast<size_t>(i));
+                }
+                // Backstop full-bucket sweep (low cadence): the windowed sweep visits each bucket
+                // once, so an epoch that dies AFTER its windowed pass -- or (1c-4) a node an FG
+                // reader detached in an already-swept bucket -- would never be retired. The
+                // backstop revisits every live bucket so nothing strands. Most buckets are
+                // empty/tombstoned (O(1) skip); the cadence bounds the rest.
+                if (backstop_counter_ % BACKSTOP_PERIOD == 0) {
+                    for (size_t i = 0; i < long_live_epochs.size(); ++i) {
+                        epoch_table_node *tn = long_live_epochs.at(i);
+                        if (tn == nullptr) continue;
+                        sweep_bucket(tn, deadzone);
+                        try_reclaim_bucket(i);
                     }
                 }
-
-                for(epoch_table_node* node : deleteIndexes){
-                    auto it = std::find(long_live_epochs.begin(), long_live_epochs.end(), node);
-                    if (it != long_live_epochs.end()) {
-                        long_live_epochs.erase(it);
-                    }
-                    reclaimer_.retire([node] { delete node; });
-                }
+                drain_dummy(deadzone);            // pending #2: reclaim/keep orphan wrappers
             }
-
             publish_deadzone(deadzone);
             return true;
         }
@@ -358,6 +304,17 @@ namespace mvcc {
         // check to the full LIVE + CHAIN_DETACHED + RETIRED conservation.
         uint64_t epochs_detached() const { return epochs_detached_.load(std::memory_order_relaxed); }
         uint64_t epochs_retired()  const { return epochs_retired_.load(std::memory_order_relaxed); }
+
+        // Stage 1c-3: orphan wrappers currently queued in the dummy-overflow stack (meaningful
+        // only when quiescent -- for tests). Trends to a small bound (live un-demoted heads) as
+        // drain_dummy retires dead orphans; an unbounded value would mean the #2 leak is back.
+        size_t dummy_pending() const {
+            size_t n = 0;
+            for (epoch_node_wrapper *w = dummy_head_.load(std::memory_order_acquire);
+                 w != nullptr; w = w->next.ptr())
+                ++n;
+            return n;
+        }
 
 
     private:
@@ -390,6 +347,105 @@ namespace mvcc {
                     }
                     delete en;
                 });
+            }
+        }
+
+        // Version-chain detach + single retire of one epoch_node, shared by the windowed
+        // sweep, the backstop, and the dummy drain. Logical-mark + CAS-unlink from the record's
+        // chain, CAS-claim CHAIN_DETACHED (counts a detach only the FIRST time -- a node an FG
+        // reader already detached in 1c-4 falls through without re-counting), then retire via
+        // the sole state-gated authority. Idempotent if the node is already marked/unlinked.
+        void detach_and_retire_epoch(epoch_node *en) {
+            epoch_node *succ = en->next.ptr();
+            en->next.set_mark(succ);                        // no-op if already marked
+            unlink_epoch_from_chain(en->header, en, succ);  // no-op if already unlinked
+            uint8_t expLive = EPOCH_LIVE;
+            if (en->state.compare_exchange_strong(expLive, EPOCH_CHAIN_DETACHED,
+                                                  std::memory_order_acq_rel))
+                epochs_detached_.fetch_add(1, std::memory_order_relaxed);
+            retire_epoch_once(en);
+        }
+
+        // Is this wrapper's epoch prunable now? Dead per the descriptor, OR already
+        // CHAIN_DETACHED (by an FG reader, 1c-4) -- but NEVER a record's head epoch (head prune
+        // is 1c-5; the head's undo chain may still be appended under the record mutex).
+        bool wrapper_prunable(epoch_node_wrapper *node, deadzone *dz) {
+            epoch_node *en = node->epoch;
+            if (en == nullptr) return false;
+            bool dead = (dz != nullptr && can_operate_gc(node, dz)) ||
+                        en->state.load(std::memory_order_acquire) == EPOCH_CHAIN_DETACHED;
+            if (!dead) return false;
+            if (en->header != nullptr && en->header->next.ptr() == en) return false;  // head: skip
+            return true;
+        }
+
+        // Prune every prunable wrapper from one bucket's list. BG-only (the windowed sweep,
+        // backstop, and drain all run sequentially on this single actor -> the wrapper list has
+        // one unlinker, so the splice is a plain store). Each pruned epoch is detached+retired once.
+        void sweep_bucket(epoch_table_node *tn, deadzone *dz) {
+            epoch_node_wrapper *prev_node = tn->first_node.load();
+            for (epoch_node_wrapper *node = prev_node->next.ptr(); node != nullptr; ) {
+                if (wrapper_prunable(node, dz)) {
+                    epoch_node_wrapper *dead = node;
+                    epoch_node_wrapper *wsucc = node->next.ptr();
+                    dead->next.set_mark(wsucc);
+                    prev_node->next.store(wsucc, false);
+                    node = wsucc;
+                    detach_and_retire_epoch(dead->epoch);
+                    reclaimer_.retire([dead] { delete dead; });
+                } else {
+                    prev_node = node;                        // advance prev only over kept nodes
+                    node = node->next.ptr();
+                }
+            }
+        }
+
+        // Reclaim a fully-drained bucket (no inserter pinned it AND its list is empty): retire
+        // its dummy head + the table_node and TOMBSTONE its slot (nullptr). long_live_epochs is
+        // push-only (no erase) so the windowed-sweep index math stays valid; sweeps skip nulls.
+        bool try_reclaim_bucket(size_t slot) {
+            epoch_table_node *tn = long_live_epochs.at(slot);
+            if (tn == nullptr) return false;
+            if (tn->count.load() == 0 && tn->first_node.load()->next.ptr() == nullptr) {
+                epoch_node_wrapper *dummy_head = tn->first_node.load();
+                reclaimer_.retire([dummy_head] { delete dummy_head; });
+                long_live_epochs.at(slot) = nullptr;        // tombstone
+                reclaimer_.retire([tn] { delete tn; });
+                return true;
+            }
+            return false;
+        }
+
+        // Drain the dummy-overflow Treiber stack (stage 1c-3, pending #2). Detach the whole
+        // stack, then for each orphan wrapper: if its epoch is dead (or CHAIN_DETACHED) and not
+        // a head, detach+retire it and free the wrapper; otherwise re-queue it for a later
+        // drain. The dummy wrapper is the epoch's ONLY (never-swept) wrapper, so retiring through
+        // it keeps single-ownership -- this TRANSFERS ownership, never makes a second swept
+        // wrapper (the constraint retire_epoch_once relies on). BG-only; freed under EBR because
+        // a concurrent insert_to_dummy pusher may hold its Guard.
+        void drain_dummy(deadzone *dz) {
+            epoch_node_wrapper *w = dummy_head_.exchange(nullptr, std::memory_order_acq_rel);
+            while (w != nullptr) {
+                epoch_node_wrapper *next = w->next.ptr();    // save before we free/re-push w
+                epoch_node *en = w->epoch;
+                bool dead = en != nullptr &&
+                            ((dz != nullptr && can_prune_epoch(en, dz)) ||
+                             en->state.load(std::memory_order_acquire) == EPOCH_CHAIN_DETACHED);
+                bool is_head = en != nullptr && en->header != nullptr &&
+                               en->header->next.ptr() == en;
+                if (dead && !is_head) {
+                    detach_and_retire_epoch(en);
+                    reclaimer_.retire([w] { delete w; });
+                } else {
+                    epoch_node_wrapper *head = dummy_head_.load(std::memory_order_acquire);
+                    while (true) {                            // re-queue onto the (live) stack
+                        w->next.store(head, false);
+                        if (dummy_head_.compare_exchange_weak(head, w,
+                                std::memory_order_release, std::memory_order_acquire))
+                            break;
+                    }
+                }
+                w = next;
             }
         }
 
@@ -436,19 +492,25 @@ namespace mvcc {
         // Stage 1c retire-once conservation counters (see epochs_detached()/epochs_retired()).
         std::atomic<uint64_t> epochs_detached_{0};
         std::atomic<uint64_t> epochs_retired_{0};
-        std::atomic<epoch_node_wrapper *> first_dummy_node;
-        std::atomic<epoch_node_wrapper *> last_dummy_node;
+        // Dummy-overflow list: a lock-free Treiber stack (nullptr = empty). Inserters push
+        // orphan wrappers (bucket-swap race); the BG GC drains it (drain_dummy). backstop_counter_
+        // paces the low-cadence full-bucket sweep; both are BG-only.
+        std::atomic<epoch_node_wrapper *> dummy_head_{nullptr};
+        uint64_t backstop_counter_{0};
+        static constexpr uint64_t BACKSTOP_PERIOD = 4;   // run the full-bucket backstop every Nth cycle
 
+        // Push an orphan wrapper (its epoch_num did not match its bucket -- a GC bucket-swap
+        // race) onto the dummy-overflow Treiber stack. A concurrent BG exchange of dummy_head_
+        // just makes this CAS fail and retry onto the new head, so no wrapper is lost.
         void insert_to_dummy(epoch_node* epoch){
-            auto *epoch_wrapper = new epoch_node_wrapper(epoch);
+            auto *w = new epoch_node_wrapper(epoch);
+            epoch_node_wrapper *head = dummy_head_.load(std::memory_order_acquire);
             while (true) {
-                epoch_node_wrapper *last = last_dummy_node.load();
-                epoch_node_wrapper *expected_last = last;
-                epoch_wrapper->next.store(expected_last, false);
-                if (last_dummy_node.compare_exchange_weak(last, epoch_wrapper)) {
+                w->next.store(head, false);
+                if (dummy_head_.compare_exchange_weak(head, w,
+                        std::memory_order_release, std::memory_order_acquire))
                     return;
-                }
-                // The compare_exchange_weak failed, retry the operation.
+                // head reloaded by the failed CAS; retry.
             }
         }
     };

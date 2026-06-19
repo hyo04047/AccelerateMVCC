@@ -180,6 +180,8 @@ namespace mvcc
         // vs retired. At quiescence these must be EQUAL (each detached node retired once).
         uint64_t epochs_detached() const { return epoch_table->epochs_detached(); }
         uint64_t epochs_retired()  const { return epoch_table->epochs_retired(); }
+        // Stage 1c-3: orphan wrappers pending in the dummy-overflow stack (test-only).
+        size_t dummy_pending() const { return epoch_table->dummy_pending(); }
 
         trx_t* start_trx(){
             return trxManger->startTrx();
