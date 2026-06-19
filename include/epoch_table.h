@@ -203,13 +203,28 @@ namespace mvcc {
         }
 
         bool can_operate_gc(epoch_node_wrapper *epoch_wrapper, deadzone *deadzone) {
-            uint64_t epoch_num = epoch_wrapper->epoch->epoch_num;
-            uint64_t v_start  = epoch_num * EPOCH_SIZE;
+            return can_prune_epoch(epoch_wrapper->epoch, deadzone);
+        }
+
+        // Judge whether an epoch_node's (nominal) interval is fully inside a dead zone.
+        // Uses the nominal window [epoch_num*EPOCH_SIZE, +EPOCH_SIZE): an append that
+        // lowers the epoch's actual min never widens this window, so the verdict only
+        // ever under-prunes (never over-prunes). Used by GC and (stage 1c) FG readers.
+        bool can_prune_epoch(epoch_node *en, deadzone *dz) {
+            uint64_t epoch_num = en->epoch_num;
+            uint64_t v_start = epoch_num * EPOCH_SIZE;
             uint64_t v_end = ((epoch_num + 1) * EPOCH_SIZE) - 1;
-            if(can_pruning(v_start,v_end,deadzone)){
-                return true;
-            }
-            return false;
+            return can_pruning(v_start, v_end, dz);
+        }
+
+        // Stage 1c: the shared published deadzone descriptor. BG builds one per cycle,
+        // uses it for its own sweep, then publishes it (atomic exchange) and retires the
+        // superseded one under EBR grace. A FG reader loads it under its traversal Guard
+        // to judge deadness; the same reservation that pins epoch_nodes pins the
+        // descriptor (same reclaimer, same grace), so it is never freed under the reader.
+        // nullptr (warm-up / not yet published) -> judge nothing (caller skips, never blocks).
+        deadzone *published_deadzone() const {
+            return published_deadzone_.load(std::memory_order_acquire);
         }
 
 // TODO : when this function is called ?? - every 25(EPOCH_TABLE_SIZE/4) times! 50, 75, 100 …
@@ -248,7 +263,7 @@ namespace mvcc {
                 //get size of long_live_epochs and operate gc from (size - EPOCH_TABLE_SIZE / 2) to (size - EPOCH_TABLE_SIZE / 4 - 1)
                 uint64_t llt_size = long_live_epochs.size();
                 if (llt_size < (uint64_t)(EPOCH_TABLE_SIZE / 2)) {   // not enough lag accumulated yet
-                    delete deadzone;
+                    publish_deadzone(deadzone);   // publish even when no sweep ran this cycle
                     return false;
                 }
                 uint64_t start_index = llt_size - (EPOCH_TABLE_SIZE / 2);
@@ -342,7 +357,7 @@ namespace mvcc {
                 }
             }
 
-            delete deadzone;
+            publish_deadzone(deadzone);
             return true;
         }
 
@@ -352,9 +367,21 @@ namespace mvcc {
 
 
     private:
+        // Publish dz as the current shared descriptor and retire the superseded one under
+        // EBR grace (a reader may still hold the old pointer for its traversal's span).
+        // Single producer: only the BG GC actor calls this, from garbage_collect.
+        void publish_deadzone(deadzone *dz) {
+            deadzone *old = published_deadzone_.exchange(dz, std::memory_order_release);
+            if (old) reclaimer_.retire([old] { delete old; });
+        }
+
         std::array<std::atomic<epoch_table_node *>, EPOCH_TABLE_SIZE> table{};
         std::vector<epoch_table_node *> long_live_epochs;
         EpochReclaimer reclaimer_;
+        // Shared deadzone descriptor published by the BG GC actor (stage 1c). The current
+        // one leaks at shutdown by design (no next cycle to supersede+retire it), matching
+        // the index's existing intended-leak posture; superseded ones are EBR-reclaimed.
+        std::atomic<deadzone *> published_deadzone_{nullptr};
         std::atomic<epoch_node_wrapper *> first_dummy_node;
         std::atomic<epoch_node_wrapper *> last_dummy_node;
 

@@ -139,6 +139,11 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
     // undo_entry pointers that GC may concurrently unlink+retire. The Guard
     // pins reclamation for this traversal's span so GC cannot free them under us.
     EpochReclaimer::Guard guard(epoch_table->reclaimer());
+    // Stage 1c: load the shared published deadzone ONCE for this traversal, under the same
+    // Guard that pins epoch_nodes (so the descriptor is pinned too -- BG may retire it while
+    // we hold it). 1c-1 JUDGES deadness against it but does NOT act; cooperative unlink
+    // lands in 1c-4. nullptr (warm-up / not yet published) -> judge nothing, never block.
+    Epoch_table::deadzone *dz = epoch_table->published_deadzone();
     bool found = false;
     uint64_t best_trx_id = 0;
     epoch_node *epoch = header->next.ptr();
@@ -152,6 +157,11 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
             epoch = next_epoch;
             continue;
         }
+        // 1c-1: judge deadness over the shared descriptor (consume side, not acted on until
+        // 1c-4). Counting it forces the descriptor deref, so this traversal exercises the
+        // publish/retire lifetime (BG retires superseded descriptors while readers hold one).
+        if (dz != nullptr && epoch_table->can_prune_epoch(epoch, dz))
+            coop_dead_seen_.fetch_add(1, std::memory_order_relaxed);
         // skip epochs entirely newer than ours
         if (epoch->epoch_num > epoch_num) {
             epoch = next_epoch;

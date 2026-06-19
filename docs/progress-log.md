@@ -14,9 +14,11 @@
 - **헤드라인 버그(3관점 독립 지적)**: BG head-prune이 `header->next` CAS로만 조율하는데 insert의 in-place append는 그 포인터를 안 쓰고 record mutex만 잡음(BG는 mutex 안 잡음) → head retire와 append 무동기 → write-after-free+insert 유실. 수정: head는 '더 이상 head 아님'에만 prune(#5를 deadness 아닌 demote에 게이트)+insert head 접근 EBR Guard+head writer를 insert/BG 2자로 제한.
 - **재배열**: 전부-CAS·전버킷 backstop을 FG 떼기보다 **앞**으로, retire 권한 상태도장 1곳 일원화, long_live_epochs tombstone화, LLT는 짧은 per-search Guard.
 
-**증분 1c-0 ✅** EBR **slot lease**(보류 #1 흡수): creation-order round-robin(lifetime 스레드 256개에 assert) → **per-thread 슬롯 임대**(전역 풀, 첫 Guard에 획득·thread 종료 시 반납 → *동시생존* 스레드 기준). pool 고갈(>256 동시) 시 **보수적 overflow pin**(slotless reader가 announce 전에 floor를 자기 entry epoch 이하로 CAS-낮춤, seq_cst, no-reset). 신규 테스트 2개(순차 churn 517 / 동시 272→overflow 16) + 기존 9개, Release/ASan(UAF 0)/TSan(race 0) green. 인덱스 동작 변경 0.
+**증분 1c-0 ✅** EBR **slot lease**(보류 #1 흡수): creation-order round-robin(lifetime 스레드 256개에 assert) → **per-thread 슬롯 임대**(전역 풀, 첫 Guard에 획득·thread 종료 시 반납 → *동시생존* 스레드 기준). pool 고갈(>256 동시) 시 **보수적 overflow pin**(slotless reader가 announce 전에 floor를 자기 entry epoch 이하로 CAS-낮춤, seq_cst, no-reset). 신규 테스트 2개(순차 churn 517 / 동시 272→overflow 16) + 기존 9개, Release/ASan(UAF 0)/TSan(race 0) green. 인덱스 동작 변경 0. 커밋 `30d3a83`/`7a1f5e0`.
 
-**다음**: 1c-1(공유 deadzone descriptor publish + reader 판정만) → 1c-2(상태도장+retire 일원화+버전체인 전부 CAS) → 1c-3(backstop+drain, #2) → 1c-4(FG 떼기, non-head) → 1c-5(cold head prune, #5) → 1c-6(스케일).
+**증분 1c-1 ✅** **공유 deadzone descriptor publish + consume(판정만)**: BG가 매 사이클 만들던 deadzone을 `delete` 대신 **원자 publish(exchange)** 하고 옛 것을 **EBR로 retire**(reader가 traversal Guard 중 들고 있을 수 있어). reader(search)는 그 descriptor를 **자기 Guard 안에서 load**해 각 epoch의 dead 여부를 **판정만**(아직 unlink X — 1c-4 hook). 판정 결과는 `coop_dead_seen` 메트릭으로 카운트(= reader가 지나친 dead epoch 수 = chain bloat 프록시, 성능 지표). 안전: descriptor를 epoch_node와 **같은 reservation**이 pin → BG가 retire해도 reader 밑에서 free 안 됨. nominal epoch window라 append가 verdict를 못 넓힘(과청소 X). 신규 테스트: **staleness oracle**(옛 descriptor가 prune하는 epoch은 현재 descriptor도 prune = 단조 trx-id→dead zone만 성장, 결정적) + concurrent consume(coop_dead_seen>0 + ASan/TSan으로 publish/retire 수명 검증). 11개 Release/ASan(UAF 0)/TSan(race 0) green. 기존 동작 불변(GC sweep 동일, 가시성 동일). (참고: `can_pruning`의 pre-existing sign-compare 경고는 내 변경 아님, 미수정 보류.)
+
+**다음**: 1c-2(상태도장 + retire 일원화 + 버전체인 전부 CAS, 아직 BG-only) → 1c-3(backstop+drain, #2) → 1c-4(FG 떼기, non-head) → 1c-5(cold head prune, #5) → 1c-6(스케일).
 
 ---
 

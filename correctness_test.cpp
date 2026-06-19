@@ -239,3 +239,75 @@ TEST(GcEbrIntegration, ConcurrentWritersReadersBgGc) {
     EXPECT_EQ(writes.load(), 4L * 30000);
     EXPECT_GT(reads.load(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Stage 1c-1: shared published deadzone descriptor (publish + consume, judge-only).
+// ---------------------------------------------------------------------------
+
+// Staleness-safety oracle (the key new correctness property). A reader may judge
+// deadness against an OLD published descriptor; safety requires it NEVER over-prunes,
+// i.e. anything the OLD descriptor calls prunable is STILL prunable under the CURRENT
+// one. Because trx ids are strictly monotonic, the active set only loses its oldest
+// (commits) and gains at the top (new txns) -> dead zones only grow -> the prunable
+// set only grows. So old-prunable must imply current-prunable.
+TEST(GcSharedDescriptor, StaleDescriptorOnlyUnderPrunes) {
+    Epoch_table et;
+
+    // D1 (old): active {a=550 (low-limit 500), b=1550 (sees 1000)} -> dead [0,500),(550,1000)
+    trx_t a(550);  a.active_trx_ids.push_back(500);
+    trx_t b(1550); b.active_trx_ids.push_back(1000);
+    std::vector<trx_t> s1; s1.push_back(a); s1.push_back(b);
+    auto* d1 = et.generate_dead_zone(s1);
+
+    // D2 (current, later): a committed (gone); b still active, its oldest-seen rose to
+    // 1400; a new c=2550 started. Active {b=1550 (low-limit 1400), c=2550 (sees 2000)}.
+    trx_t b2(1550); b2.active_trx_ids.push_back(1400);
+    trx_t c(2550);  c.active_trx_ids.push_back(2000);
+    std::vector<trx_t> s2; s2.push_back(b2); s2.push_back(c);
+    auto* d2 = et.generate_dead_zone(s2);
+
+    int d1_pruned = 0;
+    for (uint64_t e = 0; e < 30; ++e) {
+        epoch_node en; en.epoch_num = e;
+        bool p1 = et.can_prune_epoch(&en, d1);
+        bool p2 = et.can_prune_epoch(&en, d2);
+        if (p1) {
+            ++d1_pruned;
+            EXPECT_TRUE(p2) << "epoch " << e << " prunable under stale D1 but NOT current D2";
+        }
+    }
+    EXPECT_GT(d1_pruned, 0);   // the oracle actually exercised prunable epochs
+    delete d1; delete d2;
+}
+
+// Concurrent consume + descriptor lifetime: BG GC publishes a fresh descriptor each
+// cycle and retires the superseded one under EBR, while readers load it under their
+// traversal Guard and judge every epoch. Readers necessarily traverse dead epochs under
+// churn, so the consume path must be live (coop_dead_seen > 0); ASan/TSan here cover the
+// publish/retire lifetime (a reader holding a descriptor BG just retired must not UAF).
+TEST(GcSharedDescriptor, ReadersConsumeDescriptorUnderBgGc) {
+    Accelerate_mvcc mvcc(4);
+    mvcc.start_background_gc();
+    std::atomic<bool> done{false};
+    std::atomic<long> reads{0};
+
+    auto reader = [&] {
+        while (!done.load(std::memory_order_acquire)) {
+            trx_t* rd = mvcc.start_trx();
+            uint64_t s = 0, p = 0, o = 0;
+            (void) mvcc.search_operation(1, rd->trx_id % 4, rd, s, p, o);
+            mvcc.commit_trx(rd);
+            reads.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    std::vector<std::thread> readers;
+    for (int i = 0; i < 4; i++) readers.emplace_back(reader);
+    for (uint64_t i = 0; i < 100000; i++) mvcc.insert_trx(i % 4);
+    done.store(true, std::memory_order_release);
+    for (auto& t : readers) t.join();
+    mvcc.stop_background_gc();
+
+    EXPECT_GT(reads.load(), 0);
+    EXPECT_GT(mvcc.coop_dead_seen(), 0u);   // readers actually loaded+judged the descriptor
+}

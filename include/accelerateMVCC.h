@@ -170,6 +170,12 @@ namespace mvcc
             return trx_id / EPOCH_SIZE;
         }
 
+        // Stage 1c metric: count of dead epochs (per the shared published deadzone) that
+        // readers TRAVERSED during search -- a proxy for the chain bloat that cooperative
+        // unlink (1c-4) will shrink. In 1c-1 readers judge-only and just increment this.
+        uint64_t coop_dead_seen() const { return coop_dead_seen_.load(std::memory_order_relaxed); }
+        std::atomic<uint64_t> coop_dead_seen_{0};
+
         trx_t* start_trx(){
             return trxManger->startTrx();
         }
