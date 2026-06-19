@@ -54,7 +54,7 @@
 - 잔여 perf 미세: cold record head wrapper가 bucket 유지 → long_live_epochs가 compaction에도 live-bucket 수만큼은 유지(correctness 아님). 별도 pending-list 리팩터는 C 데이터 보고.
 
 ## 5. 현재 repo 상태
-- branch **master**, HEAD **`08f5313`**(1c-6 완료), working tree **clean**. **origin push 여부는 세션 끝에 확인**(세션 3 커밋 = `30d3a83`(1c-0)~`08f5313`(1c-6), 6+α 커밋).
+- branch **master**, working tree **clean**, **origin/master까지 push 완료**. HEAD = 이 핸드오프 docs 커밋(마지막 **코드** 커밋 = `08f5313` 1c-6 위). 세션 3 = `30d3a83`(1c-0) ~ 최신 핸드오프(총 ~10커밋, 1c 전체).
 - 1c 신규/변경 파일: `include/interval_list.h`(epoch_node `state`+`superseded_ts`), `include/epoch_table.h`(retire-once helpers·backstop·drain·compaction·tight `can_prune_epoch`), `include/accelerateMVCC.cpp`(insert `superseded_ts` set + search FG unlink), `include/accelerateMVCC.h`(metrics/test 접근자), `include/epoch_reclaimer.h`(slot lease + overflow pin), `correctness_test.cpp`(20 테스트). docs: `design-1c.md`, `progress-log.md`, `findings.md` 갱신.
 
 ## 6. 로드맵 위치 — 다음은 Stage C
