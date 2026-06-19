@@ -176,6 +176,11 @@ namespace mvcc
         uint64_t coop_dead_seen() const { return coop_dead_seen_.load(std::memory_order_relaxed); }
         std::atomic<uint64_t> coop_dead_seen_{0};
 
+        // Stage 1c-2 retire-once conservation: epoch_nodes detached from the version chain
+        // vs retired. At quiescence these must be EQUAL (each detached node retired once).
+        uint64_t epochs_detached() const { return epoch_table->epochs_detached(); }
+        uint64_t epochs_retired()  const { return epoch_table->epochs_retired(); }
+
         trx_t* start_trx(){
             return trxManger->startTrx();
         }

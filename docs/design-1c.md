@@ -57,3 +57,11 @@
 | **1c-6** | 스케일/통합: 고스레드 skew 전경로 동시. LLT는 **짧은 per-search Guard만**(§4-F). | — | TSan race 0 + ASan UAF/이중free 0 + Release no-hang. 가시성 oracle 통과 + 체인 축소 + 오버플로 핀 안전. survivors high-water. |
 
 핵심 재배열(종합안 대비): **전부-CAS(1c-2)·백스톱(1c-3)을 FG 떼기(1c-4)보다 앞**으로, **회수 권한 단일화**, **head-prune 직렬화 수정**, **head writer 2자 제한**, **부기 집합 tombstone**, **LLT 짧은 Guard**.
+
+## 7. 1c-2 구현 적대적 코드리뷰 (3 reviewer) — 하드 제약 2건
+1c-2 구현(retire-once state machine + version-chain CAS unlink)을 reviewer 3명이 공격. **1c-2 코드 자체는 contract(BG 단독 unlinker, node당 swept wrapper 1개, GC-skips-head)에서 정확** — reviewer 3은 insert/search 상호작용을 못 깸, reviewer 1은 `unlink_epoch_from_chain`이 1c-2·1c-4 양쪽에서 정확함을 확인. 발견 2건은 전부 **지금은 inert인 forward-looking 함정**이며 후속 증분의 하드 제약:
+
+- **[1c-3, high] retire-once gate는 `en->state` 안에 산다 → `en`이 살아있는 동안만 idempotent.** 두 번째 retire 시도가 `en` EBR-free 이후 `en->state`를 읽으면 그 자체가 UAF(안전한 skip 아님). 지금 안전한 이유 = **node당 swept wrapper가 정확히 1개**(`insert`가 epoch당 wrapper 1개; dummy-overflow wrapper는 sweep 안 됨). **→ 1c-3의 dummy-overflow drain은 그 단일 소유권을 *transfer*(re-home = wrapper 이동)해야 하고, 살아있는 node에 *두 번째 swept wrapper*를 만들면 안 됨.** 또 wrapper는 그 node가 retire되기 전에 list에서 splice-out돼야(이후 sweep이 retire된 node에 재도달 금지). (정 안 되면 retire-once 토큰을 `en` 밖으로 빼는 fallback.) → 코드 주석 정정 완료(가짜 ">1 wrapper 안전" 문구 제거).
+- **[1c-5, low] head-prune 켜기 전 insert의 head-prepend(`header->next` plain store)를 CAS로 바꿔야.** 안 그러면 `unlink_epoch_from_chain`의 header-predecessor 분기(현재 GC-skips-head로 dormant)가 insert의 plain store와 경쟁해 retire된 node를 resurrect + UAF. = §3의 "head writer 2자 제한"을 코드 레벨로 못박은 것.
+
+- (참고) conservation `detached==retired`는 *single swept wrapper* 불변식에서만 성립 — 두 번째 swept wrapper 세계가 오면 3-term(LIVE+CHAIN_DETACHED+RETIRED)으로. 주석 정정 완료.

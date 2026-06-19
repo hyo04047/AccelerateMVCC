@@ -12,6 +12,13 @@ namespace mvcc {
 
     struct interval_list_header;   // forward decl: epoch_node carries a back-pointer to it
 
+    // Stage 1c retire-once state claim for an epoch_node. Reachable from TWO lists (the
+    // record's version chain + a wrapper in the epoch_table bucket list), so it must be
+    // freed exactly once and only after it is unreachable from both. Whoever splices it
+    // out of the version chain CAS-claims LIVE->CHAIN_DETACHED and stops; only the BG GC
+    // (the sole wrapper unlinker) retires it, gated by state.exchange(RETIRED).
+    enum EpochState : uint8_t { EPOCH_LIVE = 0, EPOCH_CHAIN_DETACHED = 1, EPOCH_RETIRED = 2 };
+
     struct UndoLogEntryNode {
         uint64_t trxId;
 
@@ -64,6 +71,9 @@ namespace mvcc {
         // epoch_nodes via the epoch_table, not the kuku header, so it needs this to
         // splice out a head epoch (CAS header->next) and to anchor the forward scan.
         interval_list_header *header;
+        // Stage 1c retire-once claim (LIVE -> CHAIN_DETACHED -> RETIRED); default-init so
+        // both ctors below get EPOCH_LIVE without listing it. See EpochState above.
+        std::atomic<uint8_t> state{EPOCH_LIVE};
 
         epoch_node(uint64_t epoch_num, uint64_t trx_id, undo_entry_node *undo_entry, epoch_node *next)
                 : epoch_num(epoch_num), min_trx_id(trx_id), max_trx_id(trx_id), count(1),

@@ -311,3 +311,54 @@ TEST(GcSharedDescriptor, ReadersConsumeDescriptorUnderBgGc) {
     EXPECT_GT(reads.load(), 0);
     EXPECT_GT(mvcc.coop_dead_seen(), 0u);   // readers actually loaded+judged the descriptor
 }
+
+// ---------------------------------------------------------------------------
+// Stage 1c-2: retire-once state machine (LIVE->CHAIN_DETACHED->RETIRED) + version-chain
+// all-CAS, still BG-only unlinker. Conservation: every epoch_node detached from the
+// version chain is retired EXACTLY once (the state claim gates the sole retire authority);
+// a strand (detached, never retired) or a double-retire breaks detached == retired, and
+// ASan additionally catches any double-free of an epoch_node or its undo chain.
+// ---------------------------------------------------------------------------
+TEST(GcRetireOnce, ConservationUnderBgGc) {
+    Accelerate_mvcc mvcc(8);
+    mvcc.start_background_gc();
+    std::atomic<bool> done{false};
+    std::atomic<long> reads{0};
+
+    auto reader = [&] {
+        while (!done.load(std::memory_order_acquire)) {
+            trx_t* rd = mvcc.start_trx();
+            uint64_t s = 0, p = 0, o = 0;
+            (void) mvcc.search_operation(1, rd->trx_id % 8, rd, s, p, o);
+            mvcc.commit_trx(rd);
+            reads.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    std::vector<std::thread> readers;
+    for (int i = 0; i < 4; i++) readers.emplace_back(reader);
+    for (uint64_t i = 0; i < 150000; i++) mvcc.insert_trx(i % 8);
+    done.store(true, std::memory_order_release);
+    for (auto& t : readers) t.join();
+    mvcc.stop_background_gc();
+
+    EXPECT_GT(mvcc.epochs_retired(), 0u);                      // GC actually reclaimed epochs
+    EXPECT_EQ(mvcc.epochs_detached(), mvcc.epochs_retired());  // each detached node retired once
+}
+
+// Single-threaded determinism: run_gc_once detaches+retires with the same conservation.
+// We hold ONE active reader so the deadzone is non-empty (everything below its snapshot is
+// dead) and GC actually prunes -- with NO active txn the snapshot is empty and our
+// conservative deadzone prunes nothing, so nothing would be retired.
+TEST(GcRetireOnce, ConservationSingleThread) {
+    Accelerate_mvcc mvcc(4);
+    for (uint64_t i = 0; i < 20000; i++) mvcc.insert_trx(i % 4);   // build epochs first
+    trx_t* rd = mvcc.start_trx();                                  // snapshot above them
+    for (uint64_t i = 20000; i < 120000; i++) {
+        mvcc.insert_trx(i % 4);
+        if (i % 2500 == 0) mvcc.run_gc_once();                     // epochs below rd's snapshot are dead
+    }
+    mvcc.commit_trx(rd);
+    EXPECT_GT(mvcc.epochs_retired(), 0u);
+    EXPECT_EQ(mvcc.epochs_detached(), mvcc.epochs_retired());
+}

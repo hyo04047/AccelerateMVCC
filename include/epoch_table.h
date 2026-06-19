@@ -295,43 +295,29 @@ namespace mvcc {
                             epoch_node_wrapper *dead = node;
                             epoch_node_wrapper *wsucc = node->next.ptr();
                             dead->next.set_mark(wsucc);                  // logical splice (Harris mark)
-                            prev_node->next.store(wsucc, false);         // physical splice (store; concurrent -> CAS in inc4)
+                            // Wrapper list is single-unlinker (BG only; FG never touches it). The
+                            // windowed sweep + the 1c-3 backstop run on this one BG actor over
+                            // disjoint ranges, so the plain store stays valid (no CAS needed).
+                            prev_node->next.store(wsucc, false);
                             node = wsucc;
 
                             epoch_node *epochNode = dead->epoch;
-                            // Harris unlink from the (forward-only) interval list.
-                            // (1) logical delete: mark epochNode's forward pointer so a concurrent
-                            //     reader skips it and a concurrent insert-behind-it CAS fails.
+                            // Version-chain unlink, now multi-unlinker-safe (ahead of FG unlink in
+                            // 1c-4): (1) logical mark the forward word; (2) CAS the predecessor's
+                            // next past it (Harris), found by forward scan from the header.
                             epoch_node *succ = epochNode->next.ptr();
                             epochNode->next.set_mark(succ);
-                            // (2) physical unlink: swing the predecessor's next past epochNode.
-                            //     GC reaches nodes via the epoch_table, not the kuku header, so it
-                            //     uses epochNode->header to anchor a forward scan for the predecessor
-                            //     (the header itself for a head epoch). This also fixes the latent
-                            //     head-prune bug (header->next was never updated before).
-                            interval_list_header *hdr = epochNode->header;
-                            if (hdr != nullptr) {
-                                if (hdr->next.ptr() == epochNode) {
-                                    hdr->next.store(succ, false);
-                                } else {
-                                    for (epoch_node *p = hdr->next.ptr(); p != nullptr; p = p->next.ptr()) {
-                                        if (p->next.ptr() == epochNode) {
-                                            p->next.store(succ, false);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            // Retire under EBR grace. One deleter frees the whole epoch: its undo
-                            // entry chain (previously leaked -- epoch_node has no dtor) + the node.
-                            reclaimer_.retire([epochNode] {
-                                for (undo_entry_node *e = epochNode->first_entry; e != nullptr; ) {
-                                    undo_entry_node *nx = e->next_entry.load();
-                                    delete e;
-                                    e = nx;
-                                }
-                                delete epochNode;
-                            });
+                            unlink_epoch_from_chain(epochNode->header, epochNode, succ);
+                            // Claim CHAIN_DETACHED (the version-chain splicer's role). In 1c-2 BG is
+                            // the only splicer; 1c-4 lets an FG reader win this CAS instead.
+                            uint8_t expLive = EPOCH_LIVE;
+                            if (epochNode->state.compare_exchange_strong(
+                                    expLive, EPOCH_CHAIN_DETACHED, std::memory_order_acq_rel))
+                                epochs_detached_.fetch_add(1, std::memory_order_relaxed);
+                            // Retire through the SINGLE state-gated authority (never on deadness
+                            // alone). Exactly-once holds because each node has one swept wrapper
+                            // (see retire_epoch_once); FG detach in 1c-4 routes its retire here too.
+                            retire_epoch_once(epochNode);
                             reclaimer_.retire([dead] { delete dead; });
                         } else {
                             prev_node = node;                            // advance prev only over kept nodes
@@ -365,6 +351,14 @@ namespace mvcc {
         // producer/reclaimer in stage 1a: only the GC actor retires/reclaims.
         EpochReclaimer& reclaimer() { return reclaimer_; }
 
+        // GC metrics (stage 1c): epoch_nodes detached from the version chain, and retired.
+        // At quiescence detached == retired -- valid while each epoch_node has a single swept
+        // wrapper (the 1c-2/1c-4 world: LIVE->CHAIN_DETACHED->RETIRED runs once per node). If a
+        // retire could ever skip the detach claim (a second swept wrapper, 1c-3), switch the
+        // check to the full LIVE + CHAIN_DETACHED + RETIRED conservation.
+        uint64_t epochs_detached() const { return epochs_detached_.load(std::memory_order_relaxed); }
+        uint64_t epochs_retired()  const { return epochs_retired_.load(std::memory_order_relaxed); }
+
 
     private:
         // Publish dz as the current shared descriptor and retire the superseded one under
@@ -375,6 +369,63 @@ namespace mvcc {
             if (old) reclaimer_.retire([old] { delete old; });
         }
 
+        // The SOLE epoch_node retire authority (stage 1c-2): every retire goes through here,
+        // gated by state.exchange(RETIRED). The gate dereferences en->state, so it is an
+        // idempotent no-op ONLY WHILE en is alive -- a second retire attempt that ran AFTER
+        // en was EBR-freed would be a use-after-free, NOT a safe skip. Safety therefore rests
+        // on each epoch_node having exactly ONE swept wrapper (Accelerate_mvcc::insert wraps
+        // each epoch once; the dummy-overflow wrapper is never swept) and on a wrapper being
+        // spliced out before its node is retired (so no later sweep re-reaches a retired node).
+        // => 1c-3's dummy-overflow drain MUST TRANSFER that single ownership (re-home moves the
+        //    wrapper), never create a second swept wrapper for a live node. 1c-4's FG detach
+        //    never retires; it only hands the node to this BG-only retire via the state claim.
+        void retire_epoch_once(epoch_node *en) {
+            if (en->state.exchange(EPOCH_RETIRED, std::memory_order_acq_rel) != EPOCH_RETIRED) {
+                epochs_retired_.fetch_add(1, std::memory_order_relaxed);
+                reclaimer_.retire([en] {
+                    for (undo_entry_node *e = en->first_entry; e != nullptr; ) {
+                        undo_entry_node *nx = e->next_entry.load();
+                        delete e;
+                        e = nx;
+                    }
+                    delete en;
+                });
+            }
+        }
+
+        // Harris physical unlink of `dead` (its forward word already mark-set) from the
+        // record's forward version chain: find the predecessor by scanning from the header
+        // and CAS its next past `dead`. Retries on a raced CAS and returns once `dead` is no
+        // longer reachable (another unlinker won) -> multi-unlinker-safe for FG unlink (1c-4).
+        void unlink_epoch_from_chain(interval_list_header *hdr, epoch_node *dead, epoch_node *succ) {
+            if (hdr == nullptr) return;
+            const uintptr_t desired = MarkedPtr<epoch_node>::pack(succ, false);
+            while (true) {
+                uintptr_t hw = hdr->next.load();
+                if (MarkedPtr<epoch_node>::ptr_of(hw) == dead) {     // header is the predecessor
+                    uintptr_t expected = MarkedPtr<epoch_node>::pack(dead, false);  // cas takes lvalue
+                    if (hdr->next.cas(expected, desired))
+                        return;
+                    continue;                                        // header->next moved; restart
+                }
+                epoch_node *p = MarkedPtr<epoch_node>::ptr_of(hw);
+                bool restart = false;
+                while (p != nullptr) {
+                    uintptr_t pw = p->next.load();
+                    epoch_node *pn = MarkedPtr<epoch_node>::ptr_of(pw);
+                    if (pn == dead) {
+                        if (MarkedPtr<epoch_node>::mark_of(pw)) { restart = true; break; }  // p dying
+                        uintptr_t expected = MarkedPtr<epoch_node>::pack(dead, false);
+                        if (p->next.cas(expected, desired))
+                            return;
+                        restart = true; break;                       // raced; restart from header
+                    }
+                    p = pn;
+                }
+                if (!restart) return;   // walked to end without finding dead -> already unlinked
+            }
+        }
+
         std::array<std::atomic<epoch_table_node *>, EPOCH_TABLE_SIZE> table{};
         std::vector<epoch_table_node *> long_live_epochs;
         EpochReclaimer reclaimer_;
@@ -382,6 +433,9 @@ namespace mvcc {
         // one leaks at shutdown by design (no next cycle to supersede+retire it), matching
         // the index's existing intended-leak posture; superseded ones are EBR-reclaimed.
         std::atomic<deadzone *> published_deadzone_{nullptr};
+        // Stage 1c retire-once conservation counters (see epochs_detached()/epochs_retired()).
+        std::atomic<uint64_t> epochs_detached_{0};
+        std::atomic<uint64_t> epochs_retired_{0};
         std::atomic<epoch_node_wrapper *> first_dummy_node;
         std::atomic<epoch_node_wrapper *> last_dummy_node;
 

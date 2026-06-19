@@ -18,7 +18,10 @@
 
 **증분 1c-1 ✅** **공유 deadzone descriptor publish + consume(판정만)**: BG가 매 사이클 만들던 deadzone을 `delete` 대신 **원자 publish(exchange)** 하고 옛 것을 **EBR로 retire**(reader가 traversal Guard 중 들고 있을 수 있어). reader(search)는 그 descriptor를 **자기 Guard 안에서 load**해 각 epoch의 dead 여부를 **판정만**(아직 unlink X — 1c-4 hook). 판정 결과는 `coop_dead_seen` 메트릭으로 카운트(= reader가 지나친 dead epoch 수 = chain bloat 프록시, 성능 지표). 안전: descriptor를 epoch_node와 **같은 reservation**이 pin → BG가 retire해도 reader 밑에서 free 안 됨. nominal epoch window라 append가 verdict를 못 넓힘(과청소 X). 신규 테스트: **staleness oracle**(옛 descriptor가 prune하는 epoch은 현재 descriptor도 prune = 단조 trx-id→dead zone만 성장, 결정적) + concurrent consume(coop_dead_seen>0 + ASan/TSan으로 publish/retire 수명 검증). 11개 Release/ASan(UAF 0)/TSan(race 0) green. 기존 동작 불변(GC sweep 동일, 가시성 동일). (참고: `can_pruning`의 pre-existing sign-compare 경고는 내 변경 아님, 미수정 보류.)
 
-**다음**: 1c-2(상태도장 + retire 일원화 + 버전체인 전부 CAS, 아직 BG-only) → 1c-3(backstop+drain, #2) → 1c-4(FG 떼기, non-head) → 1c-5(cold head prune, #5) → 1c-6(스케일).
+**증분 1c-2 ✅** **retire-once state machine + version-chain 전부 CAS (아직 BG 단독 unlinker)**: epoch_node에 `state`(LIVE→CHAIN_DETACHED→RETIRED). version chain에서 splice한 쪽이 `state` LIVE→CHAIN_DETACHED CAS-claim 후 멈춤(retire X); **유일한 retire 권한 = `retire_epoch_once`**(`state.exchange(RETIRED)` 게이트, BG만). version chain 물리 splice를 plain store→**Harris CAS**(`unlink_epoch_from_chain`: header에서 predecessor forward-scan + CAS, race 시 restart)로(1c-4 multi-unlinker 대비). wrapper splice는 plain store 유지(BG 단독, disjoint bucket). conservation 카운터(detached/retired)로 "detached node는 정확히 한 번 retire" 검증. 신규 테스트 `GcRetireOnce`(concurrent + single-thread, held-reader로 deadzone 비움 방지) 2개 + 기존 11개 = **13개 Release/ASan(double-free 0)/TSan(race 0) green**. 가시성·GC 동작 불변.
+- **적대적 코드리뷰(reviewer 3)**: 1c-2 코드 정확 확인(insert/search 못 깸, `unlink_epoch_from_chain` 1c-4용까지 정확). forward-looking 제약 2건 문서화([design-1c.md](design-1c.md) §7) — ① 1c-3 drain은 단일 swept-wrapper 소유권 *transfer*(gate가 `en` 안에 있어 free 후 재접근 시 UAF) ② 1c-5 전 insert head-prepend를 CAS로. 가짜 ">1 wrapper 안전" 주석 정정.
+
+**다음**: 1c-3(backstop full-bucket sweep + dummy-overflow drain[소유권 transfer], #2) → 1c-4(FG 떼기, non-head) → 1c-5(cold head prune[insert head-prepend CAS 선행], #5) → 1c-6(스케일).
 
 ---
 
