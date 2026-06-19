@@ -203,14 +203,17 @@ namespace mvcc {
             return can_prune_epoch(epoch_wrapper->epoch, deadzone);
         }
 
-        // Judge whether an epoch_node's (nominal) interval is fully inside a dead zone.
-        // Uses the nominal window [epoch_num*EPOCH_SIZE, +EPOCH_SIZE): an append that
-        // lowers the epoch's actual min never widens this window, so the verdict only
-        // ever under-prunes (never over-prunes). Used by GC and (stage 1c) FG readers.
+        // Judge whether an epoch_node's versions are all fully inside a dead zone, using TIGHT
+        // bounds (stage 1c-4 fix): the epoch's actual visibility interval is [min_trx_id,
+        // superseded_ts] -- its oldest version's begin-ts and its newest version's supersede-ts
+        // (= the next-newer version's begin; UINT64_MAX while this is still the head, so a head
+        // is never dead). The old nominal window [epoch*EPOCH_SIZE, +EPOCH_SIZE) used the epoch
+        // boundary as the supersede point, which UNDER-estimates it when the next version lands
+        // in a far-away epoch -- over-pruning a version a reader/LLT still needs. Faithful to
+        // vDriver SegIsInDeadZone. Used by GC (can_operate_gc) and FG readers (search).
         bool can_prune_epoch(epoch_node *en, deadzone *dz) {
-            uint64_t epoch_num = en->epoch_num;
-            uint64_t v_start = epoch_num * EPOCH_SIZE;
-            uint64_t v_end = ((epoch_num + 1) * EPOCH_SIZE) - 1;
+            uint64_t v_start = en->min_trx_id;
+            uint64_t v_end = en->superseded_ts.load(std::memory_order_acquire);
             return can_pruning(v_start, v_end, dz);
         }
 

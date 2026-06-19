@@ -23,7 +23,13 @@
 
 **증분 1c-3 ✅** **full-bucket backstop sweep + dummy-overflow drain (#2 흡수, 전부 BG 단독)**: ① **tombstone** — 드레인된 bucket을 `erase`(인덱스 시프트→윈도 산술 깨짐) 대신 nullptr로(long_live_epochs push-only 유지, sweep은 null skip). ② **backstop** — windowed sweep은 bucket을 1회만 보므로 그 뒤에 죽는 epoch(또는 1c-4에서 FG가 cold bucket에 detach한 노드)이 strand됨 → 낮은 cadence(매 4 cycle)로 전 live bucket 재방문. 대부분 empty/tombstone라 O(1) skip. ③ **dummy drain** — dummy-overflow를 single-head **Treiber stack**으로 리팩터(insert=push, BG=exchange로 통째 detach), drain이 dead orphan은 detach+retire, live는 re-queue. orphan wrapper는 그 epoch의 **유일한** wrapper라 retire가 곧 단일 소유권 — 리뷰 제약대로 **transfer(복제 X)**. prune 로직을 `detach_and_retire_epoch`/`wrapper_prunable`/`sweep_bucket`/`drain_dummy` 헬퍼로 공통화. 신규 테스트 `GcBackstopDrain`(4 writer가 bucket-swap race로 dummy 적재 → conservation detached==retired + `dummy_pending` 유계) + 기존 13개 = **14개 Release/ASan(UAF/double-free 0)/TSan(race 0) green**. 새 경고 0(can_pruning sign-compare는 pre-existing). (perf 미세 항목: tombstone vector가 무한 성장 — 1c-6에서 compaction/별도 pending list로.)
 
-**다음**: 1c-4(FG 떼기, non-head: reader가 1c-1 판정 자리에서 dead non-head epoch을 mark+CAS-splice+CHAIN_DETACHED, retire는 BG) → 1c-5(cold head prune[insert head-prepend CAS 선행], #5) → 1c-6(스케일).
+**증분 1c-4 ✅** **FG cooperative unlink (payload — version chain이 처음으로 multi-unlinker)**: reader(search)가 dead **non-head** epoch을 직접 mark + best-effort O(1) CAS-splice(carried `pred_next`, retry 없음 → livelock 없음, 실패 시 BG backstop이 처리). **retire는 BG 단독**(FG는 state 안 건드림; BG가 descriptor-dead로 retire, conservation 유지). **head는 항상 scan**(never pruned → reader의 visible-latest 안 놓침). 메트릭 `coop_dead_seen`, 테스트용 `chain_length`. 신규 테스트 `GcFgUnlink`(visibility oracle `RegisteredReaderResultStable` + hot-record reader‖reader/reader‖BG splice race `HotRecordCoopUnlinkShrinksChain`).
+- **적대적 코드리뷰(reviewer 3) → blocker 2건 수정**(reviewer 3은 retire/UAF/conservation 못 깸 = 건전). [design-1c.md](design-1c.md) §8:
+  - **chain corruption (stale successor)**: FG splice가 mark 전에 읽은 successor를 써서, 동시 unlinker가 next를 바꾸면 live node drop + detached node 되살림(UAF). 수정: set_mark 후 re-load, marked일 때만 frozen successor로 splice.
+  - **deadzone over-prune (tight bounds, 깊은 correctness)**: nominal epoch 범위를 xmax로 써서 reader/LLT가 보는 version을 dead로 오판(pre-existing BG 잠복, 1c-4가 증폭 → LLT correctness 깨짐). 수정: `epoch_node.superseded_ts`(insert prepend가 옛 head에 기록) + `can_prune_epoch`이 실제 `[min_trx_id, superseded_ts]`로 판정(FG·BG 공통 경로 → 한 곳 수정). **고치기 전 깨지는 테스트 먼저**(`GcDeadzone.TightBoundDoesNotOverPruneNeededVersion`: nominal FAIL → tight PASS)로 경험적 확인. = design-gc §8.1을 perf 개선에서 **correctness 필수**로 격상.
+- **17개 Release/ASan(UAF/double-free 0)/TSan(race 0) green.** 새 경고 0.
+
+**다음**: 1c-5(cold head prune[insert head-prepend CAS 선행, §3], #5) → 1c-6(스케일 + perf: tombstone 압축, 짧은 LLT Guard, FG dead-scan skip 최적화).
 
 ---
 

@@ -183,6 +183,25 @@ namespace mvcc
         // Stage 1c-3: orphan wrappers pending in the dummy-overflow stack (test-only).
         size_t dummy_pending() const { return epoch_table->dummy_pending(); }
 
+        // Stage 1c-4 (test-only): count of UNMARKED epochs in a record's version chain. Call
+        // only when quiescent (no concurrent GC/readers) -- it walks the chain without a Guard.
+        size_t chain_length(uint64_t table_id, uint64_t index) {
+            kuku::item_type item = kuku::make_item(table_id, index);
+            kuku::QueryResult q = kuku_table->query(item);
+            if (!q.found()) return 0;
+            uint64_t value = q.in_stash()
+                ? kuku::get_value(kuku_table->stash(q.location()))
+                : kuku::get_value(kuku_table->table(q.location()));
+            auto* header = reinterpret_cast<interval_list_header*>(value);
+            size_t n = 0;
+            for (epoch_node* e = header->next.ptr(); e != nullptr; ) {
+                uintptr_t word = e->next.load();
+                if (!MarkedPtr<epoch_node>::mark_of(word)) ++n;
+                e = MarkedPtr<epoch_node>::ptr_of(word);
+            }
+            return n;
+        }
+
         trx_t* start_trx(){
             return trxManger->startTrx();
         }

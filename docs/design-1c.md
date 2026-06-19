@@ -65,3 +65,10 @@
 - **[1c-5, low] head-prune 켜기 전 insert의 head-prepend(`header->next` plain store)를 CAS로 바꿔야.** 안 그러면 `unlink_epoch_from_chain`의 header-predecessor 분기(현재 GC-skips-head로 dormant)가 insert의 plain store와 경쟁해 retire된 node를 resurrect + UAF. = §3의 "head writer 2자 제한"을 코드 레벨로 못박은 것.
 
 - (참고) conservation `detached==retired`는 *single swept wrapper* 불변식에서만 성립 — 두 번째 swept wrapper 세계가 오면 3-term(LIVE+CHAIN_DETACHED+RETIRED)으로. 주석 정정 완료.
+
+## 8. 1c-4 구현 적대적 코드리뷰 (3 reviewer) — blocker 2건 수정
+1c-4(FG cooperative unlink, version chain이 처음으로 multi-unlinker가 되는 payload)를 reviewer 3명이 공격. reviewer 3(retire/UAF/conservation)은 **못 깸**(strand/double-free/UAF/conservation 다 건전). 나머지 둘이 **blocker 2건** 발견 — 둘 다 수정 완료:
+
+- **[blocker, chain corruption] stale successor.** FG splice가 node를 mark하기 *전에* 읽은 `succ`로 pred를 CAS-splice. 그 사이 다른 unlinker가 `epoch->next`를 바꾸면 `set_mark`은 실패하는데 코드가 그 반환을 무시하고 stale `succ`로 splice → live node를 chain에서 떨어뜨리고 이미 detach된(곧 free될) node를 chain에 되살림 → UAF. **수정**: `set_mark` 후 `epoch->next`를 다시 load해, 실제로 marked일 때만(=next가 frozen) 그 re-read한 successor로 splice; 아니면 splice 없이 advance. (marked node의 next는 frozen이라 help-splice 경로는 원래 안전했음 — prune 경로만 결함.)
+- **[blocker, visibility = 깊은 것] deadzone over-prune (tight bounds).** `can_operate_gc`가 epoch의 **nominal 범위** `[epoch*SIZE, +SIZE)`를 그 epoch의 visibility 끝(xmax)으로 씀. 실제 xmax는 그 version을 덮는 다음-newer version의 begin-ts인데, nominal은 이걸 과소평가 → reader(특히 LLT)가 아직 보는 version을 dead로 오판해 prune. **pre-existing**(BG도 같은 check → 잠복; visibility를 GC 하에서 검증하는 테스트가 없었음), **1c-4가 reader 경로에서 결정적으로 증폭.** 이건 프로젝트 핵심인 **LLT correctness**를 깨는 거라 ship 불가.
+  - **수정 = tight bounds** (design-gc §8.1을 correctness 필수로 끌어올림): epoch_node에 `superseded_ts`(다음-newer version begin-ts; head는 UINT64_MAX) 추가 — insert가 새 epoch을 prepend할 때 옛 head에 O(1) store(보수적으로 prepend trx_id). `can_prune_epoch`이 `[min_trx_id, superseded_ts]`(실제 visibility)로 판정 → vDriver SegIsInDeadZone 충실. **FG·BG 둘 다** `can_prune_epoch` 경유라 한 곳 수정으로 양쪽 fix. 회귀 테스트 `GcDeadzone.TightBoundDoesNotOverPruneNeededVersion`(nominal에서 FAIL → tight에서 PASS로 경험적 확인). `GcDeadzone`/staleness oracle 헬퍼는 fields를 nominal로 세팅해 기존 단언 유지. 17개 Release/ASan/TSan green.

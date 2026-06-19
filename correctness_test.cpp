@@ -58,6 +58,8 @@ TEST(MvccVisibility, ExcludesActiveTransactions) {
 static bool epoch_prunable(Epoch_table& et, Epoch_table::deadzone* zone, uint64_t epoch_num) {
     epoch_node en;              // default ctor zeroes fields
     en.epoch_num = epoch_num;
+    en.min_trx_id = epoch_num * EPOCH_SIZE;                              // nominal window start
+    en.superseded_ts.store(epoch_num * EPOCH_SIZE + EPOCH_SIZE - 1);     // nominal window end (xmax)
     epoch_node_wrapper w(&en);
     return et.can_operate_gc(&w, zone);
 }
@@ -105,6 +107,30 @@ TEST(GcDeadzone, EmptySnapshotPrunesNothing) {
     EXPECT_EQ(zone->len, 0u);
     EXPECT_FALSE(epoch_prunable(et, zone, 0));
     EXPECT_FALSE(epoch_prunable(et, zone, 100));
+    delete zone;
+}
+
+// Stage 1c-4 fix demonstration (tight bounds vs over-pruning). A version superseded BEYOND its
+// nominal epoch window must NOT be pruned: it is still the visible-latest for the transaction
+// at the dead zone's right edge. Active set {500, 9000} -> dead zone (500, 9000). A non-head
+// epoch holds version 8050 whose next-newer version is at 9500 (> 9000), so it is reader@9000's
+// visible version and is NOT dead. The nominal window [8000,8099] wrongly classifies it dead;
+// the tight bound [min_trx_id=8050, superseded_ts=9500] correctly keeps it.
+// FAILS under the old nominal can_operate_gc; PASSES once the check uses min_trx_id/superseded_ts.
+TEST(GcDeadzone, TightBoundDoesNotOverPruneNeededVersion) {
+    Epoch_table et;
+    trx_t a(500);                  // a.active empty -> oldest_low_limit = 500
+    trx_t b(9000);                 // b == reader@9000
+    std::vector<trx_t> snap; snap.push_back(a); snap.push_back(b);
+    auto* zone = et.generate_dead_zone(snap);   // zones [0,500), (500,9000)
+
+    epoch_node en;
+    en.epoch_num = 80;             // nominal window [8000,8099] -- the OLD check would prune
+    en.min_trx_id = 8050;
+    en.superseded_ts.store(9500);  // actually superseded only at 9500 (>= 9000) -> still visible to b
+    epoch_node_wrapper w(&en);
+    EXPECT_FALSE(et.can_operate_gc(&w, zone))
+        << "epoch holds reader@9000's visible version (superseded only at 9500); must not be pruned";
     delete zone;
 }
 
@@ -268,9 +294,8 @@ TEST(GcSharedDescriptor, StaleDescriptorOnlyUnderPrunes) {
 
     int d1_pruned = 0;
     for (uint64_t e = 0; e < 30; ++e) {
-        epoch_node en; en.epoch_num = e;
-        bool p1 = et.can_prune_epoch(&en, d1);
-        bool p2 = et.can_prune_epoch(&en, d2);
+        bool p1 = epoch_prunable(et, d1, e);   // helper sets nominal [e*SIZE, +SIZE) tight bounds
+        bool p2 = epoch_prunable(et, d2, e);
         if (p1) {
             ++d1_pruned;
             EXPECT_TRUE(p2) << "epoch " << e << " prunable under stale D1 but NOT current D2";
@@ -407,4 +432,87 @@ TEST(GcBackstopDrain, DummyOverflowDrainsAndConserves) {
     EXPECT_GT(mvcc.epochs_retired(), 0u);                       // GC actually reclaimed
     EXPECT_EQ(mvcc.epochs_detached(), mvcc.epochs_retired());   // conservation across all paths
     EXPECT_LT(mvcc.dummy_pending(), 256u);                      // dummy drained (no unbounded leak)
+}
+
+// ---------------------------------------------------------------------------
+// Stage 1c-4: FG cooperative unlink. Readers now mark + best-effort CAS-splice dead NON-head
+// epochs themselves (retire stays BG-only). The version chain becomes genuinely multi-unlinker
+// (readers + BG). These assert (a) visibility is NOT corrupted by concurrent cooperative
+// unlink, and (b) the hot-record races (reader-vs-reader, reader-vs-BG) are UAF/race-free and
+// cooperative unlink keeps the chain bounded. Run under ASan + TSan.
+// ---------------------------------------------------------------------------
+
+// Visibility oracle: a registered reader's snapshot protects its visible-latest version (in
+// the head epoch, which is never pruned), so its result must stay IDENTICAL across thousands
+// of searches while churn readers + BG GC cooperatively unlink the record's dead epochs.
+TEST(GcFgUnlink, RegisteredReaderResultStable) {
+    Accelerate_mvcc mvcc(4);
+    for (int i = 0; i < 2000; i++) mvcc.insert_trx(2);   // many versions on record 2 -> many epochs
+    mvcc.start_background_gc();
+    std::atomic<bool> done{false};
+
+    auto churn = [&] {
+        while (!done.load(std::memory_order_acquire)) {
+            trx_t* r = mvcc.start_trx();
+            uint64_t s = 0, p = 0, o = 0;
+            (void) mvcc.search_operation(1, 2, r, s, p, o);   // FG cooperative unlink on record 2
+            mvcc.commit_trx(r);
+        }
+    };
+    std::vector<std::thread> ts;
+    for (int i = 0; i < 4; i++) ts.emplace_back(churn);
+
+    trx_t* ref = mvcc.start_trx();                          // snapshot above all 2000 versions
+    uint64_t s0 = 0, p0 = 0, o0 = 0;
+    bool f0 = mvcc.search_operation(1, 2, ref, s0, p0, o0); // reference: the head version
+    bool stable = true;
+    for (int i = 0; i < 3000 && stable; i++) {
+        uint64_t s = 0, p = 0, o = 0;
+        bool f = mvcc.search_operation(1, 2, ref, s, p, o);
+        if (f != f0 || s != s0 || p != p0 || o != o0) stable = false;
+    }
+    mvcc.end_read_trx(ref);
+    done.store(true, std::memory_order_release);
+    for (auto& t : ts) t.join();
+    mvcc.stop_background_gc();
+
+    EXPECT_TRUE(f0);       // ref found a visible version
+    EXPECT_TRUE(stable);   // its result never changed despite concurrent cooperative unlink + GC
+}
+
+// Hot-record stress: 6 readers cooperatively unlink one record's chain while a writer keeps
+// appending new versions and BG GC runs. Exercises reader-vs-reader and reader-vs-BG splice
+// races on the SAME chain (the multi-unlinker surface 1c-2's review reasoned about). After a
+// final drain, conservation holds and the chain is bounded (cooperative unlink kept up).
+TEST(GcFgUnlink, HotRecordCoopUnlinkShrinksChain) {
+    Accelerate_mvcc mvcc(4);
+    mvcc.start_background_gc();
+    std::atomic<bool> done{false};
+    std::atomic<long> reads{0};
+
+    auto reader = [&] {
+        while (!done.load(std::memory_order_acquire)) {
+            trx_t* r = mvcc.start_trx();
+            uint64_t s = 0, p = 0, o = 0;
+            (void) mvcc.search_operation(1, 0, r, s, p, o);
+            mvcc.commit_trx(r);
+            reads.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    std::vector<std::thread> ts;
+    for (int i = 0; i < 6; i++) ts.emplace_back(reader);
+    for (int i = 0; i < 60000; i++) mvcc.insert_trx(0);   // hot record 0: chain keeps growing
+    done.store(true, std::memory_order_release);
+    for (auto& t : ts) t.join();
+    mvcc.stop_background_gc();
+
+    // Final drains (BG off) with a dead-making reader so every FG-detached node is retired.
+    trx_t* rd = mvcc.start_trx();
+    for (int i = 0; i < 80; i++) mvcc.run_gc_once();
+    mvcc.commit_trx(rd);
+
+    EXPECT_GT(reads.load(), 0);
+    EXPECT_GT(mvcc.coop_dead_seen(), 0u);                      // readers actually unlinked dead epochs
+    EXPECT_EQ(mvcc.epochs_detached(), mvcc.epochs_retired());  // conservation (FG unlink + BG retire)
+    EXPECT_LT(mvcc.chain_length(1, 0), 256u);                  // cooperative unlink kept it bounded
 }

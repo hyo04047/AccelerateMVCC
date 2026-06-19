@@ -74,6 +74,13 @@ namespace mvcc {
         // Stage 1c retire-once claim (LIVE -> CHAIN_DETACHED -> RETIRED); default-init so
         // both ctors below get EPOCH_LIVE without listing it. See EpochState above.
         std::atomic<uint8_t> state{EPOCH_LIVE};
+        // Stage 1c-4 fix (tight bounds): the begin-ts of the next-newer version that supersedes
+        // this epoch's newest version (= the min_trx_id of the epoch prepended after this one).
+        // Set once, when this epoch is demoted from head; UINT64_MAX while still the head (not
+        // yet superseded => never dead). The deadzone check uses this ACTUAL xmax instead of the
+        // nominal epoch boundary, so a version a reader/LLT still needs is not over-pruned
+        // (faithful to vDriver SegIsInDeadZone; design-gc 8.1, now a correctness necessity).
+        std::atomic<uint64_t> superseded_ts{~uint64_t(0)};
 
         epoch_node(uint64_t epoch_num, uint64_t trx_id, undo_entry_node *undo_entry, epoch_node *next)
                 : epoch_num(epoch_num), min_trx_id(trx_id), max_trx_id(trx_id), count(1),

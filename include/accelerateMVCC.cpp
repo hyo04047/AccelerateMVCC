@@ -63,9 +63,17 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
         }
         else if (header->next_epoch_num < epoch_num) {
             // create new epoch and prepend it at the head
+            epoch_node *old_head = header->next.ptr();
             auto *epoch = new epoch_node();
-            update_epoch_node(epoch, epoch_num, trx_id, undo_entry, header->next.ptr());
+            update_epoch_node(epoch, epoch_num, trx_id, undo_entry, old_head);
             epoch->header = header;
+
+            // The previous head is now superseded by this new version: record its tight xmax
+            // (stage 1c-4 fix) so the deadzone check no longer over-prunes it. trx_id is a
+            // conservative bound for the new epoch's first version (a later smaller append would
+            // only supersede it sooner, which keeps v_end larger -> under-prune, never over).
+            if (old_head != nullptr)
+                old_head->superseded_ts.store(trx_id, std::memory_order_release);
 
             header->next_epoch_num = epoch_num;
             header->next.store(epoch, false);
@@ -146,43 +154,72 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
     Epoch_table::deadzone *dz = epoch_table->published_deadzone();
     bool found = false;
     uint64_t best_trx_id = 0;
+    // pred_next = the forward word of the last KEPT predecessor (header, or the last unmarked
+    // non-pruned epoch). It anchors the best-effort O(1) cooperative unlink (1c-4). Starts at
+    // the header; pred_next == &header->next means "we are at the head" (never pruned).
+    MarkedPtr<epoch_node> *pred_next = &header->next;
     epoch_node *epoch = header->next.ptr();
 
     while (epoch != nullptr) {
         // Load the forward word once: ptr = successor, mark = "this epoch is dead".
         uintptr_t w = epoch->next.load();
-        epoch_node *next_epoch = MarkedPtr<epoch_node>::ptr_of(w);
-        // A marked epoch is logically deleted by GC -> skip its versions.
+        epoch_node *succ = MarkedPtr<epoch_node>::ptr_of(w);
         if (MarkedPtr<epoch_node>::mark_of(w)) {
-            epoch = next_epoch;
+            // Already logically deleted: best-effort help-splice it out (Harris helping), then
+            // skip its (invisible) versions. CAS only succeeds through an UNMARKED pred still
+            // pointing at us, so it is multi-unlinker safe; on failure leave it for the BG
+            // backstop. Do NOT advance pred (a marked node is not a valid predecessor).
+            uintptr_t exp = MarkedPtr<epoch_node>::pack(epoch, false);
+            pred_next->cas(exp, MarkedPtr<epoch_node>::pack(succ, false));
+            epoch = succ;
             continue;
         }
-        // 1c-1: judge deadness over the shared descriptor (consume side, not acted on until
-        // 1c-4). Counting it forces the descriptor deref, so this traversal exercises the
-        // publish/retire lifetime (BG retires superseded descriptors while readers hold one).
-        if (dz != nullptr && epoch_table->can_prune_epoch(epoch, dz))
+        // 1c-4 cooperative unlink: a dead NON-HEAD epoch is pruned just like BG would -- mark it
+        // (so every reader skips it henceforth) + best-effort O(1) splice via pred. retire stays
+        // BG-only (BG retires it via the descriptor-dead wrapper sweep / backstop). The HEAD is
+        // NEVER pruned (head-skip; pred_next == &header->next), so it is always scanned below --
+        // a reader's visible-latest version lives in the head and must never be skipped.
+        if (dz != nullptr && pred_next != &header->next &&
+            epoch_table->can_prune_epoch(epoch, dz)) {
             coop_dead_seen_.fetch_add(1, std::memory_order_relaxed);
-        // skip epochs entirely newer than ours
-        if (epoch->epoch_num > epoch_num) {
-            epoch = next_epoch;
-            continue;
+            epoch->next.set_mark(succ);                  // logical delete (idempotent; may fail if next moved)
+            // Re-read epoch->next: once it is MARKED its pointer is frozen, so splice to that
+            // re-read successor -- never the pre-mark `succ` (a concurrent unlinker may have
+            // changed epoch->next between the load above and here, which would make set_mark fail
+            // and the old `succ` stale; splicing it would drop a live node / resurrect a detached
+            // one). If set_mark did not take, just advance without splicing.
+            uintptr_t mw = epoch->next.load();
+            if (MarkedPtr<epoch_node>::mark_of(mw)) {
+                epoch_node *msucc = MarkedPtr<epoch_node>::ptr_of(mw);
+                uintptr_t exp = MarkedPtr<epoch_node>::pack(epoch, false);
+                pred_next->cas(exp, MarkedPtr<epoch_node>::pack(msucc, false));  // best-effort, no retry
+                epoch = msucc;
+            } else {
+                epoch = MarkedPtr<epoch_node>::ptr_of(mw);   // next moved w/o mark -> advance, no splice
+            }
+            continue;                                    // pruned: skip scan, do NOT advance pred
         }
-        for (undo_entry_node *undo_entry = epoch->first_entry;
-             undo_entry != nullptr;
-             undo_entry = undo_entry->next_entry.load()) {
-            if (undo_entry->trx_id < trx_id &&
-                std::find(active_trx_list.begin(), active_trx_list.end(), undo_entry->trx_id) ==
-                    active_trx_list.end()) {
-                if (!found || undo_entry->trx_id > best_trx_id) {
-                    found = true;
-                    best_trx_id = undo_entry->trx_id;
-                    space_id = undo_entry->space_id;
-                    page_id = undo_entry->page_id;
-                    offset = undo_entry->offset;
+        // Kept epoch (the head, or a live/not-yet-dead epoch): scan its versions for visibility
+        // if it is at or below our snapshot's epoch.
+        if (epoch->epoch_num <= epoch_num) {
+            for (undo_entry_node *undo_entry = epoch->first_entry;
+                 undo_entry != nullptr;
+                 undo_entry = undo_entry->next_entry.load()) {
+                if (undo_entry->trx_id < trx_id &&
+                    std::find(active_trx_list.begin(), active_trx_list.end(), undo_entry->trx_id) ==
+                        active_trx_list.end()) {
+                    if (!found || undo_entry->trx_id > best_trx_id) {
+                        found = true;
+                        best_trx_id = undo_entry->trx_id;
+                        space_id = undo_entry->space_id;
+                        page_id = undo_entry->page_id;
+                        offset = undo_entry->offset;
+                    }
                 }
             }
         }
-        epoch = next_epoch;
+        pred_next = &epoch->next;   // kept -> advance pred over it
+        epoch = succ;
     }
 
     return found;
