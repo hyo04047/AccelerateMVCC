@@ -182,6 +182,8 @@ namespace mvcc
         uint64_t epochs_retired()  const { return epoch_table->epochs_retired(); }
         // Stage 1c-3: orphan wrappers pending in the dummy-overflow stack (test-only).
         size_t dummy_pending() const { return epoch_table->dummy_pending(); }
+        // Stage 1c-6: GC long-lived-bucket vector size (test-only; bounded by compaction).
+        size_t long_live_size() const { return epoch_table->long_live_size(); }
 
         // Stage 1c-4 (test-only): count of UNMARKED epochs in a record's version chain. Call
         // only when quiescent (no concurrent GC/readers) -- it walks the chain without a Guard.

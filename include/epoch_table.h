@@ -291,6 +291,17 @@ namespace mvcc {
                     }
                 }
                 drain_dummy(deadzone);            // pending #2: reclaim/keep orphan wrappers
+                if (backstop_counter_ % BACKSTOP_PERIOD == 0) {
+                    // Stage 1c-6: compact away tombstoned (reclaimed) slots so long_live_epochs
+                    // tracks LIVE buckets, not all-buckets-ever. Safe: the backstop (which just ran)
+                    // sweeps every live bucket regardless of the windowed sweep's size-relative
+                    // indices, and retire-once is idempotent under any re-sweep -- so reorganizing
+                    // here at most shifts a bucket from the windowed path to the backstop path.
+                    long_live_epochs.erase(
+                        std::remove(long_live_epochs.begin(), long_live_epochs.end(),
+                                    static_cast<epoch_table_node *>(nullptr)),
+                        long_live_epochs.end());
+                }
             }
             publish_deadzone(deadzone);
             return true;
@@ -318,6 +329,11 @@ namespace mvcc {
                 ++n;
             return n;
         }
+
+        // Stage 1c-6 (test-only): size of the GC long-lived-bucket vector. With compaction it
+        // tracks LIVE buckets, not all-buckets-ever -- a slow unbounded growth would mean
+        // compaction regressed. Meaningful only when quiescent (BG-touched only).
+        size_t long_live_size() const { return long_live_epochs.size(); }
 
 
     private:

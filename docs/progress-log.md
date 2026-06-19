@@ -31,7 +31,11 @@
 
 **증분 1c-5 — 불필요(tight bounds가 #5를 해소) ✅**: head epoch은 record의 **현재 값**이라 아직 안 덮임(`superseded_ts=∞`) → tight bounds에서 **절대 dead 판정 안 됨**. 즉 GC가 head를 올바르게 보존하고 나머지만 prune — "cold dead head"는 nominal over-pruning이 살아있는 head를 dead로 오판한 artifact였고, 1c-4 tight bounds가 그 오판을 없애 #5 자체가 사라짐. design §3의 head-prune vs append headline 동시성 문제, insert head-prepend CAS 선행 요구, BG single-attempt-defer 다 같이 dissolve(head-prune이 없으니까). 확인 테스트 `GcDeadzone.HeadEpochIsNeverPruned`(head: nominal range가 dead zone 깊숙이 있어도 superseded_ts=∞라 prunable 아님). 18개 green. (잔여: cold record의 head wrapper가 bucket을 살려둬 long_live_epochs가 천천히 자라는 건 **correctness 아니라 perf** — 1c-6 tombstone 압축으로.)
 
-**다음**: **1c-6(스케일 + perf 마감)** — tombstone 압축/별도 pending list, 짧은 LLT Guard(reclaim 굶음 방지), FG dead-scan skip 최적화, 고스레드 skew 통합 검증. 그 후 stage C 벤치 준비.
+**증분 1c-6 ✅ (1c 마감)**: ① **long_live_epochs compaction** — tombstone(회수된 bucket nullptr)을 backstop cadence마다 erase해 vector가 *all-buckets-ever*가 아니라 *live bucket* 수를 추적. backstop(전-bucket scan)이 correctness를 받쳐주고 retire-once가 idempotent라, windowed sweep의 size-relative 인덱스가 흔들려도 안전(최악 = bucket이 windowed→backstop 경로로 이동). ② LLT 짧은 Guard·FG dead-scan skip은 이미 충족(search가 traversal당 Guard; 1c-4가 dead non-head scan skip). 신규 테스트 `GcScale`: HighConcurrencySkewedWorkload(16스레드/400k write/skew → conservation + chain<256 + `long_live_size`<2000[compaction 확인] + ASan/TSan clean) + LongLivedReaderConsistentUnderHeavyGc(LLT가 heavy GC‖churn 중에도 자기 visible version 계속 봄[tight bounds] + reclaim 진행). **20개 Release/ASan(UAF/double-free 0)/TSan(race 0) green.** 새 경고 0.
+
+**→ Stage 1c 완료 (1c-0 ~ 1c-6, 1c-5 dissolved).** FG cooperative unlink + 전용 BG GC + EBR 회수 + tight-bound deadzone이 multi-writer‖multi-reader-unlink‖BG GC 하에서 ASan/TSan/진행성 검증됨. stage C 전 보류 3건 모두 해소. 적대적 코드리뷰 2회(1c-2/1c-4)가 blocker 3건(stale-successor chain corruption + tight-bounds LLT correctness) 잡음.
+
+**다음 = Stage C (HTAP/long-txn 벤치)** — 1차 목표(A+B+C)의 실제 결과물: vDriver Zipfian+60s LLT 하니스 이식, version-chain length CDF vs baseline. (잔여 perf 후보: design-gc §9.3 — hot/cold/LLT classification, list→interval tree 등은 C 결과로 우선순위 판단.)
 
 ---
 

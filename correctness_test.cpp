@@ -540,3 +540,80 @@ TEST(GcDeadzone, HeadEpochIsNeverPruned) {
         << "a head epoch (current value, not yet superseded) must never be judged prunable";
     delete zone;
 }
+
+// ---------------------------------------------------------------------------
+// Stage 1c-6: scale + integration. High thread counts on a SKEWED workload (most ops hit a few
+// hot records), sustained, validating the full concurrent model end-to-end: UAF/race-free
+// (ASan/TSan), conservation across every retire path, hot-record chains bounded, the GC
+// bookkeeping vector bounded by compaction (not growing with total inserts), and no hang.
+// ---------------------------------------------------------------------------
+TEST(GcScale, HighConcurrencySkewedWorkload) {
+    Accelerate_mvcc mvcc(16);
+    mvcc.start_background_gc();
+    std::atomic<bool> done{false};
+    std::atomic<long> reads{0}, writes{0};
+    auto skew = [](long i) -> uint64_t { return (i % 5 < 4) ? (uint64_t)(i % 2) : (uint64_t)(2 + (i % 14)); };
+
+    auto reader = [&] {
+        long i = 0;
+        while (!done.load(std::memory_order_acquire)) {
+            trx_t* r = mvcc.start_trx();
+            uint64_t s = 0, p = 0, o = 0;
+            (void) mvcc.search_operation(1, skew(i++), r, s, p, o);
+            mvcc.commit_trx(r);
+            reads.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    auto writer = [&](long seed) {
+        for (long i = 0; i < 50000; i++) {
+            mvcc.insert_trx(skew(seed + i));
+            writes.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+
+    std::vector<std::thread> rs, ws;
+    for (int i = 0; i < 8; i++) rs.emplace_back(reader);
+    for (int i = 0; i < 8; i++) ws.emplace_back(writer, (long)i * 7919);
+    for (auto& t : ws) t.join();
+    done.store(true, std::memory_order_release);
+    for (auto& t : rs) t.join();
+    mvcc.stop_background_gc();
+
+    trx_t* rd = mvcc.start_trx();                  // dead-making reader -> final drains retire all
+    for (int i = 0; i < 80; i++) mvcc.run_gc_once();
+    mvcc.commit_trx(rd);
+
+    EXPECT_EQ(writes.load(), 8L * 50000);
+    EXPECT_GT(reads.load(), 0);
+    EXPECT_EQ(mvcc.epochs_detached(), mvcc.epochs_retired());   // conservation at scale
+    EXPECT_LT(mvcc.chain_length(1, 0), 256u);                   // hot record chain bounded
+    EXPECT_LT(mvcc.long_live_size(), 2000u);                    // bookkeeping bounded by compaction
+}
+
+// A long-lived reader transaction holds its snapshot across heavy GC + churn while doing many
+// SHORT (per-traversal Guard) searches. Its visible version must never disappear (tight bounds
+// keeps exactly what it needs), and the short per-traversal Guards must not starve reclaim.
+TEST(GcScale, LongLivedReaderConsistentUnderHeavyGc) {
+    Accelerate_mvcc mvcc(4);
+    for (int i = 0; i < 500; i++) mvcc.insert_trx(0);   // seed record 0
+    mvcc.start_background_gc();
+    trx_t* llt = mvcc.start_trx();                       // long-lived snapshot
+    uint64_t s0 = 0, p0 = 0, o0 = 0;
+    bool f0 = mvcc.search_operation(1, 0, llt, s0, p0, o0);  // its visible version
+
+    std::thread w([&] { for (int i = 0; i < 100000; i++) mvcc.insert_trx(i % 4); });
+
+    bool consistent = f0;
+    for (int i = 0; i < 30000 && consistent; i++) {
+        uint64_t s = 0, p = 0, o = 0;
+        bool f = mvcc.search_operation(1, 0, llt, s, p, o);   // a fresh short Guard each search
+        if (f != f0 || s != s0) consistent = false;
+    }
+    w.join();
+    mvcc.end_read_trx(llt);
+    mvcc.stop_background_gc();
+
+    EXPECT_TRUE(f0);
+    EXPECT_TRUE(consistent);                 // LLT's visible version survived all GC (tight bounds)
+    EXPECT_GT(mvcc.epochs_retired(), 0u);    // reclaim made progress (not starved by the LLT)
+}
