@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-06-19 — 세션 3: Step 1c 설계(적대적 하드닝) + 증분 1c-0 ✅
+
+**재개 검증**: HEAD=`08d70b6`(1b 완료+적대적 리뷰+push, clean) 확인 → Release/ASan/TSan 9개 전부 green 재확인(헤더 변경 캐시 무효화 후 재빌드). 1b 상태 무결.
+
+**방향 결정(사용자)**: 다음은 **1c(FG 협조 unlink) 풀스코프**. "FG 논리마킹만 vs 물리 unlink까지" 물었으나 사용자가 **풀스코프**(물리 unlink+retire, 보류 #1·#2·#5 흡수) 지정 — "성능 향상에 필요하면 범위 깎지 말 것"([[scope-prefer-full-for-performance]] 메모리화). 추가로 **최우선 목적 = InnoDB HTAP 성능 향상**(correctness는 전제, 목표 아님)임을 재강조받아 설계 평가 기준을 성능 기여도로.
+
+**설계 패스(워크플로 9에이전트: 위험요소 4축 병렬 → 종합 → 적대적 검증 4관점)**: 종합안을 검증 4관점 **모두 holds=false**로 깸. 단 핵심(상태도장 retire-once / 디스크립터 EBR 수명 / 단조 trx-id→과청소 없음)은 **못 깸=건전**. 깨진 건 전부 가장자리 → 순서·불변식만 조여 닫음. 상세 [design-1c.md](design-1c.md).
+- **헤드라인 버그(3관점 독립 지적)**: BG head-prune이 `header->next` CAS로만 조율하는데 insert의 in-place append는 그 포인터를 안 쓰고 record mutex만 잡음(BG는 mutex 안 잡음) → head retire와 append 무동기 → write-after-free+insert 유실. 수정: head는 '더 이상 head 아님'에만 prune(#5를 deadness 아닌 demote에 게이트)+insert head 접근 EBR Guard+head writer를 insert/BG 2자로 제한.
+- **재배열**: 전부-CAS·전버킷 backstop을 FG 떼기보다 **앞**으로, retire 권한 상태도장 1곳 일원화, long_live_epochs tombstone화, LLT는 짧은 per-search Guard.
+
+**증분 1c-0 ✅** EBR **slot lease**(보류 #1 흡수): creation-order round-robin(lifetime 스레드 256개에 assert) → **per-thread 슬롯 임대**(전역 풀, 첫 Guard에 획득·thread 종료 시 반납 → *동시생존* 스레드 기준). pool 고갈(>256 동시) 시 **보수적 overflow pin**(slotless reader가 announce 전에 floor를 자기 entry epoch 이하로 CAS-낮춤, seq_cst, no-reset). 신규 테스트 2개(순차 churn 517 / 동시 272→overflow 16) + 기존 9개, Release/ASan(UAF 0)/TSan(race 0) green. 인덱스 동작 변경 0.
+
+**다음**: 1c-1(공유 deadzone descriptor publish + reader 판정만) → 1c-2(상태도장+retire 일원화+버전체인 전부 CAS) → 1c-3(backstop+drain, #2) → 1c-4(FG 떼기, non-head) → 1c-5(cold head prune, #5) → 1c-6(스케일).
+
+---
+
 ## 2026-06-18 — 세션 2 (이어서): Step 1b 설계 패스 + 증분 0·1
 
 **설계 패스(워크플로 9에이전트: 병렬 하자드 매핑 → 설계 합성 → 적대적 검증 3관점 → 정리)**: marked-pointer(Harris) 도입안 확정. 적대적 검증이 잡은 핵심 — mark 비트만으론 부족: insert도 EBR Guard 필요(ABA/UAF), "기존 epoch에 undo 추가" 경로 쓰기 전 재검증 + count/min/max 원자화, GC의 `prev` deref는 UAF, undo 체인 누수, **reclaim 동시진입 이중free**, retire stamp는 물리 unlink CAS 이후.
