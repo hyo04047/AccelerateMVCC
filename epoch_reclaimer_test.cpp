@@ -110,3 +110,62 @@ TEST(EpochReclaimer, MultiProducerRetireSingleConsumerReclaim) {
     EXPECT_EQ(freed.load(), retired.load());     // each retired deleter ran exactly once
     EXPECT_EQ(r.pending(), 0u);
 }
+
+// Stage 1c (#1): the slot LEASE bounds slots by CONCURRENTLY-LIVE threads, not LIFETIME
+// threads. Spawn+join far more than MAX_THREADS short-lived guarded readers SEQUENTIALLY
+// (peak concurrency ~1). The old creation-order round-robin asserted once >MAX_THREADS
+// lifetime threads ever took a Guard; the lease must reuse each freed slot.
+TEST(EpochReclaimer, SlotLeaseSurvivesThreadChurn) {
+    EpochReclaimer r;
+    std::atomic<Node*> shared{ new Node{0} };
+    std::atomic<long> freed{0};
+
+    const unsigned ROUNDS = EpochReclaimer::MAX_THREADS * 2 + 5;  // >MAX_THREADS lifetime threads
+    for (unsigned i = 0; i < ROUNDS; ++i) {
+        std::thread t([&] {
+            EpochReclaimer::Guard g(r);                  // leases a slot
+            volatile int x = shared.load()->payload; (void)x;
+        });
+        t.join();                                        // thread gone -> SlotLease dtor frees its slot
+        Node* old = shared.exchange(new Node{(int)i});
+        r.retire([old, &freed] { delete old; freed.fetch_add(1); });
+        r.reclaim();
+    }
+    while (r.pending() != 0) r.reclaim();
+    EXPECT_EQ(freed.load(), (long)ROUNDS);               // each retired node freed exactly once
+    delete shared.load();
+}
+
+// Stage 1c (#1 overflow): when MORE than MAX_THREADS readers are concurrently live, the
+// surplus get SLOT_NONE and fall back to the conservative overflow pin -- never an alias
+// or UAF. While all of them hold guards, a node retired AFTER they entered must NOT be
+// freed (their pin protects it); after they all exit it must be freed exactly once.
+TEST(EpochReclaimer, SlotLeaseOverflowPinIsSafe) {
+    EpochReclaimer r;
+    const unsigned N = EpochReclaimer::MAX_THREADS + 16;  // force >MAX_THREADS concurrent -> overflow
+    std::atomic<unsigned> entered{0};
+    std::atomic<bool> release{false};
+    std::atomic<long> freed{0};
+
+    std::vector<std::thread> readers;
+    for (unsigned i = 0; i < N; ++i) {
+        readers.emplace_back([&] {
+            EpochReclaimer::Guard g(r);                  // ~16 of these get no slot -> overflow pin
+            entered.fetch_add(1, std::memory_order_acq_rel);
+            while (!release.load(std::memory_order_acquire)) std::this_thread::yield();
+        });
+    }
+    while (entered.load(std::memory_order_acquire) < N) std::this_thread::yield();
+
+    // All N readers are mid-traversal; retire a node now (its stamp > every reader's entry).
+    Node* victim = new Node{42};
+    r.retire([victim, &freed] { delete victim; freed.fetch_add(1); });
+    EXPECT_EQ(r.reclaim(), 0u);                           // slots + overflow pin protect it
+    EXPECT_EQ(freed.load(), 0);
+
+    release.store(true, std::memory_order_release);
+    for (auto& t : readers) t.join();
+
+    while (r.pending() != 0) r.reclaim();
+    EXPECT_EQ(freed.load(), 1);                           // freed exactly once after all exit
+}

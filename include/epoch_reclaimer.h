@@ -37,6 +37,7 @@ class EpochReclaimer {
 public:
     static constexpr unsigned MAX_THREADS = 256;
     static constexpr uint64_t NOT_READING = ~uint64_t(0);  // sentinel: not in a traversal
+    static constexpr unsigned SLOT_NONE = ~0u;             // my_slot(): lease pool exhausted
 
     EpochReclaimer() {
         for (auto &r : reservations_) r.store(NOT_READING, std::memory_order_relaxed);
@@ -47,12 +48,24 @@ public:
     // RAII reservation covering the span of one traversal.
     class Guard {
     public:
-        explicit Guard(EpochReclaimer &r) : r_(r), slot_(r.my_slot()) {
-            // publish "I may hold pointers as of this epoch" before dereferencing.
-            r_.reservations_[slot_].store(r_.global_epoch_.load(std::memory_order_acquire),
-                                          std::memory_order_seq_cst);
+        explicit Guard(EpochReclaimer &r) : r_(r), slot_(EpochReclaimer::my_slot()) {
+            if (slot_ != SLOT_NONE) {
+                // publish "I may hold pointers as of this epoch" before dereferencing.
+                r_.reservations_[slot_].store(r_.global_epoch_.load(std::memory_order_acquire),
+                                              std::memory_order_seq_cst);
+            } else {
+                // Lease pool exhausted (>MAX_THREADS concurrently-live threads): fall back
+                // to a conservative shared pin so reclaim never frees a node this slotless
+                // reader could still reach. Never aliases a live slot (safety net).
+                r_.overflow_enter();
+            }
         }
-        ~Guard() { r_.reservations_[slot_].store(NOT_READING, std::memory_order_release); }
+        ~Guard() {
+            if (slot_ != SLOT_NONE)
+                r_.reservations_[slot_].store(NOT_READING, std::memory_order_release);
+            else
+                r_.overflow_exit();
+        }
         Guard(const Guard &) = delete;
         Guard &operator=(const Guard &) = delete;
     private:
@@ -140,29 +153,81 @@ private:
             uint64_t v = r.load(std::memory_order_seq_cst);
             if (v < m) m = v;  // NOT_READING is max -> never lowers m
         }
+        // Fold in the conservative overflow pin (slotless readers). seq_cst throughout:
+        // a slotless reader lowers overflow_floor_ to <= its entry epoch BEFORE it bumps
+        // overflow_count_, so any scan that observes count>0 also observes floor<=that epoch.
+        if (overflow_count_.load(std::memory_order_seq_cst) > 0) {
+            uint64_t f = overflow_floor_.load(std::memory_order_seq_cst);
+            if (f < m) m = f;
+        }
         return m;
     }
 
-    unsigned my_slot() const {
-        thread_local unsigned slot = [] {
-            unsigned raw = next_slot_.fetch_add(1, std::memory_order_relaxed);
-            // Interim guard: creation-order round-robin aliases slots once >MAX_THREADS
-            // lifetime threads take a Guard, which would clobber a live reader's reservation
-            // (UAF). Stage 1c replaces this with a per-instance slot lease bounded by
-            // CONCURRENTLY-LIVE threads. Until then, fail loudly instead of silently aliasing.
-            assert(raw < MAX_THREADS &&
-                   "EBR reservation slots exhausted (>256 lifetime threads); needs slot-lease (stage 1c)");
-            return raw % MAX_THREADS;
-        }();
-        return slot;
+    // --- per-thread reservation slot LEASE (stage 1c; replaces creation-order
+    // round-robin). A thread leases one slot on its first Guard and frees it at thread
+    // exit, so slots are bounded by CONCURRENTLY-LIVE threads, not LIFETIME threads
+    // (spawn/join churn no longer exhausts the pool). The pool is global so a live
+    // thread owns one slot index used in every instance's reservations_ array (a globally
+    // unique index -> no aliasing in any instance). If exhausted (>MAX_THREADS concurrent),
+    // my_slot() returns SLOT_NONE and the Guard uses the conservative overflow pin.
+    static unsigned acquire_global_slot() {
+        for (unsigned i = 0; i < MAX_THREADS; ++i) {
+            bool expected = false;
+            if (g_slot_taken_[i].compare_exchange_strong(expected, true,
+                                                         std::memory_order_acquire,
+                                                         std::memory_order_relaxed))
+                return i;
+        }
+        return SLOT_NONE;   // pool exhausted -> caller falls back to overflow pin
     }
+    static void release_global_slot(unsigned i) {
+        if (i == SLOT_NONE) return;
+        // Order the Guard's NOT_READING reservation stores (release) before the slot is
+        // freed, so a thread that later leases this slot cannot observe it free while a
+        // stale reservation is still visible to a concurrent min_reservation scan.
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        g_slot_taken_[i].store(false, std::memory_order_release);
+    }
+    struct SlotLease {
+        unsigned slot;
+        SlotLease() : slot(acquire_global_slot()) {}
+        ~SlotLease() { release_global_slot(slot); }
+        SlotLease(const SlotLease &) = delete;
+        SlotLease &operator=(const SlotLease &) = delete;
+    };
+    static unsigned my_slot() {
+        thread_local SlotLease lease;   // acquired on first use, released at thread exit
+        return lease.slot;
+    }
+
+    // Conservative shared pin for slotless (overflow) readers. A slotless reader pins
+    // reclamation to <= its entry epoch: it CAS-lowers overflow_floor_ to cover its epoch
+    // BEFORE bumping overflow_count_, and the floor is never raised (no-reset). While any
+    // overflow reader is active, reclaim stays conservative; when none are, the floor is
+    // ignored. Always safe; the cure for SUSTAINED >MAX_THREADS concurrency is a bigger
+    // pool (not expected on our workloads, where threads << MAX_THREADS).
+    void overflow_enter() {
+        uint64_t e = global_epoch_.load(std::memory_order_seq_cst);
+        uint64_t cur = overflow_floor_.load(std::memory_order_seq_cst);
+        while (cur > e &&
+               !overflow_floor_.compare_exchange_weak(cur, e, std::memory_order_seq_cst)) {
+            // cur reloaded by the failed CAS; retry until floor <= e.
+        }
+        overflow_count_.fetch_add(1, std::memory_order_seq_cst);
+    }
+    void overflow_exit() { overflow_count_.fetch_sub(1, std::memory_order_seq_cst); }
 
     std::atomic<uint64_t> global_epoch_{1};
     std::array<std::atomic<uint64_t>, MAX_THREADS> reservations_;
     std::atomic<RetiredNode *> retired_head_{nullptr};  // multi-producer Treiber stack of incoming retires
     RetiredNode *survivors_ = nullptr;                  // consumer-local: only touched under reclaiming_
     std::atomic<bool> reclaiming_{false};               // try-lock enforcing single-consumer reclaim()
-    static inline std::atomic<unsigned> next_slot_{0};
+    // Per-instance conservative overflow pin (slotless readers); see overflow_enter().
+    std::atomic<uint64_t> overflow_floor_{NOT_READING};
+    std::atomic<unsigned> overflow_count_{0};
+    // Global slot-lease pool, shared across all reclaimer instances: a live thread owns
+    // one slot index used in every instance's reservations_ array. Zero-init -> all free.
+    static inline std::array<std::atomic<bool>, MAX_THREADS> g_slot_taken_{};
 };
 
 } // namespace mvcc
