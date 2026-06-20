@@ -22,7 +22,9 @@
 
 **D-1b-2b ✅ (ring+drainer를 mysqld에 배선)**: accel_hook이 hook에서 ring enqueue(noexcept, full→drop), off-latch drainer 스레드가 pop+count(진짜 insert는 D-1b-3). InnoDB 생명주기: `srv0start.cc` srv_start 끝에 `accel_init()`(drainer 시작, latch 밖)·srv_shutdown 시작에 `accel_shutdown()`(stop+join) + ready gate. 검증(8 동시 producer churn 1.8M txn @ 29.9k tps): `[accel] init` 로그, drained≈enq·dropped=0(drainer가 따라잡음, 65536 ring), pk_buckets=676/1024(row-unique 키 ring 통과), shutdown에 **enq==drained=1,796,527 정확 일치 + clean join**. ring thread-safety는 D-1b-2a TSan, 통합/생명주기는 여기서.
 
-**→ 다음 = D-1b-3**(drainer가 진짜 single-consumer insert: Accelerate_mvcc+Kuku를 innobase 빌드에 컴파일, 저수준 insert[Trx_manager/get_mutex 미사용], ctor 사전생성 제거·kuku≥1<<16·return 계약 수정·**GC off**·실패 시 노드 free). chain integrity per (table,pk) 검증, 유계 메모리.
+**D-1b-3a ✅ (빌드통합)**: Accelerate_mvcc + epoch_table + interval_list + trxManager + **Kuku(kuku.cpp + blake2b.c + blake2xb.c)**를 innobase `INNOBASE_SOURCES`에 추가(절대경로) + include 경로(우리 include/·Kuku/src·생성된 config.h의 `~/acc-build/Kuku/src`) + 우리 소스 `-w`(MySQL -Werror 회피). accel_hook이 `accelerateMVCC.h` include + 전역 `Accelerate_mvcc(0)` 생성(BG GC off). 빌드 rc=0(첫 시도는 blake2xb undefined reference로 .c 누락 발견→추가), mysqld 기동 `[accel] accelerator constructed`, churn 944k @ 31.5k tps, clean shutdown. consume는 아직 count-only. **우리 코드가 MySQL 빌드 그래프에 실제 진입.** 재현 `build_d1b3a.sh`, 방법 [design-D.md](design-D.md) §10.
+
+**→ 다음 = D-1b-3b**(drainer consume()가 저수준 `insert()` 호출 — 단일 consumer라 g_accel 단일 mutator라 안전; ctor에 kuku 크기 param ≥1<<16; GC off). 20 correctness 회귀(ctor 변경) + chain 적재(long_live_size>0)·insert==drained 검증.
 
 ---
 

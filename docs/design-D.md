@@ -51,7 +51,8 @@ InnoDB consistent read의 핵심 흐름(개략):
 | **D-1b-1 ✅** | 키 배선: hook에 **pk_hash + old_trx_id** 추가(call site에서 clustered PK FNV-1a 추출, `rec_get_nth_field(index,rec,offsets,..)`·`row_get_rec_trx_id`), MODIFY-op 필터, count-only | 완료 — pk_buckets_seen=676/1024(row-unique), 반복행 동일 해시, old<trx, op=2만, 32.3k tps(=vanilla) |
 | **D-1b-2a ✅** | bounded **lock-free MPMC ring**(Vyukov, `integration/innodb/accel_ring.h`) + standalone 스트레스 테스트 | 완료 — Release/ASan/TSan PASS(enq==deq, torn=0, data race 0, drop 경로 발동) |
 | **D-1b-2b ✅** | ring을 accel_hook에 배선(hook=enqueue) + off-latch drainer(pop+count) + InnoDB 생명주기(srv_start→`accel_init`, srv_shutdown→`accel_shutdown`) + ready gate | 완료 — drainer 동작, enq==drained(1.8M), dropped=0, clean shutdown, 29.9k tps |
-| **D-1b-3** | drainer가 **진짜 single-consumer insert**(Trx_manager/get_mutex 미사용, ctor 사전생성 제거, kuku≥1<<16, return 계약, **GC off**) | chain integrity per (table,pk), insert==drained, 유계 메모리 |
+| **D-1b-3a ✅** | accelerator(4 .cpp)+Kuku(kuku.cpp+blake2b/xb.c)를 **innobase 빌드에 컴파일·링크**, accel_hook이 전역 `Accelerate_mvcc(0)` 생성(BG GC off), consume count-only | 완료 — build/link/boot OK, 31.5k tps, clean shutdown(§10) |
+| **D-1b-3b** | drainer consume()가 **진짜 single-consumer insert**(저수준 `insert()` — Trx_manager/get_mutex 미사용; 단일 consumer라 g_accel 단일 mutator) + kuku 크기 param ≥1<<16, **GC off** | 20 correctness green(ctor 변경), chain 적재(long_live_size>0), insert==drained, 메모리 무한증가(의도) |
 | **D-1b-4** | 하드닝: noexcept hook 감사, assert-no-malloc-on-latch, accel=leaf-domain 불변식 | full build, mysqld boot, latch-hold 회귀 0 vs D-1a |
 | **D-2** | **consult hook**(consistent read가 accelerator로 가시 version 위치 점프) | **가시성 vanilla와 동일**(정합성 필수) + chain walk 감소 |
 | **D-3** | deadzone ↔ `trx_sys` active view 동기화 + BG GC가 in-middle 회수(purge 보완) | LLT 하 chain/undo 점유 감소, purge와 무충돌 |
@@ -81,6 +82,13 @@ InnoDB consistent read의 핵심 흐름(개략):
 - **진짜 비용 = analytic read(LLT 자신의 read)**: held snapshot 하에서 `SELECT SUM(LENGTH(c)) FROM sbtest1`(1000행 clustered scan)을 OLTP churn(oltp_update_non_index, pareto, 8thr) 중 6초 간격으로 측정 → latency가 **0.7 ms(scan0) → 1,355 ms(scan10, ~60s 후) = ~1,900×** 증가. history list 2.07M, OLTP 2.18M txn(29k/s). = LLT가 잡은 snapshot으로 version chain을 점점 깊이 되돌리는 비용(vDriver HTAP 비용의 MySQL 재현).
 - **결론(baseline metric 확정)**: D의 비교 지표 = **held-snapshot analytic read latency vs churn 시간**(+ history list length). D-2 consult hook이 이 곡선을 평탄화하는 것이 목표(standalone에서 chain max 155로 잡았던 것의 InnoDB 판). throughput-only는 in-memory/단시간엔 신호가 안 남.
 - 재현 스크립트(레포 밖): `build_d0a.sh`(deps+clone) / `build_d0b.sh`(빌드) / `build_d0d.sh`(baseline). MySQL 소스 `~/mysql-server`, 빌드 `~/mysql-build`.
+
+## 10. innobase 빌드통합 (D-1b-3a, 재현)
+accelerator를 mysqld에 넣는 방법(스크립트 `build_d1b3a.sh`가 멱등 적용):
+- **소스**: `storage/innobase/CMakeLists.txt`의 `INNOBASE_SOURCES`에 절대경로로 추가 — `include/{accelerateMVCC,interval_list,epoch_table,trxManager}.cpp` + `Kuku/src/kuku/kuku.cpp` + **`Kuku/src/kuku/internal/blake2b.c`·`blake2xb.c`**(blake2xb undefined reference로 발견). 우리 소스는 innobase 정적 플러그인(libinnobase.a)에 함께 컴파일→mysqld에 자동 링크.
+- **include**: 파일 끝에 `target_include_directories(innobase PRIVATE <repo>/include <repo>/Kuku/src ~/acc-build/Kuku/src)` — 마지막은 **생성된 `kuku/internal/config.h`**(Kuku cmake 산출, 우리 acc-build에 있음).
+- **경고**: 우리 소스 + accel_hook.cc + blake2 .c에 `set_source_files_properties(... COMPILE_OPTIONS "-w")` — MySQL의 `-Werror`(format-security 등)와 우리 코드 경고 충돌 회피(우리 코드는 별도로 검증됨).
+- accel은 leaf domain: accel_hook.cc만 `accelerateMVCC.h` include(InnoDB 헤더 X), 나머지 우리 .cpp는 InnoDB와 독립 TU라 매크로 충돌 없음. 네임스페이스 `mvcc`/`kuku`로 InnoDB 심볼과 무충돌.
 
 ## 8. D-1a 결과 (populate hook 배선, 2026-06-21)
 통합 코드는 repo `integration/innodb/accel_hook.{h,cc}`(canonical), 스크립트 `build_d1a.sh`가 MySQL 트리에 복사+멱등 패치(CMakeLists에 source 추가, `trx0rec.cc`에 include + 성공 경로 hook call).

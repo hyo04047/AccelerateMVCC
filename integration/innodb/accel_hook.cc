@@ -10,6 +10,7 @@
 
 #include "accel_hook.h"
 #include "accel_ring.h"
+#include "accelerateMVCC.h"  // D-1b-3a: pull the real accelerator into the mysqld/innobase build
 
 #include <atomic>
 #include <chrono>
@@ -28,6 +29,13 @@ std::atomic<uint64_t> g_dropped{0};
 std::atomic<uint64_t> g_drained{0};
 std::atomic<uint32_t> g_pk_seen[1024];   // pk breadth proxy (drainer-only writer)
 std::thread g_drainer;
+
+// D-1b-3a: the real AccelerateMVCC index lives inside mysqld now. record_count=0 -> no ctor
+// pre-creation (keys are created dynamically). BG GC is intentionally NOT started (populate-only;
+// the deadzone GC must be re-driven from InnoDB's read views before it can run -- D-3). The
+// drainer (single consumer) will be the only writer to it. D-1b-3a only constructs it (proving
+// the build/link/boot); D-1b-3b makes consume() call the low-level insert.
+mvcc::Accelerate_mvcc *g_accel = nullptr;
 
 int pk_buckets() {
   int nz = 0;
@@ -63,13 +71,16 @@ void accel_init() noexcept {
   if (!g_started.compare_exchange_strong(expected, true)) return;  // already inited
   g_stop.store(false, std::memory_order_relaxed);
   try {
+    g_accel = new mvcc::Accelerate_mvcc(0);  // dynamic keys, BG GC NOT started
     g_drainer = std::thread(drain_loop);
   } catch (...) {
+    delete g_accel;
+    g_accel = nullptr;
     g_started.store(false, std::memory_order_relaxed);
     return;
   }
   g_ready.store(true, std::memory_order_release);
-  std::fprintf(stderr, "[accel] init: drainer started\n");
+  std::fprintf(stderr, "[accel] init: drainer started, accelerator constructed\n");
 }
 
 void accel_shutdown() noexcept {
@@ -80,6 +91,8 @@ void accel_shutdown() noexcept {
   std::fprintf(stderr, "[accel] shutdown: enq=%llu drained=%llu dropped=%llu pk_buckets=%d/1024\n",
                (unsigned long long)g_enq.load(), (unsigned long long)g_drained.load(),
                (unsigned long long)g_dropped.load(), pk_buckets());
+  delete g_accel;  // drainer joined -> sole owner; dtor is a no-op for BG GC (never started)
+  g_accel = nullptr;
 }
 
 void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_t old_trx_id,
