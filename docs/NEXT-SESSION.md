@@ -24,7 +24,8 @@
   - baseline 재현/측정: `build_d0d.sh`(mysqld 기동 → OLTP churn + held-snapshot analytic scan latency). mysqld는 **한 스크립트 안에서만 살아있게**(wsl 호출 간 persist 안 됨).
 - **D-0 baseline 결과**(= D가 이길 대상): held snapshot 하 1000행 analytic scan latency **0.7ms→1,355ms(~1,900×)** as OLTP churn deepens chains; history list 360→2.07M. **비교 지표 = held-snapshot analytic read latency vs churn**(throughput-only는 in-memory/단시간엔 신호 없음).
 - **hook 지점**(MySQL 8.4 소스 확인됨): consult(D-2) = `storage/innobase/row/row0vers.cc:1249 row_vers_build_for_consistent_read`(row0sel.cc·row0pread.cc에서 호출), populate(D-1) = `storage/innobase/trx/trx0rec.cc:2117 trx_undo_report_row_operation`.
-- **다음 = D-1**: accelerator(우리 in-memory 인덱스)를 InnoDB 빌드에 **정적 라이브러리로 링크** + **populate hook**(undo create 시 메타데이터 insert, read 경로는 아직 미사용). 검증 = 기능 회귀 0 + accelerator 적재 확인 + 오버헤드. 그 다음 D-2(consult)·D-3(deadzone↔trx_sys)·D-4(측정). [design-D.md](design-D.md) §4.
+- **D-1 진행상황**: D-1a(populate hook 배선, count-only)✅ → D-1b 적대적 리뷰(워크플로, blocker 5건→안전설계)✅ → **D-1b-1(키 배선: PK 해시+prior trx_id, MODIFY 필터, count-only, row-unique 검증)✅**. 통합 코드 repo `integration/innodb/`(facade `accel_hook.{h,cc}` + `d1b1_patch.pl`), 적용/빌드/검증 스크립트 `build_d1a.sh`·`build_d1b1.sh`(레포 밖). MySQL 빌드는 `~/mysql-build`(이미 빌드됨; 증분만). hook = `trx0rec.cc` 성공 경로(roll_ptr build 직후), MODIFY-op만, `index->table->id`+PK(FNV-1a)+`trx->id`+prior DB_TRX_ID(`row_get_rec_trx_id`)+undo loc. ⚠️ MySQL 8.4: `rec_get_nth_field(index, rec, offsets, n, &len)`(index 첫 인자).
+- **다음 = D-1b-2**: hook을 **lock-free MPMC ring enqueue**(noexcept, alloc/lock 0)로 + **off-latch single-consumer drainer 스레드**(아직 진짜 insert는 X, pop/count만) + 명시적 init/shutdown 생명주기 + ready gate. 검증 = TSan multi-conn race 0 + drop counter + clean join. 이후 D-1b-3(진짜 single-consumer insert·ctor 사전생성 제거·kuku≥1<<16·GC off)→D-1b-4(하드닝)→D-2(consult, hint+fallback). 안전 설계 상세 [design-D.md](design-D.md) §9.
 
 ---
 
