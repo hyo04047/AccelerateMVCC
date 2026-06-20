@@ -1,17 +1,30 @@
-# 다음 세션 핸드오프 — Stage C 완료, 다음은 D(InnoDB 통합) 또는 보고서 정리
+# 다음 세션 핸드오프 — Stage C 완료 + 보고서 + Stage D-0(InnoDB baseline) 완료, 다음은 D-1
 
 > **새 세션은 이 파일을 가장 먼저 읽으세요.** 이전 대화 없이 그대로 이어가기 위한 핸드오프.
-> 배경·설계근거 → [design-gc.md](design-gc.md)(§11 = stage C 결과)·[design-1c.md](design-1c.md) / 상태·로드맵 → [README.md](README.md) / 이력 → [progress-log.md](progress-log.md)(세션 4 = stage C) / 이슈 → [findings.md](findings.md)
-> 갱신: 2026-06-20 (세션 4, **Stage C 완료** 후)
+> 배경·설계근거 → [design-gc.md](design-gc.md)(§11 = stage C 결과)·[design-1c.md](design-1c.md) / **Stage D 설계·D-0 결과 → [design-D.md](design-D.md)** / 통합 보고서 → [REPORT.md](REPORT.md) / 상태·로드맵 → [README.md](README.md) / 이력 → [progress-log.md](progress-log.md) / 이슈 → [findings.md](findings.md)
+> 갱신: 2026-06-21 (세션 4, **Stage C + 보고서 + D-0 완료** 후)
 
 ---
 
 ## ⏩ 재개 레시피 (새 세션은 이 순서로)
-1. **맥락 복원**: 이 파일(§0→§2→§3) → [progress-log.md](progress-log.md) 세션 4 → 필요 시 [design-gc.md](design-gc.md) §11(stage C 결과·방법론).
-2. **검증(맹신 금지)**: `git log --oneline -8` + `git status`로 §5와 맞는지 확인 → §1 레시피로 **Release+ASan+TSan 20 correctness green** 확인 + **Stage C 벤치 재현**(`stage_c_bench`).
-3. **보고 후 시작**: 위 결과 짧게 보고 → 다음 단계(§6) = **D(InnoDB 통합)** 또는 **보고서 정리**를 사용자에게 물어보기.
+1. **맥락 복원**: 이 파일(§0→§D) → [design-D.md](design-D.md)(D 설계 + §7 D-0 baseline) → 필요 시 [progress-log.md](progress-log.md) 최신 2개 엔트리.
+2. **검증(맹신 금지)**: `git log --oneline -8` + `git status` 확인 → (코어가 안 바뀌었으면) §1로 **20 correctness green** 1회 → **D-0 baseline 재현/이어가기**(§D 레시피).
+3. **보고 후 시작**: 위 결과 짧게 보고 → **다음 = D-1**(accelerator를 InnoDB에 링크 + populate hook) 진행. ⚠️ D-1+는 InnoDB 소스 수술 = multi-session, 작게+체크포인트.
 - 작업 방식: **작게 + 중간 체크포인트** / 설명은 **알고리즘·설계 레벨**(함수·코드명 덤프 X, 단 표준 용어는 영어 그대로). **성능이 목적 — correctness는 전제, no-crash가 아니라 visibility로 검증.**
 - **프로젝트 성격**: 원래 2023 졸프였으나 지금은 **개인 프로젝트**(졸업용 아님). 단 성공 시 **논문급 보고서**(개인 이력/포폴용) 목표 — 가볍게 가지 말 것, 엄밀함 유지.
+
+---
+
+## D. Stage D 진행 (현재 위치 — D-0 ✅, 다음 = D-1)
+> 1차 목표 A+B+C는 완료(보고서 [REPORT.md](REPORT.md)). 지금은 최종 D(InnoDB 실통합) PoC 진행 중. 설계·D-0 결과 상세는 [design-D.md](design-D.md).
+- **결정 잠금**: MySQL **8.4.10 LTS** + **scoped PoC**(consult hook 1경로 + 측정) + **gcc-13**(gcc15 빌드 리스크 회피).
+- **MySQL 빌드/실행 레시피**(WSL, 레포 밖 스크립트 재사용):
+  - 소스 `~/mysql-server`(8.4 shallow clone), 빌드 `~/mysql-build`(RelWithDebInfo/gcc-13/ninja, ~11분). 재빌드: `build_d0b.sh`.
+  - 기동 주의: root 운용 → mysqld에 **`--user=root`** 필수, source build → **`--lc-messages-dir=$HOME/mysql-build/share`**(언어 하위폴더의 부모), `--mysql-native-password=ON`(sysbench 인증). 데이터 `~/mysql-data`, 소켓 `~/mysql.sock`, 포트 3309.
+  - baseline 재현/측정: `build_d0d.sh`(mysqld 기동 → OLTP churn + held-snapshot analytic scan latency). mysqld는 **한 스크립트 안에서만 살아있게**(wsl 호출 간 persist 안 됨).
+- **D-0 baseline 결과**(= D가 이길 대상): held snapshot 하 1000행 analytic scan latency **0.7ms→1,355ms(~1,900×)** as OLTP churn deepens chains; history list 360→2.07M. **비교 지표 = held-snapshot analytic read latency vs churn**(throughput-only는 in-memory/단시간엔 신호 없음).
+- **hook 지점**(MySQL 8.4 소스 확인됨): consult(D-2) = `storage/innobase/row/row0vers.cc:1249 row_vers_build_for_consistent_read`(row0sel.cc·row0pread.cc에서 호출), populate(D-1) = `storage/innobase/trx/trx0rec.cc:2117 trx_undo_report_row_operation`.
+- **다음 = D-1**: accelerator(우리 in-memory 인덱스)를 InnoDB 빌드에 **정적 라이브러리로 링크** + **populate hook**(undo create 시 메타데이터 insert, read 경로는 아직 미사용). 검증 = 기능 회귀 0 + accelerator 적재 확인 + 오버헤드. 그 다음 D-2(consult)·D-3(deadzone↔trx_sys)·D-4(측정). [design-D.md](design-D.md) §4.
 
 ---
 
@@ -19,7 +32,7 @@
 - **프로젝트**: 디스크 DBMS(InnoDB) MVCC 가속용 in-memory 인덱스(Kuku hash → epoch 기반 interval list of undo 메타데이터 포인터) + deadzone GC. InnoDB undo는 안 건드리고 메타데이터 포인터만 compact 유지. **궁극 목적 = InnoDB HTAP/LLT 성능 향상.**
 - **완료**: A ✅ · B ✅ · 동시성 1a·1b·1c ✅ · **Stage C ✅ (HTAP/long-txn 벤치, 1차 목표 A+B+C 결과물)**.
 - **Stage C 헤드라인**(60s LLT, 6w/6r/1llt): **deadzone hot-chain max 155 vs tail-only(InnoDB식 purge) 845,977 (~5,500×)**, retire 22.4M vs 277, read throughput **1.36M/s vs 487/s (~2,800×)**. skew 0.8/1.2/1.6 전반 견고(~8,000×). FG cooperative unlink는 read-path +30%. 전 run **LLT visibility OK(inconsistencies=0)** + ASan/TSan clean. 상세 [design-gc.md](design-gc.md) §11.
-- **다음 = §6**: D(MySQL/InnoDB 실통합, 최종 목표) 또는 보고서 정리. (1차 목표 A+B+C는 달성.)
+- **현재**: 보고서([REPORT.md](REPORT.md)) 완료, **Stage D 진행 중 — D-0(vanilla baseline) ✅, 다음 = D-1**(위 §D). 1차 목표 A+B+C 달성, D는 최종(PoC).
 
 ---
 
@@ -58,7 +71,7 @@
 - **레포 밖 자산**(WSL/Windows, git 추적 X): `/mnt/c/Users/USER/build_test_c*.sh`·`sweep_c3.sh`·`cdf.sh`·`stage_c_*.csv`·`*.log`. 재현 시 재사용.
 
 ## 6. 로드맵 위치 — 1차 목표 A+B+C 달성, 다음은 D(최종) 또는 보고서
-A ✅ → B ✅ → 동시성(1a ✅→1b ✅→1c ✅) → **C ✅(HTAP/long-txn 벤치)** → **D(InnoDB 통합) ← 최종 / 또는 보고서 정리**.
+A ✅ → B ✅ → 동시성(1a ✅→1b ✅→1c ✅) → **C ✅(HTAP/long-txn 벤치)** → 보고서 ✅ → **D(InnoDB 통합) 진행 중: D-0 ✅ → D-1 다음**(위 §D / [design-D.md](design-D.md) §4).
 - **D 자산/방향**(design-gc §6 vDriver 매핑): 실제 InnoDB 소스에 가속 인덱스 연결(trx_sys active list, undo 메타데이터 포인터), sysbench HTAP로 vanilla MySQL 대비 측정. 규모 큼 — 착수 전 사용자와 범위 합의.
 - **보고서 방향**: A~C를 논문급으로(문제→설계(vDriver 계보)→동시성 하드닝→Stage C 결과/CDF). 차트·표는 design-gc §11 + 생성한 CDF figure 재사용.
 - **다음 세션은 D vs 보고서 중 무엇부터 할지 사용자에게 물어볼 것.**
