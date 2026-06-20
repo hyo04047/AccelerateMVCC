@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-06-21 — 세션 4 (이어서): Stage D 착수 — D-0(InnoDB baseline) ✅
+
+> Stage C lock-in(커밋·push) 후 사용자 요청으로 **A~C 논문급 보고서**(`docs/REPORT.md`) 작성·커밋, 이어서 **Stage D(InnoDB 실통합)** 착수. 설계는 [design-D.md](design-D.md).
+
+**D 설계**: hook 3지점(populate=undo create, consult=consistent read, deadzone↔trx_sys 동기화). MySQL 소스에서 hook 함수 위치 확인 — consult=`row0vers.cc:1249 row_vers_build_for_consistent_read`, populate=`trx0rec.cc:2117 trx_undo_report_row_operation`. 결정: **MySQL 8.4.10 LTS + scoped PoC + gcc-13**(gcc15 빌드 리스크 회피).
+
+**D-0 ✅ (vanilla baseline)**: MySQL 8.4.10 RelWithDebInfo를 gcc-13/ninja로 빌드(11분, 에러 0) → mysqld 기동 + sysbench 1.0.20. **발견**: OLTP throughput은 LLT에 거의 불변(1,867→1,882 tps, 30s/in-memory)이나 **history list length 360→56,752 폭증**(purge가 LLT에 막힘 재현). **진짜 비용은 analytic read** — held snapshot 하 `SELECT SUM(LENGTH(c))`(1000행 scan)을 OLTP churn 중 측정하니 latency **0.7ms→1,355ms (~1,900×)** 증가(history list 2.07M). **baseline metric 확정 = held-snapshot analytic read latency vs churn**(consult hook D-2이 평탄화할 대상). throughput-only는 단시간/in-memory엔 신호 안 남. 상세·재현 [design-D.md](design-D.md) §7.
+
+**→ 다음 = D-1**(accelerator를 InnoDB에 링크 + populate hook) — InnoDB 소스 수술, multi-session.
+
+---
+
 ## 2026-06-20 — 세션 4: Stage C (HTAP/long-txn 벤치) — 1차 목표 A+B+C 결과 산출 ✅
 
 > **프로젝트 성격 정정**: 원래 2023 졸업프로젝트였으나 지금은 **개인 프로젝트**(졸업용 아님). 단, 성공 시 개인 이력/포폴용 **논문급 보고서**로 정리 목표라 엄밀함은 그대로.

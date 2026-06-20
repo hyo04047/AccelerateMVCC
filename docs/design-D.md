@@ -46,7 +46,7 @@ InnoDB consistent read의 핵심 흐름(개략):
 ## 4. 증분 (각 독립 검증 + 체크포인트)
 | # | 목표 | 검증 |
 |---|---|---|
-| **D-0** | vanilla MySQL 8.4 소스 빌드(gcc 리스크 해소) + 기동 + sysbench **baseline** 측정 | mysqld 기동, sysbench OLTP+60s LLT 수치(우리 인덱스 없이) |
+| **D-0 ✅** | vanilla MySQL 8.4.10 소스 빌드(gcc-13, 11분) + 기동 + sysbench **baseline** 측정 | 완료 — §7 결과 |
 | **D-1** | accelerator를 InnoDB에 **링크**(라이브러리화) + **populate hook**(undo create 시 메타데이터 insert), read 경로는 미사용 | 기능 회귀 0, accelerator에 엔트리 쌓임 확인, 오버헤드 측정 |
 | **D-2** | **consult hook**(consistent read가 accelerator로 가시 version 위치 점프) | **가시성 vanilla와 동일**(정합성 필수) + chain walk 감소 |
 | **D-3** | deadzone ↔ `trx_sys` active view 동기화 + BG GC가 in-middle 회수(purge 보완) | LLT 하 chain/undo 점유 감소, purge와 무충돌 |
@@ -64,3 +64,15 @@ InnoDB consistent read의 핵심 흐름(개략):
 - **D 스코프**: 우선 **scoped PoC**(consult hook 1경로 + sysbench 측정으로 효과 입증) vs 처음부터 풀 통합 지향.
 - **gcc**: 15로 우선 시도 후 안 되면 older gcc 설치 OK인지.
 - (이후 D-0부터 작게 + 체크포인트로.)
+- **확정(2026-06-21)**: MySQL **8.4.10 LTS**, **scoped PoC 먼저**, gcc는 **gcc-13** 사용(15 리스크 회피).
+
+---
+
+## 7. D-0 결과 (vanilla baseline, 2026-06-21)
+환경: WSL2(16코어/30G), MySQL 8.4.10 RelWithDebInfo(gcc-13, ninja, 빌드 11분), sysbench 1.0.20, buffer pool 4G, `innodb-purge-threads=4`.
+
+- **빌드/기동**: gcc-13으로 클린 빌드, mysqld 8.4.10 기동·sysbench 연결 OK. (root 운용 → `--user=root`; source build → `--lc-messages-dir=$BASE/share`.)
+- **OLTP throughput는 LLT에 거의 불변**(1,867 vs 1,882 tps, 30s/buffer-pool-resident): 짧은 OLTP txn은 최신 read view라 깊은 체인을 안 걷고, 작은 테이블이 메모리에 상주해 undo I/O가 없음. **단 history list length는 360→56,752로 폭증**(purge가 LLT에 막힘 = 우리가 공격하는 메커니즘 재현).
+- **진짜 비용 = analytic read(LLT 자신의 read)**: held snapshot 하에서 `SELECT SUM(LENGTH(c)) FROM sbtest1`(1000행 clustered scan)을 OLTP churn(oltp_update_non_index, pareto, 8thr) 중 6초 간격으로 측정 → latency가 **0.7 ms(scan0) → 1,355 ms(scan10, ~60s 후) = ~1,900×** 증가. history list 2.07M, OLTP 2.18M txn(29k/s). = LLT가 잡은 snapshot으로 version chain을 점점 깊이 되돌리는 비용(vDriver HTAP 비용의 MySQL 재현).
+- **결론(baseline metric 확정)**: D의 비교 지표 = **held-snapshot analytic read latency vs churn 시간**(+ history list length). D-2 consult hook이 이 곡선을 평탄화하는 것이 목표(standalone에서 chain max 155로 잡았던 것의 InnoDB 판). throughput-only는 in-memory/단시간엔 신호가 안 남.
+- 재현 스크립트(레포 밖): `build_d0a.sh`(deps+clone) / `build_d0b.sh`(빌드) / `build_d0d.sh`(baseline). MySQL 소스 `~/mysql-server`, 빌드 `~/mysql-build`.
