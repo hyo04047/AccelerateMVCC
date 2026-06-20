@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 namespace accel {
 
@@ -30,6 +31,14 @@ struct UndoRec {
   uint64_t offset;
   uint64_t op_type;
 };
+
+// D-1b-4 hardening tripwires: the under-latch enqueue does `slot.rec = r`, which must be an
+// allocation-free trivial copy (no constructor/heap work while InnoDB holds the page latch).
+// The fixed size guards against a future field addition silently bloating the latched copy.
+static_assert(std::is_trivially_copyable<UndoRec>::value,
+              "UndoRec must be trivially copyable (alloc-free copy into the ring slot)");
+static_assert(sizeof(UndoRec) == 8 * sizeof(uint64_t),
+              "UndoRec grew -- keep the under-latch enqueue payload small/POD");
 
 template <size_t N>
 class Ring {

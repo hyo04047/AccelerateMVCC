@@ -106,6 +106,13 @@ void accel_shutdown() noexcept {
 
 void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_t old_trx_id,
                    uint64_t space_id, uint64_t page_no, uint64_t offset, uint64_t op_type) noexcept {
+  // D-1b-4 hardening invariants (this runs UNDER the InnoDB clustered leaf-page X-latch):
+  //   * noexcept: cannot unwind into InnoDB (enforced by the keyword).
+  //   * no allocation: only atomics + a trivially-copyable UndoRec into a preallocated ring slot
+  //     (the static_asserts in accel_ring.h guarantee the copy is alloc-free).
+  //   * no lock / never blocks: the ring is lock-free; full -> drop.
+  //   * no InnoDB call: accel is a LEAF lock domain (this TU includes no InnoDB header), so the
+  //     InnoDB->accel edge stays one-way and cannot form a cross-domain latch cycle.
   if (op_type != TRX_UNDO_MODIFY) return;           // versions only (defensive; call site filters)
   if (!g_ready.load(std::memory_order_acquire)) return;  // outside live window
   const accel::UndoRec r{table_id, pk_hash, trx_id, old_trx_id, space_id, page_no, offset, op_type};

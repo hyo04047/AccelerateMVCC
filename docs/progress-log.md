@@ -26,7 +26,9 @@
 
 **D-1b-3b ✅ (진짜 insert)**: drainer consume()가 기존 저수준 `insert(table_id,pk_hash,trx_id,space,page,offset)` 호출(단일 consumer라 g_accel 단일 mutator=무경쟁, Trx_manager/get_mutex 미사용). ctor에 `kuku_log2` param(기본 10=테스트 무영향, integration=16=64k bin으로 silent cuckoo 실패 회피), **GC off**. 검증: 20 correctness Release green, mysqld churn 1.34M @ 33k tps, drained==enq=1,338,217·dropped=0·clean shutdown, **cur_key_chain_len=2616**(hot key chain 실제 적재·성장; GC off라 자람=예상). live_epoch_buckets=0은 GC 부기라 정상. **→ populate 경로(D-1b) 기능 완성**: AccelerateMVCC 인덱스가 mysqld 안에서 실제 InnoDB undo로 채워짐(latch 하 enqueue→off-latch single-consumer insert).
 
-**→ 다음 = D-1b-4**(하드닝: noexcept hook 감사, accel=leaf-domain 불변식) → **D-2(consult)**: row0vers.cc에서 accelerator로 가시 version 점프, InnoDB ReadView 3-way `changes_visible` 정합, hint+fallback. D-2가 D-0 baseline(analytic 0.7ms→1.35s) 평탄화 = 최종 payoff.
+**D-1b-4 ✅ (하드닝)**: hook 안전 불변식을 컴파일 타임으로 못박음 — `accel_ring.h`에 `static_assert(is_trivially_copyable<UndoRec>)` + `sizeof(UndoRec)==8*u64`(latch 하 enqueue가 alloc-free trivial copy임을 보장 + 슬롯 bloat tripwire) + accel_on_undo에 noexcept/no-alloc/no-lock/no-InnoDB-call(leaf domain) 불변식 명문화. 검증: mysqld build rc=0(static_assert 통과)·boot·churn 672k @ 33.6k tps·drained==enq·clean shutdown. **→ D-1b(populate 경로) 전체(D-1a~1b-4) 완성.**
+
+**→ 다음 = D-2(consult, 최종 payoff·큰 새 단계)**: `row0vers.cc:1249 row_vers_build_for_consistent_read`에서 accelerator로 가시 version 점프, InnoDB `ReadView`(m_low/up_limit_id, m_ids) 3-way `changes_visible`를 노드 DB_TRX_ID로 재구현(우리 max-trx_id 루프 X), accelerator=LOCATOR(roll_ptr→InnoDB 검증), **miss는 일반 chain walk fallback 필수**. D-0 baseline(analytic 0.7ms→1.35s) 평탄화 측정이 payoff. consult 전 deadzone GC를 InnoDB purge view로 재구동(D-3)·rollback/purge 정합 필요(design-D §9 deferred). wrong-result 리스크라 적대적-리뷰급 설계 권장 — 신선한 세션에서.
 
 ---
 
