@@ -1,64 +1,64 @@
-# 다음 세션 핸드오프 — Step 1c 완료, 다음은 Stage C(HTAP/long-txn 벤치)
+# 다음 세션 핸드오프 — Stage C 완료, 다음은 D(InnoDB 통합) 또는 보고서 정리
 
 > **새 세션은 이 파일을 가장 먼저 읽으세요.** 이전 대화 없이 그대로 이어가기 위한 핸드오프.
-> 배경·설계근거 → [design-gc.md](design-gc.md)·[design-1c.md](design-1c.md) / 상태·로드맵 → [README.md](README.md) / 이력 → [progress-log.md](progress-log.md) / 이슈 → [findings.md](findings.md)
-> 갱신: 2026-06-20 (세션 3, **Stage 1c 완료** 후)
+> 배경·설계근거 → [design-gc.md](design-gc.md)(§11 = stage C 결과)·[design-1c.md](design-1c.md) / 상태·로드맵 → [README.md](README.md) / 이력 → [progress-log.md](progress-log.md)(세션 4 = stage C) / 이슈 → [findings.md](findings.md)
+> 갱신: 2026-06-20 (세션 4, **Stage C 완료** 후)
 
 ---
 
 ## ⏩ 재개 레시피 (새 세션은 이 순서로)
-1. **맥락 복원**: 이 파일(§0→§2→§3) → [progress-log.md](progress-log.md) 최신 세션 항목 → 필요 시 [design-1c.md](design-1c.md)(1c 설계+적대적 리뷰)·[design-gc.md](design-gc.md)(deadzone·동시성·§10 stage C 하니스).
-2. **검증(맹신 금지)**: `git log --oneline -8` + `git status`로 HEAD가 §5와 맞는지 확인 → §1 레시피로 **Release + ASan + TSan** 빌드·**20개 correctness green** 확인(+`ebr_test`/`marked_ptr_test`). 헤더 많이 바뀌었으니 재빌드됨.
-3. **보고 후 시작**: 위 결과 짧게 보고 → **Stage C(HTAP/LLT 벤치)** 진입(§6). 1차 목표 A+B+C의 마지막이자 실제 결과물.
-- 작업 방식: **작게 + 중간 체크포인트** / 설명은 **알고리즘·설계 레벨**(함수·코드명 덤프 X, 단 표준 용어는 영어 그대로). **성능이 목적 — correctness는 전제, no-crash가 아니라 visibility로 검증**(메모리 참조).
+1. **맥락 복원**: 이 파일(§0→§2→§3) → [progress-log.md](progress-log.md) 세션 4 → 필요 시 [design-gc.md](design-gc.md) §11(stage C 결과·방법론).
+2. **검증(맹신 금지)**: `git log --oneline -8` + `git status`로 §5와 맞는지 확인 → §1 레시피로 **Release+ASan+TSan 20 correctness green** 확인 + **Stage C 벤치 재현**(`stage_c_bench`).
+3. **보고 후 시작**: 위 결과 짧게 보고 → 다음 단계(§6) = **D(InnoDB 통합)** 또는 **보고서 정리**를 사용자에게 물어보기.
+- 작업 방식: **작게 + 중간 체크포인트** / 설명은 **알고리즘·설계 레벨**(함수·코드명 덤프 X, 단 표준 용어는 영어 그대로). **성능이 목적 — correctness는 전제, no-crash가 아니라 visibility로 검증.**
+- **프로젝트 성격**: 원래 2023 졸프였으나 지금은 **개인 프로젝트**(졸업용 아님). 단 성공 시 **논문급 보고서**(개인 이력/포폴용) 목표 — 가볍게 가지 말 것, 엄밀함 유지.
 
 ---
 
 ## 0. 30초 요약
-- **프로젝트**: 디스크 DBMS(InnoDB) MVCC를 가속하는 in-memory 인덱스(Kuku hash → epoch 기반 interval list of undo metadata pointers) + deadzone GC. InnoDB undo는 안 건드리고 메타데이터 포인터만 compact 유지. **궁극 목적 = InnoDB HTAP/LLT 성능 향상**(chain length↓ → undo I/O·latch↓ → throughput↑).
-- **완료**: A ✅ · B ✅ · 1a ✅ · 1b ✅ · **1c ✅ (0–6)** — FG cooperative unlink(reader가 dead non-head epoch 직접 mark+CAS-splice) + 전용 BG GC + multi-producer EBR 회수 + **tight-bound deadzone**. multi-writer‖multi-reader-unlink‖BG GC를 ASan(UAF/double-free 0)/TSan(race 0)/진행성으로 검증(20 테스트).
-- **stage C 전 보류 3건(#1·#2·#5) 전부 해소**: #1 EBR slot lease(1c-0), #2 dummy-overflow drain(1c-3), #5 cold dead head → **tight bounds가 dissolve**(head는 현재 값이라 dead 아님).
-- **적대적 코드리뷰 2회**(1c-2/1c-4)가 blocker 3건 잡음 — 특히 **tight bounds**: nominal deadzone이 epoch nominal 범위를 xmax로 써서 reader/LLT가 보는 version을 over-prune하던 **pre-existing correctness 버그**(BG도 잠복). 실제 xmax(`superseded_ts`)로 판정하게 고침. = LLT correctness 핵심.
-- **다음 = §6 Stage C**: vDriver Zipfian skew + 60s LLT 하니스 이식, version-chain length CDF vs baseline.
+- **프로젝트**: 디스크 DBMS(InnoDB) MVCC 가속용 in-memory 인덱스(Kuku hash → epoch 기반 interval list of undo 메타데이터 포인터) + deadzone GC. InnoDB undo는 안 건드리고 메타데이터 포인터만 compact 유지. **궁극 목적 = InnoDB HTAP/LLT 성능 향상.**
+- **완료**: A ✅ · B ✅ · 동시성 1a·1b·1c ✅ · **Stage C ✅ (HTAP/long-txn 벤치, 1차 목표 A+B+C 결과물)**.
+- **Stage C 헤드라인**(60s LLT, 6w/6r/1llt): **deadzone hot-chain max 155 vs tail-only(InnoDB식 purge) 845,977 (~5,500×)**, retire 22.4M vs 277, read throughput **1.36M/s vs 487/s (~2,800×)**. skew 0.8/1.2/1.6 전반 견고(~8,000×). FG cooperative unlink는 read-path +30%. 전 run **LLT visibility OK(inconsistencies=0)** + ASan/TSan clean. 상세 [design-gc.md](design-gc.md) §11.
+- **다음 = §6**: D(MySQL/InnoDB 실통합, 최종 목표) 또는 보고서 정리. (1차 목표 A+B+C는 달성.)
 
 ---
 
 ## 1. 환경 & 빌드/테스트 레시피 (그대로 따라하면 됨)
-- **WSL2 Ubuntu 26.04, root로 운용**(sudo 불필요). 소스: `/mnt/c/Users/USER/projects/AccelerateMVCC`. 빌드: WSL 홈 `~/acc-build`(Release)·`~/acc-build-asan`·`~/acc-build-tsan`.
-- ⚠️ **PowerShell→wsl로 복잡한 bash 인라인 X.** **스크립트 파일**로 쓰고 (예시 `/mnt/c/Users/USER/build_test_*.sh` 남아있음) `exec > /mnt/c/.../log 2>&1`로 파일에 받아 Read. **wsl 호출은 PowerShell 툴에서**(Git Bash로 `/mnt/c/...` 넘기면 경로 깨짐). `/tmp`는 wsl 호출 사이 비워질 수 있으니 한 스크립트 안에서 컴파일+보고를 끝낼 것.
-- **Release**: `cmake -S <src> -B ~/acc-build -DCMAKE_BUILD_TYPE=Release` → `cmake --build ~/acc-build --target test_with_google -j$(nproc)`.
-- **테스트 필터(20개)**: `--gtest_filter='MvccVisibility.*:GcDeadzone.*:GcEndToEnd.*:GcEbrIntegration.*:GcSharedDescriptor.*:GcRetireOnce.*:GcBackstopDrain.*:GcFgUnlink.*:GcScale.*'` (필터 없이 돌리면 옛 insert 벤치 + Kuku `LocFuncTests.Randomness`[알려진 무해 실패]가 섞임).
-- **ASan**: `-DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"`, 실행 `ASAN_OPTIONS=detect_leaks=0`(구조상 의도된 누수 — UAF/double-free만 본다). **TSan**: `address`→`thread`(별도 빌드 디렉토리).
-- **별도 타깃**: `--target ebr_test`(EBR slot lease 단위, churn/overflow 포함), `--target marked_ptr_test`. gcc 15.2 / cmake 4.2. 무해 경고: googletest deprecation, FetchContent CMP0135, `can_pruning`의 pre-existing sign-compare.
-- 동시성 디버깅: hang은 `timeout -s KILL N <bin>; echo $?`(124=hang), gdb 설치됨. ASan 바이너리에 `stdbuf` X.
+- **WSL2 Ubuntu 26.04, root 운용**. 소스: `/mnt/c/Users/USER/projects/AccelerateMVCC`. 빌드: WSL 홈 `~/acc-build`(Release)·`~/acc-build-asan`·`~/acc-build-tsan`. gcc 15.2 / cmake 4.2 / 16코어.
+- ⚠️ **PowerShell→wsl로 복잡한 bash 인라인 X**(따옴표·`$()` 깨짐). **스크립트 파일**로 쓰고 (예시 `/mnt/c/Users/USER/build_test_*.sh`·`stage_c_bench` 재현용 `build_test_c2.sh`·`build_test_c3.sh` 남아있음) `exec > /mnt/c/.../log 2>&1`로 받아 Read. **wsl 호출은 PowerShell 툴에서**. ⚠️ **백그라운드 detached(`nohup &`)는 WSL VM teardown으로 죽을 수 있음 → 긴 빌드는 포그라운드(블로킹) wsl 호출로.** CRLF 주의: 스크립트 실행 전 `sed -i 's/\r$//'`.
+- **correctness(20개)**: `cmake -S <src> -B ~/acc-build -DCMAKE_BUILD_TYPE=Release` → `--target test_with_google` → 필터 `'MvccVisibility.*:GcDeadzone.*:GcEndToEnd.*:GcEbrIntegration.*:GcSharedDescriptor.*:GcRetireOnce.*:GcBackstopDrain.*:GcFgUnlink.*:GcScale.*'`. ASan: `-DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"` + `ASAN_OPTIONS=detect_leaks=0`(구조상 의도된 누수). TSan: address→thread. (재사용: `build_test_1c6.sh`.)
+- **Stage C 벤치**: `--target stage_c_bench`. key=value 인자: `records writers readers llt dur zipf sample_ms sample_keys llt_key seed fg tail warmup_ms csv`. **헤드라인 재현**(60s LLT): `stage_c_bench records=1000 writers=6 readers=6 llt=1 dur=60 sample_ms=500 sample_keys=8 tail=0 fg=1 csv=...`(deadzone) vs `tail=1`(InnoDB baseline) vs `fg=0`(BG-only). **controlled threading 필수**(writers+readers+llt+sampler+GC ≤ 코어, 아니면 chain length가 스케줄링 노이즈에 지배됨 — §3). 재현 스크립트 `build_test_c2.sh`(헤드라인)·`build_test_c3.sh`(correctness 회귀 + skew sweep).
+- 동시성 디버깅: hang은 `timeout -s KILL N <bin>`(124/137=hang). gdb 설치됨. ASan 바이너리 `stdbuf` X.
 
 ---
 
-## 2. Step 1c — 완료 기록 (증분 0–6, 1c-5 dissolved)
-> **1c는 끝났다.** 상세는 [progress-log.md](progress-log.md)·[design-1c.md](design-1c.md). 요지:
-- **확정 설계(왜)** — 세 축 분리: 논리(어느 버전 dead)=deadzone / 물리 회수 안전=per-traversal EBR / 물리 unlink 일관성=marked pointer(Harris). FG(reader)도 dead non-head epoch을 직접 떼어내 chain을 짧게(payload), **retire는 BG 단독**, 회수는 EBR grace.
-- **증분**: 1c-0 EBR slot lease(#1) · 1c-1 shared deadzone descriptor publish+judge · 1c-2 retire-once state machine(LIVE→CHAIN_DETACHED→RETIRED, 단일 state-gated retire)+version-chain 전부 CAS · 1c-3 full-bucket backstop+dummy drain(#2, Treiber) · 1c-4 **FG cooperative unlink + tight-bound deadzone** · 1c-5 **tight bounds가 #5 dissolve** · 1c-6 long_live_epochs compaction + scale/LLT 검증.
-- **retire-once 핵심(주의)**: state gate는 `en->state` 안에 살아서 `en`이 alive일 때만 idempotent → **node당 swept wrapper 1개** 불변식에 의존(1c-3 drain은 소유권 *transfer*, 복제 X). [design-1c.md](design-1c.md) §7·§8.
-- **검증**: 20 correctness 테스트 Release/ASan/TSan green. `GcScale.HighConcurrencySkewedWorkload`(16스레드/400k/skew), `GcScale.LongLivedReaderConsistentUnderHeavyGc`(LLT), `GcDeadzone.TightBoundDoesNotOverPruneNeededVersion`(finding-2 재현), `GcFgUnlink.*`, `GcRetireOnce.*`, `GcBackstopDrain.*` 등.
+## 2. Stage C — 완료 기록 (증분 C-0~C-3)
+> **Stage C는 끝났다.** 상세는 [progress-log.md](progress-log.md) 세션 4·[design-gc.md](design-gc.md) §11. 요지:
+- **하니스**(`stage_c_bench.cpp`): vDriver Figure-12 워크로드 이식 — Zipfian writer + OLTP point-reader(같은 skew) + 60s LLT(snapshot 길게·EBR Guard는 search당 짧게) + Guard-safe chain 샘플러(CSV). 신규 accessor `chain_length_guarded`(라이브 샘플링용, Guard판). 실험 토글: `set_gc_tail_only`(baseline = `can_pruning`을 zone 0만 = InnoDB tail purge), `set_fg_unlink_enabled`(FG 축, search의 prune-initiate 토글).
+- **증분**: C-0(골격)→C-1a(OLTP reader, **가설 정정**: no-LLT에선 BG만으로 유계라 reader 기여 X)→C-1b(60s LLT, visibility oracle)→C-2(헤드라인 3-run)→C-3(skew sweep robustness).
+- **부수 수정**: BG GC stop-responsiveness(catch-up 루프가 `gc_stop_` 확인 — tail-only backlog에서 join 무한대기 버그) — findings #14. 20 correctness 회귀 green 확인.
+- **결과**(§0 헤드라인 + design-gc §11 표): deadzone가 LLT 하 in-middle reclaim으로 chain 유계(max ~155), tail-only는 폭주(~846k), read tput ~2,800× 우위. FG는 read-path +30%. correctness는 visibility로 검증.
 
 ---
 
-## 3. 결정 잠금 (재논의 금지 — 근거는 design-gc.md / design-1c.md)
-- **deadzone = vDriver Theorem 3.1**(`IsInDeadZone`/`SegIsInDeadZone`). 판정은 **tight bounds**: epoch의 실제 `[min_trx_id, superseded_ts]`(superseded_ts = 다음-newer version begin-ts; head는 ∞=절대 dead 아님). nominal 범위는 **over-prune correctness 버그**라 폐기.
-- **동시성**: hot path(read/insert) lock-free / unlink 일관성 = marked pointer / reclamation = per-traversal EBR / FG 협조 unlink + BG retire+reclaim. head는 insert가 prepend·append하는 유일 지점이라 **절대 prune 안 함**(tight bounds로 head는 dead 아님 → head-prune 자체가 불필요·동시성 문제 dissolve).
-- **GC = 단일 BG 액터(전용 스레드)**. windowed sweep(bounded/cycle) + low-cadence full-bucket backstop(correctness 받침) + dummy drain + compaction. 전부 BG 단독 순차.
-- **provenance**: deadzone = vDriver 파생(정승연, `dead_zone.c` 추출). 보고서엔 vDriver 출처·PostgreSQL License 표기.
+## 3. 결정 잠금 (재논의 금지 — 근거는 design-gc.md §11 / design-1c.md)
+- **Stage C baseline = 프로토타입 내 tail-only GC 모드**(`set_gc_tail_only`). standalone이라 실 InnoDB 대신 InnoDB purge(global-min 아래만 회수)를 모델링. 실 MySQL+sysbench 비교는 **Stage D** 영역.
+- **측정 방법론**(필수): ① controlled threading(스레드 ≤ 코어) — 아니면 chain length가 BG-GC 스케줄링에 지배됨(알고리즘 신호 아님). ② warm-up 제외(`warmup_ms`, GC warm-up early-return이 짧은 런 오염). ③ Guard-safe 샘플러. ④ **deadzone/FG 신호는 LLT 시나리오 고유**(no-LLT는 BG-only로도 유계라 비교 무의미).
+- **correctness = visibility로 검증**(no-crash 아님): LLT visibility oracle(자기 visible version 불변) + conservation(detached==retired) + ASan/TSan.
+- (1c에서 잠금) deadzone = vDriver Theorem 3.1, tight bounds(`[min_trx_id, superseded_ts]`), GC = 단일 BG 액터, hot path lock-free + marked pointer + per-traversal EBR. provenance = vDriver 파생(PostgreSQL License 표기).
 
-## 4. 후속/평가 후보 (지금 건드리지 말 것 — C 결과로 우선순위)
-- design-gc §9.3: hot/cold/LLT version classification, multi-granularity 노드, **list→DIVA interval tree**(LLT 하 chain을 log로 bound), tagged-pointer reclamation.
-- 잔여 perf 미세: cold record head wrapper가 bucket 유지 → long_live_epochs가 compaction에도 live-bucket 수만큼은 유지(correctness 아님). 별도 pending-list 리팩터는 C 데이터 보고.
+## 4. 후속/평가 후보 (지금 건드리지 말 것)
+- design-gc §9.3: list→DIVA interval tree(LLT 하 chain을 log로 bound), tagged-pointer reclamation, hot/cold/LLT classification, multi-granularity 노드.
+- 잔여 perf 미세(1c): cold record head wrapper가 bucket 유지 → long_live_epochs가 live-bucket 수만큼 유지(correctness 아님).
+- Stage C 확장(원하면): read latency 분포(현재는 throughput), epoch 수/EPOCH_SIZE knob 영향, CDF 차트를 보고서 figure로.
 
 ## 5. 현재 repo 상태
-- branch **master**, working tree **clean**, **origin/master까지 push 완료**. HEAD = 이 핸드오프 docs 커밋(마지막 **코드** 커밋 = `08f5313` 1c-6 위). 세션 3 = `30d3a83`(1c-0) ~ 최신 핸드오프(총 ~10커밋, 1c 전체).
-- 1c 신규/변경 파일: `include/interval_list.h`(epoch_node `state`+`superseded_ts`), `include/epoch_table.h`(retire-once helpers·backstop·drain·compaction·tight `can_prune_epoch`), `include/accelerateMVCC.cpp`(insert `superseded_ts` set + search FG unlink), `include/accelerateMVCC.h`(metrics/test 접근자), `include/epoch_reclaimer.h`(slot lease + overflow pin), `correctness_test.cpp`(20 테스트). docs: `design-1c.md`, `progress-log.md`, `findings.md` 갱신.
+- branch **master**, working tree **clean**, **origin/master까지 push 완료**. **최신 커밋 = Stage C** (feat: 벤치+토글+GC fix / docs: 결과+핸드오프). `git log --oneline -8`로 확인.
+- Stage C 신규/변경: `stage_c_bench.cpp`(신규 벤치), `include/accelerateMVCC.h`(`chain_length_guarded`·`set_fg_unlink_enabled`·`set_gc_tail_only`·GC stop-fix), `include/accelerateMVCC.cpp`(search FG 토글), `include/epoch_table.h`(`set_gc_tail_only`+`can_pruning` tail-only 제한), `CMakeLists.txt`(`stage_c_bench` 타깃). docs: README·progress-log·findings·design-gc(§11)·이 파일.
+- **레포 밖 자산**(WSL/Windows, git 추적 X): `/mnt/c/Users/USER/build_test_c*.sh`·`sweep_c3.sh`·`cdf.sh`·`stage_c_*.csv`·`*.log`. 재현 시 재사용.
 
-## 6. 로드맵 위치 — 다음은 Stage C
-A ✅ → B ✅ → 동시성 하드닝(1a ✅ → 1b ✅ → **1c ✅**) → **C(HTAP/long-txn 벤치) ← 다음** → (최종) D(InnoDB 통합). 1차 목표 A+B+C, 최종 +D.
-- **Stage C 자산**([design-gc.md](design-gc.md) §10): vDriver repo HTAP 하니스 — sysbench `oltp_update_non_index`(48스레드 Zipfian 1.2 skew) + `BEGIN;SELECT;pg_sleep(60);COMMIT;` 60s long reader + version-chain 길이 샘플러. 지표 = **version-chain length CDF**(우리 vs vanilla InnoDB) + throughput.
-- **이식 방향**: 우리 standalone 프로토타입에 writer N스레드 skew 업데이트 + reader snapshot 유지(LLT) + chain 길이 측정 하니스. (`chain_length(table,index)` 접근자 이미 있음.) baseline 대비 "LLT 하에서도 chain 짧게 유지"를 수치로 입증.
-- **주의**: LLT는 **논리적 read-view는 길게, EBR Guard는 search 단위로 짧게**(reclaim 굶음 방지 — 이미 search가 traversal당 Guard라 충족; 하니스가 Guard를 60s 가로질러 쥐지 않게).
+## 6. 로드맵 위치 — 1차 목표 A+B+C 달성, 다음은 D(최종) 또는 보고서
+A ✅ → B ✅ → 동시성(1a ✅→1b ✅→1c ✅) → **C ✅(HTAP/long-txn 벤치)** → **D(InnoDB 통합) ← 최종 / 또는 보고서 정리**.
+- **D 자산/방향**(design-gc §6 vDriver 매핑): 실제 InnoDB 소스에 가속 인덱스 연결(trx_sys active list, undo 메타데이터 포인터), sysbench HTAP로 vanilla MySQL 대비 측정. 규모 큼 — 착수 전 사용자와 범위 합의.
+- **보고서 방향**: A~C를 논문급으로(문제→설계(vDriver 계보)→동시성 하드닝→Stage C 결과/CDF). 차트·표는 design-gc §11 + 생성한 CDF figure 재사용.
+- **다음 세션은 D vs 보고서 중 무엇부터 할지 사용자에게 물어볼 것.**

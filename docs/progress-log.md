@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-06-20 — 세션 4: Stage C (HTAP/long-txn 벤치) — 1차 목표 A+B+C 결과 산출 ✅
+
+> **프로젝트 성격 정정**: 원래 2023 졸업프로젝트였으나 지금은 **개인 프로젝트**(졸업용 아님). 단, 성공 시 개인 이력/포폴용 **논문급 보고서**로 정리 목표라 엄밀함은 그대로.
+
+**재개 검증**: HEAD=`73f6608`(1c 완료, clean, origin 동기화) 확인 → 20 correctness Release/ASan/TSan green 재확인.
+
+**하니스 이식**: design-gc §10의 vDriver Figure-12 워크로드를 standalone 프로토타입으로. 신규 `stage_c_bench.cpp`(key=value args) — Zipfian(s) writer + OLTP point-reader(같은 skew) + 60s LLT(snapshot은 길게, EBR Guard는 search당 짧게) + Guard-safe chain 샘플러(CSV). 신규 accessor `chain_length_guarded`(기존 quiescent-only `chain_length`의 Guard판 — 라이브 샘플링용). 실험 토글 2개: `set_gc_tail_only`(can_pruning을 zone 0만 = InnoDB tail purge 모델) / `set_fg_unlink_enabled`(search의 FG prune-initiate 토글, marked-skip helping은 유지). 지표 = version-chain length CDF + throughput + LLT visibility oracle.
+
+**증분 C-0 (골격) ✅**: Zipfian writer + 샘플러 + CSV(LLT 없이). 3 config 빌드·실행, conservation 정확 일치, ASan/TSan clean. **발견**: writer-only에서 hot 체인이 선형 폭주(~60k)할 때가 있음 → BG-only GC의 version-chain unlink가 **O(chain)**(header forward-scan)이라 high write rate에서 못 따라잡음. O(1) 경로는 **FG cooperative unlink**(reader가 carried pred_next로 splice)뿐 → reader 필요.
+
+**증분 C-1a (OLTP reader) ✅ + 가설 정정**: reader 추가가 FG unlink로 hot 체인을 줄일 것으로 예상했으나 **데이터가 반증**. probe(8w/0r ×3, 8w/8r ×3, 6w/6r, 4w/4r)로 확인한 진짜 원인: **chain length는 no-LLT에선 BG-GC 스케줄링/CPU에 지배됨** — oversubscribe(스레드>코어)하면 BG GC가 굶어 deadzone publish/retire 급감(스파이크), non-oversubscribed면 양쪽 다 안정·유계. **no-LLT에선 reader가 체인을 못 줄임**(LLT 없으면 newest 아래 전부 dead → BG만으로도 CPU만 있으면 이미 짧음). C-1a의 실제 수확 = **multi-unlinker correctness**(reader 8개 동시 FG unlink에서 ASan UAF/double-free 0, TSan race 0) + 방법론(controlled threading ≤ cores−2 필수, 경량 sampling).
+
+**증분 C-1b (60s LLT) ✅**: controlled threading(6w/6r/1llt=15≤16). **deadzone의 진짜 가치는 LLT 시나리오 고유** — LLT가 global-min을 pin하면 tail purge는 in-middle을 못 줄임. Release 30s: **LLT visibility OK**(139.7M searches, inconsistencies=0) + hot 체인 max=155(17.7M writes에도 유계, tight-bound deadzone의 in-middle reclaim) + reclaim 진행(retired 10M, conservation 일치). ASan/TSan(8s) 동일하게 clean·visibility OK. **correctness를 no-crash가 아니라 visibility로 검증**(메모리 규칙).
+
+**증분 C-2 (헤드라인) ✅**: 60s LLT, 6w/6r/1llt 3-run matrix. ① deadzone+FG / ② deadzone BG-only / ③ tail-only+FG.
+- **헤드라인 (① vs ③)**: deadzone hot-chain **max 155** vs tail-only **845,977** (~5,500×; p50 15 vs 258,632 ~17,000×). 메커니즘 확증 — 같은 60s에 retire **22.4M vs 277**(tail purge는 LLT 아래만 회수 가능 → 거의 못 함). HTAP 비용은 read에: tail-only read tput **487/s** vs deadzone **1.36M/s**(~2,800×; tail-only는 write tput만 1.38M>649k/s — GC를 안 해서, 전형적 HTAP 함정).
+- **FG 증분 (① vs ②, 부하 고정·토글만)**: FG가 chain 분포 하향(p50 15 vs 41, p99 45 vs 84) + read tput +30%(1.36M vs 1.04M reads/s) — reader가 traversal 중 dead epoch 떼어 search가 빨라짐. max는 noise 내(155 vs 114, worst-case는 BG deadzone가 받침).
+- 전 run **LLT visibility OK**(tail-only 폭주 baseline조차 자기 version 정확히 봄), 새 토글 경로 ASan/TSan clean.
+
+**GC stop-responsiveness 수정 (C-3 중 발견·수정) ✅**: tail-only baseline은 거의 prune 안 해 epoch/bucket 무한 누적 → BG GC의 boundary catch-up for-loop가 `gc_stop_`을 안 봐서, 큰 backlog에서 `stop_background_gc().join()`이 사실상 안 끝남(무한 대기). catch-up 루프가 매 iteration `gc_stop_`을 확인하게 수정(종료 중엔 남은 drain 포기가 안전 — 더 돌 GC 없음). 실제 shutdown robustness 개선이라 유지. 수정 후 20 correctness Release/ASan/TSan 재검증 green(기존 동작 불변), GcScale는 stop 후 run_gc_once로 드레인하므로 conservation 영향 없음.
+
+**증분 C-3 (robustness sweep) ✅**: skew s∈{0.8,1.2,1.6} × {deadzone, tail-only}, 20s, **warm-up 제외**(GC warm-up early-return이 짧은 런 percentile 오염 → `warmup_ms` 도입, CSV는 전체 보존·요약만 steady-state). deadzone max **38/40/41**(skew 무관 안정) vs tail-only **308k/322k/335k** → 우위 ~8,000× 견고. 전 12런 visibility OK·hang 0(각 런 `timeout -s KILL` 가드). (앞서 본 deadzone 78k "스파이크"는 warm-up 측정 아티팩트였고 제외하니 사라짐 = 알고리즘 문제 아님 확인.) CDF 차트 생성.
+
+**→ Stage C 완료 (C-0~C-3).** 1차 목표 A+B+C의 결과물 확보: **LLT 하 deadzone in-middle reclaim이 version-chain을 유계로 유지(max ~155) vs InnoDB식 tail purge 폭주(~846k), read tput ~2,800× 우위**, FG cooperative unlink는 read-path 추가 개선(+30%), correctness는 visibility로 검증. 빌드/실행 자산 `/mnt/c/Users/USER/build_test_c*.sh`·`stage_c_*.csv`(레포 밖). **다음 = D(InnoDB 통합, 최종) 또는 보고서 정리** — 상세 [NEXT-SESSION.md](NEXT-SESSION.md).
+
+---
+
 ## 2026-06-19 — 세션 3: Step 1c 설계(적대적 하드닝) + 증분 1c-0 ✅
 
 **재개 검증**: HEAD=`08d70b6`(1b 완료+적대적 리뷰+push, clean) 확인 → Release/ASan/TSan 9개 전부 green 재확인(헤더 변경 캐시 무효화 후 재빌드). 1b 상태 무결.

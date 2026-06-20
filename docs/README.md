@@ -1,9 +1,9 @@
 # AccelerateMVCC — 현황 & 로드맵
 
 > 디스크 기반 DBMS(InnoDB/MySQL)의 MVCC를 가속하는 **인메모리 보조 인덱스**.
-> 하태성의 2023년 졸업프로젝트를 **단독으로** 재개. 이 문서는 진행과 함께 갱신되는 **리빙 도큐먼트**입니다.
+> 하태성의 2023년 졸업프로젝트를 **단독으로** 재개 (현재는 졸업용이 아닌 **개인 프로젝트**). 이 문서는 진행과 함께 갱신되는 **리빙 도큐먼트**입니다.
 
-- 최종 수정: **2026-06-18**
+- 최종 수정: **2026-06-20** (Stage C 완료)
 - 상세 포렌식·이슈 트래커 → [findings.md](findings.md)
 - 세션별 진행 로그 → [progress-log.md](progress-log.md)
 
@@ -48,11 +48,10 @@ flowchart TD
 
 ---
 
-## 3. 현재 상태 (2026-06-18 기준)
+## 3. 현재 상태 (2026-06-20 기준)
 
-- 마지막 코드 활동 **2023-07-28**, 설계 문서는 **2023-07-11**에서 중단.
-- **최신 작업 브랜치 = `feat/deadzone-detector`** (master보다 3커밋 앞섬). `epoch_table`을 interval list에 연결(`epoch_table->insert` 주석 해제 + 인덱싱 `/`→`%` 수정)하던 중 미완 상태로 중단.
-- 자세한 내용은 [findings.md](findings.md).
+- **진행: A ✅ → B ✅ → 동시성 하드닝 1a~1c ✅ → C(HTAP/long-txn 실험) ✅. 다음 = D(MySQL/InnoDB 통합, 최종).** 세션별 상세는 [progress-log.md](progress-log.md), 결과는 [design-gc.md](design-gc.md) §11.
+- (재개 시작점, 2023) 마지막 코드 활동 2023-07-28 / `feat/deadzone-detector` 브랜치에서 `epoch_table`을 interval list에 연결하던 중 중단 → 2026-06 master에서 재개·전면 진행. 포렌식은 [findings.md](findings.md).
 
 | 트랙 | 상태 |
 |---|---|
@@ -60,10 +59,10 @@ flowchart TD
 | insert 경로 | ✅ 빌드·실행·벤치 통과 |
 | search 경로 | ✅ 최신 가시버전 반환, 정확성 테스트 통과 |
 | GC / deadzone | ✅ 단일스레드 정확·메모리안전(ASAN), 테스트 통과 |
-| 동시성 GC (멀티스레드) | 🔄 하드닝 중 — per-traversal EBR 프리미티브 ✅(ASan/TSan), GC 통합 다음 ([design-gc.md](design-gc.md)) |
+| 동시성 GC (멀티스레드) | ✅ 1a~1c 완료 — marked-pointer + per-traversal EBR + 전용 BG GC + FG cooperative unlink + tight-bound deadzone (20테스트 ASan/TSan green) |
 | insert 마이크로벤치 | ✅ 실행됨 (1M: vector 7ms · interval-list 53–73ms) |
-| 실험 (HTAP / long-txn) | ❌ 미착수 |
-| MySQL 통합 | ❌ 미착수 |
+| 실험 (HTAP / long-txn) | ✅ Stage C 완료 — 60s LLT 하 deadzone vs tail-only version-chain CDF ([design-gc.md](design-gc.md) §11) |
+| MySQL 통합 | ❌ 미착수 (Stage D, 최종) |
 
 ---
 
@@ -78,9 +77,9 @@ flowchart TD
 - 완료: snapshot 보존(#7·#8), deadzone 초기화/가드(#4), GC sweep 메모리안전(#5·#6), `garbage_collect` 완료/return, list 방향 통일(Q1), `search` 최신 가시버전 반환.
 - **추후(동시성/하드닝)**: 멀티스레드 GC reclamation, 빈 snapshot fast-path, dummy-list 누수. (deadzone 출처 = vDriver 재구현, findings 참조)
 
-### C. 실험·결과 산출
-- **DoD**: HTAP(OLTP+OLAP 병렬) / long-transaction 워크로드에서 baseline 대비 search 비용·GC 효과를 **수치 + 차트**로 제시.
-- 작업: 워크로드 하니스, 지표 정의(search latency, 체인 길이, GC 회수량 등), 결과 리포트.
+### C. 실험·결과 산출 ✅ (완료 2026-06-20)
+- **DoD**: HTAP(OLTP+OLAP 병렬) / long-transaction 워크로드에서 baseline 대비 search 비용·GC 효과를 **수치 + 차트**로 제시. → 달성.
+- 결과(상세 [design-gc.md](design-gc.md) §11): vDriver 하니스를 `stage_c_bench.cpp`로 이식(Zipfian writer + OLTP reader + 60s LLT + Guard-safe chain 샘플러). baseline = 프로토타입 내 tail-only GC 모드(InnoDB purge 모델). **60s LLT 하 deadzone hot-chain max 155 vs tail-only 845,977(~5,500×), read tput 1.36M/s vs 487/s(~2,800×)**, retire 22.4M vs 277. skew 0.8/1.2/1.6 전반 견고(~8,000×). FG cooperative unlink는 read-path +30%. 전 run LLT visibility OK + ASan/TSan clean. version-chain length CDF 차트 생성.
 
 ### D. MySQL/InnoDB 통합 (최종)
 - **DoD**: 실제 InnoDB 소스에 가속 인덱스 연결, sysbench HTAP로 vanilla MySQL 대비 효과 측정.
