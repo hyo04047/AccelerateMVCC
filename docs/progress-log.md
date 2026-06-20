@@ -14,7 +14,9 @@
 
 **D-1a ✅ (populate hook 배선)**: 통합 facade `integration/innodb/accel_hook.{h,cc}`(InnoDB와 디커플된 plain 함수) + `build_d1a.sh`가 MySQL 트리에 복사+멱등 패치(CMakeLists source 추가, `trx0rec.cc` include + 성공 경로 hook call @2325). D-1a는 **count-only**(atomic+stderr, hot path 무위험)로 배선만 증명. 결과: mysqld 재빌드 OK, churn 1.91M txn @ 31,880 tps(vanilla와 동일=오버헤드 무시), **HOOK EVIDENCE** `[accel] undo records seen: 200000…1800000`(실제 table=1064·monotonic trx_id·undo loc·op=MODIFY) → InnoDB→accelerator 배선+빌드통합 end-to-end 검증. 상세 [design-D.md](design-D.md) §8.
 
-**→ 다음 = D-1b**(hook을 실제 insert로): undo 생성이 InnoDB latch 보유 구간이라 hot-path 안전성(latch-order/deadlock·alloc-in-critical-section·perf) 리스크 → **adversarial 설계 리뷰 먼저**.
+**D-1b 적대적 설계 리뷰 ✅ (워크플로 6에이전트: 5렌즈→종합)**: naive D-1b(hook에서 `insert()` 직접)는 mysqld 깨짐 — blocker 5건(PK 미전달·Kuku thread-unsafe·page latch 하 malloc·cuckoo 무한/silent-drop·GC가 SIM Trx_manager 기반). **안전 설계 = "enqueue-under-latch, insert-off-latch, GC off, consult hint+fallback"**: hook은 noexcept로 lock-free ring에 스칼라만(+pk_hash+old_db_trx_id), 단일 drainer가 off-latch single-consumer insert. D-1b를 4증분으로 분할(D-1b-1 키배선 count-only → 2 ring/drainer 스캐폴드 → 3 진짜 insert·GC off → 4 하드닝). 상세 [design-D.md](design-D.md) §9.
+
+**→ 다음 = D-1b-1**(키 배선: hook에 pk_hash+old_trx_id, MODIFY 필터, count-only).
 
 ---
 

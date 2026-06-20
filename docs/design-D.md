@@ -48,7 +48,10 @@ InnoDB consistent read의 핵심 흐름(개략):
 |---|---|---|
 | **D-0 ✅** | vanilla MySQL 8.4.10 소스 빌드(gcc-13, 11분) + 기동 + sysbench **baseline** 측정 | 완료 — §7 결과 |
 | **D-1a ✅** | populate hook **배선**(count-only facade `accel_hook`) — InnoDB→accelerator 호출 경로 + 빌드 통합 증명 | 완료 — §8 |
-| **D-1b** | hook을 **실제 insert**(undo create 시 메타데이터를 accelerator에 적재), read 경로는 미사용 | 기능 회귀 0, 적재 확인, 오버헤드, **hot-path 안전성**(아래 리스크) |
+| **D-1b-1** | 키 배선: hook에 **pk_hash + old_trx_id** 추가(call site에서 clustered PK 추출), MODIFY-op 필터, **count-only 유지** | 서로 다른 PK→다른 키, 반복 update→같은 pk_hash |
+| **D-1b-2** | **lock-free ring + drainer 스캐폴드**(진짜 insert 아직 X) + init/shutdown 생명주기 + ready gate | TSan multi-conn race 0, drop counter, clean join |
+| **D-1b-3** | drainer가 **진짜 single-consumer insert**(Trx_manager/get_mutex 미사용, ctor 사전생성 제거, kuku≥1<<16, return 계약, **GC off**) | chain integrity per (table,pk), insert==drained, 유계 메모리 |
+| **D-1b-4** | 하드닝: noexcept hook 감사, assert-no-malloc-on-latch, accel=leaf-domain 불변식 | full build, mysqld boot, latch-hold 회귀 0 vs D-1a |
 | **D-2** | **consult hook**(consistent read가 accelerator로 가시 version 위치 점프) | **가시성 vanilla와 동일**(정합성 필수) + chain walk 감소 |
 | **D-3** | deadzone ↔ `trx_sys` active view 동기화 + BG GC가 in-middle 회수(purge 보완) | LLT 하 chain/undo 점유 감소, purge와 무충돌 |
 | **D-4** | sysbench HTAP **vs vanilla** 측정 | read latency/throughput 개선 + version 탐색 비용 감소(perf) |
@@ -83,3 +86,18 @@ InnoDB consistent read의 핵심 흐름(개략):
 - **hook 지점**: `trx_undo_report_row_operation`의 성공 경로, `*roll_ptr = trx_undo_build_roll_ptr(...)` 직후 `return DB_SUCCESS` 직전(trx0rec.cc:2325). 전달값 = `index->table->id, trx->id, undo_ptr->rseg->space_id, page_no, offset, op_type`(= 우리 accelerator가 저장할 (table, pk-자리, trx_id, space/page/offset)).
 - **D-1a facade = count-only**(atomic + 200k마다 stderr): hot path 무위험 검증용. 결과: mysqld 재빌드 OK, churn 1.91M txn @ **31,880 tps**(vanilla와 동일 = 오버헤드 무시 가능), mysqld 안정. **HOOK EVIDENCE**: `[accel] undo records seen: 200000…1800000`, 실제 table=1064·monotonic trx_id·undo loc(space 0xFFFFFFEF:page:offset)·op=2(MODIFY)로 ~1.8M회 발화. → **InnoDB→accelerator 배선 + 빌드 통합 end-to-end 검증.**
 - **다음 = D-1b 리스크**(hot-path real insert): undo 생성은 `trx->undo_mutex` 등 InnoDB latch 보유 구간 직후 → 거기서 우리 accelerator의 alloc/lock/BG-GC를 호출하면 **latch-order/deadlock·alloc-in-critical-section·perf** 위험. D-1b 전에 adversarial 설계 리뷰로 안전한 호출 형태(예: 가벼운 enqueue 후 비동기 적재, BG-GC off, lock-free path) 확정 필요.
+
+## 9. D-1b 적대적 설계 리뷰 (2026-06-21, 워크플로 6에이전트: 5렌즈 병렬→종합)
+naive D-1b(hook에서 `insert()` 직접 호출)는 mysqld 깨짐 — blocker 5건:
+1. **PK 미전달**: accelerator는 `make_item(table_id,index)`로 키잉하는데 hook에 PK가 없어 모든 행이 한 chain에 붕괴 → consult 불가.
+2. **Kuku thread-unsafe**(검증: `Kuku/src/kuku/kuku.cpp`에 lock/atomic 0): 다른 페이지 동시 쓰기가 한 전역 cuckoo table을 race → torn read/heap corruption.
+3. **page latch 보유 중 malloc**(undo_entry/epoch_node/wrapper): arena-lock↔page-latch 교차 사이클 + latch hold 증폭.
+4. **cuckoo insert 무한/silent-drop**: 1<<10·max_probe=100, 신규 (table,pk)가 common path라 latch 하 eviction 폭증 + stash full 시 version 조용히 누락.
+5. **GC가 SIM Trx_manager 기반**: 저수준 insert는 Trx_manager를 안 먹여 deadzone가 엉터리 → InnoDB reader가 필요한 version prune. **D-1b는 GC off 필수.**
+
+**안전 설계 = "enqueue-under-latch, insert-off-latch, GC off, consult-validated-later"**:
+- **hook(latch 하)**: `noexcept`, MODIFY 필터 → bounded **lock-free MPMC ring**에 스칼라만(table_id, pk_hash, trx_id, **old_db_trx_id**, space/page/offset, delete_mark) fetch_add+store+release publish. alloc/kuku/mutex/EBR/throw 0. ring full이면 **drop counter++ 후 return**(절대 block X).
+- **drainer(off-latch, single consumer)**: ring을 pop해 진짜 insert(kuku query/insert + node alloc + epoch_table->insert)를 **단일 스레드로** → kuku/리스트 단일 mutator(기존 reclaimer/sweep 전제와 합치). drain lag 수 ms는 OK(consult는 hint+fallback).
+- **키/값**: key=(table_id, **pk_hash**)(PK 필드 해시; MODIFY-op는 `rec`로 추출 가능). 노드에 **old DB_TRX_ID**(undo가 복원하는 version의 begin-ts = 가시성 trx_id; writer trx->id만 저장하면 boundary off-by-one) + delete-mark 1bit 저장.
+- **accelerator 변경**(D-1b-3): Trx_manager/get_mutex 미사용 저수준 insert, ctor 사전생성 제거(키 동적 생성), kuku 크기 ≥1<<16, insert false=진짜 실패로 계약 수정, **GC off**(메모리 무한증가 = 이 단계 의도), 명시적 init/shutdown(static dtor 금지) + ready gate, accel=leaf-domain 불변식.
+- **D-2로 미룸**: visibility는 InnoDB `ReadView`(m_low/up_limit_id, m_ids) 3-way `changes_visible`를 노드 DB_TRX_ID로 재구현(우리 search의 max-trx_id 루프 X). consult는 LOCATOR(roll_ptr 반환→InnoDB가 검증), **miss는 반드시 일반 chain walk fallback**(절대 'version 없음'으로 해석 X). purge invalidation·rollback 정합·GC를 InnoDB purge view로 재구동은 D-3.
