@@ -2,10 +2,11 @@
 
 #include "accelerateMVCC.h"
 
-mvcc::Accelerate_mvcc::Accelerate_mvcc(uint64_t record_count) {
+mvcc::Accelerate_mvcc::Accelerate_mvcc(uint64_t record_count, uint32_t kuku_log2) {
     constexpr uint64_t max_value = ~0ULL;
-    // if you are willing to test large number of elements, you have to change table size : (1 << 10) + 1 to (1 << 16)
-    this->kuku_table = new kuku::KukuTable((1 << 10), (1 << 10), 2, kuku::make_random_item(), 100,
+    // Cuckoo table sized to (1 << kuku_log2) bins (default 1024; InnoDB integration uses 65536
+    // so the dynamic key space does not overflow into silent cuckoo-insert failure).
+    this->kuku_table = new kuku::KukuTable((1u << kuku_log2), (1 << 10), 2, kuku::make_random_item(), 100,
                                            kuku::make_item(max_value, max_value));
     // kukuTable = new kuku::KukuTable((1 << 16), (1 << 10), 2, kuku::make_zero_item(), 100, kuku::make_random_item());
     this->trxManger = new Trx_manager(record_count);

@@ -24,7 +24,9 @@
 
 **D-1b-3a ✅ (빌드통합)**: Accelerate_mvcc + epoch_table + interval_list + trxManager + **Kuku(kuku.cpp + blake2b.c + blake2xb.c)**를 innobase `INNOBASE_SOURCES`에 추가(절대경로) + include 경로(우리 include/·Kuku/src·생성된 config.h의 `~/acc-build/Kuku/src`) + 우리 소스 `-w`(MySQL -Werror 회피). accel_hook이 `accelerateMVCC.h` include + 전역 `Accelerate_mvcc(0)` 생성(BG GC off). 빌드 rc=0(첫 시도는 blake2xb undefined reference로 .c 누락 발견→추가), mysqld 기동 `[accel] accelerator constructed`, churn 944k @ 31.5k tps, clean shutdown. consume는 아직 count-only. **우리 코드가 MySQL 빌드 그래프에 실제 진입.** 재현 `build_d1b3a.sh`, 방법 [design-D.md](design-D.md) §10.
 
-**→ 다음 = D-1b-3b**(drainer consume()가 저수준 `insert()` 호출 — 단일 consumer라 g_accel 단일 mutator라 안전; ctor에 kuku 크기 param ≥1<<16; GC off). 20 correctness 회귀(ctor 변경) + chain 적재(long_live_size>0)·insert==drained 검증.
+**D-1b-3b ✅ (진짜 insert)**: drainer consume()가 기존 저수준 `insert(table_id,pk_hash,trx_id,space,page,offset)` 호출(단일 consumer라 g_accel 단일 mutator=무경쟁, Trx_manager/get_mutex 미사용). ctor에 `kuku_log2` param(기본 10=테스트 무영향, integration=16=64k bin으로 silent cuckoo 실패 회피), **GC off**. 검증: 20 correctness Release green, mysqld churn 1.34M @ 33k tps, drained==enq=1,338,217·dropped=0·clean shutdown, **cur_key_chain_len=2616**(hot key chain 실제 적재·성장; GC off라 자람=예상). live_epoch_buckets=0은 GC 부기라 정상. **→ populate 경로(D-1b) 기능 완성**: AccelerateMVCC 인덱스가 mysqld 안에서 실제 InnoDB undo로 채워짐(latch 하 enqueue→off-latch single-consumer insert).
+
+**→ 다음 = D-1b-4**(하드닝: noexcept hook 감사, accel=leaf-domain 불변식) → **D-2(consult)**: row0vers.cc에서 accelerator로 가시 version 점프, InnoDB ReadView 3-way `changes_visible` 정합, hint+fallback. D-2가 D-0 baseline(analytic 0.7ms→1.35s) 평탄화 = 최종 payoff.
 
 ---
 

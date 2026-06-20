@@ -52,7 +52,7 @@ InnoDB consistent read의 핵심 흐름(개략):
 | **D-1b-2a ✅** | bounded **lock-free MPMC ring**(Vyukov, `integration/innodb/accel_ring.h`) + standalone 스트레스 테스트 | 완료 — Release/ASan/TSan PASS(enq==deq, torn=0, data race 0, drop 경로 발동) |
 | **D-1b-2b ✅** | ring을 accel_hook에 배선(hook=enqueue) + off-latch drainer(pop+count) + InnoDB 생명주기(srv_start→`accel_init`, srv_shutdown→`accel_shutdown`) + ready gate | 완료 — drainer 동작, enq==drained(1.8M), dropped=0, clean shutdown, 29.9k tps |
 | **D-1b-3a ✅** | accelerator(4 .cpp)+Kuku(kuku.cpp+blake2b/xb.c)를 **innobase 빌드에 컴파일·링크**, accel_hook이 전역 `Accelerate_mvcc(0)` 생성(BG GC off), consume count-only | 완료 — build/link/boot OK, 31.5k tps, clean shutdown(§10) |
-| **D-1b-3b** | drainer consume()가 **진짜 single-consumer insert**(저수준 `insert()` — Trx_manager/get_mutex 미사용; 단일 consumer라 g_accel 단일 mutator) + kuku 크기 param ≥1<<16, **GC off** | 20 correctness green(ctor 변경), chain 적재(long_live_size>0), insert==drained, 메모리 무한증가(의도) |
+| **D-1b-3b ✅** | drainer consume()가 진짜 저수준 `insert()`(단일 consumer=g_accel 단일 mutator) + ctor `kuku_log2` param(integration=16) + GC off | 완료 — 20 correctness green, **cur_key_chain_len=2616**(인덱스 적재 확인), insert==drained=1.34M, 33k tps |
 | **D-1b-4** | 하드닝: noexcept hook 감사, assert-no-malloc-on-latch, accel=leaf-domain 불변식 | full build, mysqld boot, latch-hold 회귀 0 vs D-1a |
 | **D-2** | **consult hook**(consistent read가 accelerator로 가시 version 위치 점프) | **가시성 vanilla와 동일**(정합성 필수) + chain walk 감소 |
 | **D-3** | deadzone ↔ `trx_sys` active view 동기화 + BG GC가 in-middle 회수(purge 보완) | LLT 하 chain/undo 점유 감소, purge와 무충돌 |

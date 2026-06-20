@@ -36,7 +36,10 @@ namespace mvcc
     class Accelerate_mvcc {
 
     public:
-        explicit Accelerate_mvcc(uint64_t record_count);
+        // kuku_log2 sizes the cuckoo table to (1 << kuku_log2) bins. Default 10 (1024) keeps
+        // existing callers/tests unchanged; the InnoDB integration passes 16 (65536) so the
+        // dynamic (table_id, pk-hash) key space does not overflow into silent cuckoo failure.
+        explicit Accelerate_mvcc(uint64_t record_count, uint32_t kuku_log2 = 10);
         ~Accelerate_mvcc() { stop_background_gc(); }
 
         // Run one GC pass synchronously (deterministic; for single-threaded tests).

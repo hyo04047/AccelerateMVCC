@@ -46,12 +46,19 @@ int pk_buckets() {
 
 void consume(const accel::UndoRec &r) {
   g_pk_seen[r.pk_hash & 1023u].fetch_or(1u, std::memory_order_relaxed);
-  // D-1b-3: the real single-consumer insert into the AccelerateMVCC index lands here.
+  // D-1b-3b: real single-consumer insert into the AccelerateMVCC index. Only the drainer touches
+  // g_accel, so the index has exactly one mutator (no contention). Low-level insert() bypasses
+  // Trx_manager/get_mutex. BG GC is OFF -> memory grows by design for this populate-only stage.
+  if (g_accel) g_accel->insert(r.table_id, r.pk_hash, r.trx_id, r.space_id, r.page_no, r.offset);
   const uint64_t n = g_drained.fetch_add(1, std::memory_order_relaxed) + 1;
   if (n % 500000 == 0) {
-    std::fprintf(stderr, "[accel] drained=%llu enq=%llu dropped=%llu pk_buckets=%d/1024\n",
+    // chain_length is non-guarded, but the drainer is the SOLE mutator of g_accel and we call it
+    // from that same thread -> no concurrent mutation -> safe. Shows this (hot) key's chain depth
+    // is actually growing (GC off), i.e. the index is being populated for real.
+    size_t cl = g_accel ? g_accel->chain_length(r.table_id, r.pk_hash) : 0;
+    std::fprintf(stderr, "[accel] drained=%llu enq=%llu dropped=%llu pk_buckets=%d/1024 cur_key_chain_len=%zu\n",
                  (unsigned long long)n, (unsigned long long)g_enq.load(),
-                 (unsigned long long)g_dropped.load(), pk_buckets());
+                 (unsigned long long)g_dropped.load(), pk_buckets(), cl);
   }
 }
 
@@ -71,7 +78,7 @@ void accel_init() noexcept {
   if (!g_started.compare_exchange_strong(expected, true)) return;  // already inited
   g_stop.store(false, std::memory_order_relaxed);
   try {
-    g_accel = new mvcc::Accelerate_mvcc(0);  // dynamic keys, BG GC NOT started
+    g_accel = new mvcc::Accelerate_mvcc(0, 16);  // dynamic keys, 64k-bin cuckoo, BG GC NOT started
     g_drainer = std::thread(drain_loop);
   } catch (...) {
     delete g_accel;
@@ -88,9 +95,11 @@ void accel_shutdown() noexcept {
   g_ready.store(false, std::memory_order_release);  // hook stops enqueuing
   g_stop.store(true, std::memory_order_release);
   if (g_drainer.joinable()) g_drainer.join();
-  std::fprintf(stderr, "[accel] shutdown: enq=%llu drained=%llu dropped=%llu pk_buckets=%d/1024\n",
+  std::fprintf(stderr,
+               "[accel] shutdown: enq=%llu drained=%llu dropped=%llu pk_buckets=%d/1024 live_epoch_buckets=%zu\n",
                (unsigned long long)g_enq.load(), (unsigned long long)g_drained.load(),
-               (unsigned long long)g_dropped.load(), pk_buckets());
+               (unsigned long long)g_dropped.load(), pk_buckets(),
+               g_accel ? g_accel->long_live_size() : 0);
   delete g_accel;  // drainer joined -> sole owner; dtor is a no-op for BG GC (never started)
   g_accel = nullptr;
 }
