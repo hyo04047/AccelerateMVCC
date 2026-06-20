@@ -97,6 +97,7 @@ flowchart TD
 
 ## 6. 문서 인덱스
 - **README.md** (이 문서) — 개요·아키텍처·로드맵·상태
+- **[REPORT.md](REPORT.md)** — A~C 통합 보고서(논문급): 문제→설계→구현→Stage C 평가·CDF→관련연구→결론
 - **[design-gc.md](design-gc.md)** — GC·동시성 설계 & 결정 근거 (1차 자료 기반)
 - **[findings.md](findings.md)** — 포렌식·이슈 트래커
 - **[progress-log.md](progress-log.md)** — 세션별 진행 로그
