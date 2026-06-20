@@ -152,6 +152,9 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
     // we hold it). 1c-1 JUDGES deadness against it but does NOT act; cooperative unlink
     // lands in 1c-4. nullptr (warm-up / not yet published) -> judge nothing, never block.
     Epoch_table::deadzone *dz = epoch_table->published_deadzone();
+    // Stage C-2: when FG cooperative unlink is disabled, we still traverse + help-splice marked
+    // nodes below, but do not INITIATE new prunes (isolates the FG path's contribution).
+    bool fg_on = fg_unlink_enabled_.load(std::memory_order_relaxed);
     bool found = false;
     uint64_t best_trx_id = 0;
     // pred_next = the forward word of the last KEPT predecessor (header, or the last unmarked
@@ -179,7 +182,7 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
         // BG-only (BG retires it via the descriptor-dead wrapper sweep / backstop). The HEAD is
         // NEVER pruned (head-skip; pred_next == &header->next), so it is always scanned below --
         // a reader's visible-latest version lives in the head and must never be skipped.
-        if (dz != nullptr && pred_next != &header->next &&
+        if (fg_on && dz != nullptr && pred_next != &header->next &&
             epoch_table->can_prune_epoch(epoch, dz)) {
             coop_dead_seen_.fetch_add(1, std::memory_order_relaxed);
             epoch->next.set_mark(succ);                  // logical delete (idempotent; may fail if next moved)

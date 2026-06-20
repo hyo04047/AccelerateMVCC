@@ -164,8 +164,14 @@ namespace mvcc {
             bool flag = true;
 
 
-            /* compare its v_start & v_end to deadzone */
-            for (uint64_t i = 0; i < zone->len; ++i) {
+            /* compare its v_start & v_end to deadzone. In TAIL-ONLY baseline mode (stage C-2) we
+               consider only zone 0 (= [0, oldest_low_limit_id], the below-global-min tail) and
+               skip the in-middle holes -- this faithfully models InnoDB-style tail purge, which
+               an LLT stalls by pinning the global-min. Default (deadzone) uses every zone. */
+            uint64_t limit = gc_tail_only_.load(std::memory_order_relaxed)
+                                 ? std::min<uint64_t>(zone->len, 1)
+                                 : zone->len;
+            for (uint64_t i = 0; i < limit; ++i) {
                 if (i == 0 && zone->oldest_active_trx_ids.size() != 0) {
                     if (v_end < zone->range[1]) {
                         ret = true;
@@ -310,6 +316,10 @@ namespace mvcc {
         // EBR used by GC (retire/reclaim) and search readers (Guard). Single
         // producer/reclaimer in stage 1a: only the GC actor retires/reclaims.
         EpochReclaimer& reclaimer() { return reclaimer_; }
+
+        // Stage C-2 baseline toggle: when true, can_pruning considers only the tail (below
+        // global-min) dead zone, modeling InnoDB-style tail purge. Set once before the run.
+        void set_gc_tail_only(bool v) { gc_tail_only_.store(v, std::memory_order_relaxed); }
 
         // GC metrics (stage 1c): epoch_nodes detached from the version chain, and retired.
         // At quiescence detached == retired -- valid while each epoch_node has a single swept
@@ -504,6 +514,8 @@ namespace mvcc {
         std::array<std::atomic<epoch_table_node *>, EPOCH_TABLE_SIZE> table{};
         std::vector<epoch_table_node *> long_live_epochs;
         EpochReclaimer reclaimer_;
+        // Stage C-2: tail-only (InnoDB-style) GC baseline toggle; default false = full deadzone.
+        std::atomic<bool> gc_tail_only_{false};
         // Shared deadzone descriptor published by the BG GC actor (stage 1c). The current
         // one leaks at shutdown by design (no next cycle to supersede+retire it), matching
         // the index's existing intended-leak posture; superseded ones are EBR-reclaimed.

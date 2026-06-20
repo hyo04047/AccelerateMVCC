@@ -105,3 +105,21 @@ target_link_libraries(ebr_test PRIVATE GTest::gtest_main Threads::Threads)
 add_executable(marked_ptr_test "marked_ptr_test.cpp")
 target_include_directories(marked_ptr_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(marked_ptr_test PRIVATE GTest::gtest_main Threads::Threads)
+
+# Stage C HTAP/long-txn benchmark harness (Zipfian writers + chain-length sampler).
+# Links the same core sources as the main executable; no gtest dependency.
+add_executable(stage_c_bench
+  "stage_c_bench.cpp"
+  ${COMMON_SOURCES}
+)
+target_include_directories(stage_c_bench
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Kuku/src
+)
+if (CMAKE_VERSION VERSION_GREATER 3.12)
+  set_property(TARGET stage_c_bench PROPERTY CXX_STANDARD 20)
+endif()
+target_link_libraries(stage_c_bench
+  PRIVATE
+  Kuku::kuku
+  Threads::Threads
+)

@@ -67,6 +67,13 @@ namespace mvcc
                             // latest): each garbage_collect must advance the epoch by exactly
                             // EPOCH_TABLE_SIZE/4 so the Phase-1 table swaps stay in their cadence.
                             for (uint64_t b = last_boundary + PERIOD; b <= boundary; b += PERIOD) {
+                                // Respond to shutdown promptly: under a pathological backlog (e.g.
+                                // the tail-only baseline reclaims almost nothing, so each sweep's
+                                // cost grows), draining every missed boundary here could take far
+                                // longer than the stop signal -- making stop_background_gc().join()
+                                // hang. We are stopping anyway, so abandoning the remaining drain
+                                // is safe (no further GC will run on this actor).
+                                if (gc_stop_.load(std::memory_order_acquire)) break;
                                 epoch_table->garbage_collect(get_epoch_num(b),
                                                              trxManger->get_copy_active_trx_list());
                             }
@@ -176,6 +183,15 @@ namespace mvcc
         uint64_t coop_dead_seen() const { return coop_dead_seen_.load(std::memory_order_relaxed); }
         std::atomic<uint64_t> coop_dead_seen_{0};
 
+        // Stage C-2 experiment toggles (set once before threads start; default = current behavior).
+        // fg_unlink_enabled_: when false, search() still help-splices already-marked nodes (needed
+        // for correctness) but does NOT INITIATE new cooperative unlinks -> isolates the FG path's
+        // contribution (BG-only vs BG+FG) at a fixed reader load.
+        std::atomic<bool> fg_unlink_enabled_{true};
+        void set_fg_unlink_enabled(bool v) { fg_unlink_enabled_.store(v, std::memory_order_relaxed); }
+        // Forwards to the GC: tail-only (InnoDB-style) pruning baseline vs full deadzone.
+        void set_gc_tail_only(bool v) { epoch_table->set_gc_tail_only(v); }
+
         // Stage 1c-2 retire-once conservation: epoch_nodes detached from the version chain
         // vs retired. At quiescence these must be EQUAL (each detached node retired once).
         uint64_t epochs_detached() const { return epoch_table->epochs_detached(); }
@@ -195,6 +211,30 @@ namespace mvcc
                 ? kuku::get_value(kuku_table->stash(q.location()))
                 : kuku::get_value(kuku_table->table(q.location()));
             auto* header = reinterpret_cast<interval_list_header*>(value);
+            size_t n = 0;
+            for (epoch_node* e = header->next.ptr(); e != nullptr; ) {
+                uintptr_t word = e->next.load();
+                if (!MarkedPtr<epoch_node>::mark_of(word)) ++n;
+                e = MarkedPtr<epoch_node>::ptr_of(word);
+            }
+            return n;
+        }
+
+        // Stage C (bench): Guard-SAFE live chain-length sampler. Same unmarked-epoch count as
+        // chain_length() above, but holds a per-traversal EBR Guard for the walk, so it is safe
+        // to call WHILE the BG GC and FG readers concurrently unlink+retire nodes (the Guard
+        // pins reclamation for this traversal -- no node we touch can be freed under us). The
+        // count is a statistical sample of a live chain (concurrent splices may shift it by a
+        // node), which is exactly what the version-chain-length CDF wants. Bench/test-only.
+        size_t chain_length_guarded(uint64_t table_id, uint64_t index) {
+            kuku::item_type item = kuku::make_item(table_id, index);
+            kuku::QueryResult q = kuku_table->query(item);
+            if (!q.found()) return 0;
+            uint64_t value = q.in_stash()
+                ? kuku::get_value(kuku_table->stash(q.location()))
+                : kuku::get_value(kuku_table->table(q.location()));
+            auto* header = reinterpret_cast<interval_list_header*>(value);
+            EpochReclaimer::Guard guard(epoch_table->reclaimer());
             size_t n = 0;
             for (epoch_node* e = header->next.ptr(); e != nullptr; ) {
                 uintptr_t word = e->next.load();
