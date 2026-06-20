@@ -18,7 +18,9 @@
 
 **D-1b-1 ✅ (키 배선)**: hook을 pk_hash+old_trx_id로 확장, call site(trx0rec.cc 성공 경로)에서 clustered PK를 FNV-1a 해시(`rec_get_nth_field(index,rec,offsets,..)` — 8.4는 index 첫 인자) + prior DB_TRX_ID(`row_get_rec_trx_id`) 추출, MODIFY-op만 필터. body는 count-only(데이터 구조 미변경). 검증: pk_buckets_seen=676/1024(row-unique 키), 같은 행 반복→동일 해시(결정적), old<trx, op=2만, 32.3k tps(=vanilla). 패치는 repo `integration/innodb/d1b1_patch.pl`(멱등), 스크립트 `build_d1b1.sh`.
 
-**→ 다음 = D-1b-2**(lock-free MPMC ring + off-latch drainer 스캐폴드 + init/shutdown 생명주기 + ready gate; TSan multi-conn 검증, 아직 진짜 insert X).
+**D-1b-2a ✅ (lock-free ring 격리 검증)**: bounded MPMC ring(Vyukov per-slot seq, `integration/innodb/accel_ring.h`) header-only 구현 + standalone 스트레스 테스트(`accel_ring_test.cpp`, 8 producer+1 consumer, torn-read 검출기 내장, 작은 ring으로 drop 경로 강제). Release/ASan/TSan **전부 PASS**: enq==deq(모든 enqueue dequeue됨), enq+dropped==2.4M(회계 일치), torn=0, TSan data race 0. EBR/marked-pointer처럼 격리-후-통합.
+
+**→ 다음 = D-1b-2b**(검증된 ring을 accel_hook에 배선: hook=enqueue, off-latch drainer 스레드가 pop+count[진짜 insert는 D-1b-3], InnoDB init/shutdown 생명주기 + ready gate; mysqld multi-conn 안정·drop counter·clean shutdown).
 
 ---
 

@@ -106,6 +106,12 @@ add_executable(marked_ptr_test "marked_ptr_test.cpp")
 target_include_directories(marked_ptr_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(marked_ptr_test PRIVATE GTest::gtest_main Threads::Threads)
 
+# Stage D: standalone stress test for the bounded MPMC ring (lock-free populate-hook primitive).
+# Header-only / kuku-free / no gtest -> fast to rebuild under ASan/TSan.
+add_executable(accel_ring_test "accel_ring_test.cpp")
+target_include_directories(accel_ring_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(accel_ring_test PRIVATE Threads::Threads)
+
 # Stage C HTAP/long-txn benchmark harness (Zipfian writers + chain-length sampler).
 # Links the same core sources as the main executable; no gtest dependency.
 add_executable(stage_c_bench
