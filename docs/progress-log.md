@@ -12,7 +12,9 @@
 
 **D-0 ✅ (vanilla baseline)**: MySQL 8.4.10 RelWithDebInfo를 gcc-13/ninja로 빌드(11분, 에러 0) → mysqld 기동 + sysbench 1.0.20. **발견**: OLTP throughput은 LLT에 거의 불변(1,867→1,882 tps, 30s/in-memory)이나 **history list length 360→56,752 폭증**(purge가 LLT에 막힘 재현). **진짜 비용은 analytic read** — held snapshot 하 `SELECT SUM(LENGTH(c))`(1000행 scan)을 OLTP churn 중 측정하니 latency **0.7ms→1,355ms (~1,900×)** 증가(history list 2.07M). **baseline metric 확정 = held-snapshot analytic read latency vs churn**(consult hook D-2이 평탄화할 대상). throughput-only는 단시간/in-memory엔 신호 안 남. 상세·재현 [design-D.md](design-D.md) §7.
 
-**→ 다음 = D-1**(accelerator를 InnoDB에 링크 + populate hook) — InnoDB 소스 수술, multi-session.
+**D-1a ✅ (populate hook 배선)**: 통합 facade `integration/innodb/accel_hook.{h,cc}`(InnoDB와 디커플된 plain 함수) + `build_d1a.sh`가 MySQL 트리에 복사+멱등 패치(CMakeLists source 추가, `trx0rec.cc` include + 성공 경로 hook call @2325). D-1a는 **count-only**(atomic+stderr, hot path 무위험)로 배선만 증명. 결과: mysqld 재빌드 OK, churn 1.91M txn @ 31,880 tps(vanilla와 동일=오버헤드 무시), **HOOK EVIDENCE** `[accel] undo records seen: 200000…1800000`(실제 table=1064·monotonic trx_id·undo loc·op=MODIFY) → InnoDB→accelerator 배선+빌드통합 end-to-end 검증. 상세 [design-D.md](design-D.md) §8.
+
+**→ 다음 = D-1b**(hook을 실제 insert로): undo 생성이 InnoDB latch 보유 구간이라 hot-path 안전성(latch-order/deadlock·alloc-in-critical-section·perf) 리스크 → **adversarial 설계 리뷰 먼저**.
 
 ---
 

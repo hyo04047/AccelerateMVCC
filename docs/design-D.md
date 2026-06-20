@@ -47,7 +47,8 @@ InnoDB consistent read의 핵심 흐름(개략):
 | # | 목표 | 검증 |
 |---|---|---|
 | **D-0 ✅** | vanilla MySQL 8.4.10 소스 빌드(gcc-13, 11분) + 기동 + sysbench **baseline** 측정 | 완료 — §7 결과 |
-| **D-1** | accelerator를 InnoDB에 **링크**(라이브러리화) + **populate hook**(undo create 시 메타데이터 insert), read 경로는 미사용 | 기능 회귀 0, accelerator에 엔트리 쌓임 확인, 오버헤드 측정 |
+| **D-1a ✅** | populate hook **배선**(count-only facade `accel_hook`) — InnoDB→accelerator 호출 경로 + 빌드 통합 증명 | 완료 — §8 |
+| **D-1b** | hook을 **실제 insert**(undo create 시 메타데이터를 accelerator에 적재), read 경로는 미사용 | 기능 회귀 0, 적재 확인, 오버헤드, **hot-path 안전성**(아래 리스크) |
 | **D-2** | **consult hook**(consistent read가 accelerator로 가시 version 위치 점프) | **가시성 vanilla와 동일**(정합성 필수) + chain walk 감소 |
 | **D-3** | deadzone ↔ `trx_sys` active view 동기화 + BG GC가 in-middle 회수(purge 보완) | LLT 하 chain/undo 점유 감소, purge와 무충돌 |
 | **D-4** | sysbench HTAP **vs vanilla** 측정 | read latency/throughput 개선 + version 탐색 비용 감소(perf) |
@@ -76,3 +77,9 @@ InnoDB consistent read의 핵심 흐름(개략):
 - **진짜 비용 = analytic read(LLT 자신의 read)**: held snapshot 하에서 `SELECT SUM(LENGTH(c)) FROM sbtest1`(1000행 clustered scan)을 OLTP churn(oltp_update_non_index, pareto, 8thr) 중 6초 간격으로 측정 → latency가 **0.7 ms(scan0) → 1,355 ms(scan10, ~60s 후) = ~1,900×** 증가. history list 2.07M, OLTP 2.18M txn(29k/s). = LLT가 잡은 snapshot으로 version chain을 점점 깊이 되돌리는 비용(vDriver HTAP 비용의 MySQL 재현).
 - **결론(baseline metric 확정)**: D의 비교 지표 = **held-snapshot analytic read latency vs churn 시간**(+ history list length). D-2 consult hook이 이 곡선을 평탄화하는 것이 목표(standalone에서 chain max 155로 잡았던 것의 InnoDB 판). throughput-only는 in-memory/단시간엔 신호가 안 남.
 - 재현 스크립트(레포 밖): `build_d0a.sh`(deps+clone) / `build_d0b.sh`(빌드) / `build_d0d.sh`(baseline). MySQL 소스 `~/mysql-server`, 빌드 `~/mysql-build`.
+
+## 8. D-1a 결과 (populate hook 배선, 2026-06-21)
+통합 코드는 repo `integration/innodb/accel_hook.{h,cc}`(canonical), 스크립트 `build_d1a.sh`가 MySQL 트리에 복사+멱등 패치(CMakeLists에 source 추가, `trx0rec.cc`에 include + 성공 경로 hook call).
+- **hook 지점**: `trx_undo_report_row_operation`의 성공 경로, `*roll_ptr = trx_undo_build_roll_ptr(...)` 직후 `return DB_SUCCESS` 직전(trx0rec.cc:2325). 전달값 = `index->table->id, trx->id, undo_ptr->rseg->space_id, page_no, offset, op_type`(= 우리 accelerator가 저장할 (table, pk-자리, trx_id, space/page/offset)).
+- **D-1a facade = count-only**(atomic + 200k마다 stderr): hot path 무위험 검증용. 결과: mysqld 재빌드 OK, churn 1.91M txn @ **31,880 tps**(vanilla와 동일 = 오버헤드 무시 가능), mysqld 안정. **HOOK EVIDENCE**: `[accel] undo records seen: 200000…1800000`, 실제 table=1064·monotonic trx_id·undo loc(space 0xFFFFFFEF:page:offset)·op=2(MODIFY)로 ~1.8M회 발화. → **InnoDB→accelerator 배선 + 빌드 통합 end-to-end 검증.**
+- **다음 = D-1b 리스크**(hot-path real insert): undo 생성은 `trx->undo_mutex` 등 InnoDB latch 보유 구간 직후 → 거기서 우리 accelerator의 alloc/lock/BG-GC를 호출하면 **latch-order/deadlock·alloc-in-critical-section·perf** 위험. D-1b 전에 adversarial 설계 리뷰로 안전한 호출 형태(예: 가벼운 enqueue 후 비동기 적재, BG-GC off, lock-free path) 확정 필요.
