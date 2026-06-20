@@ -16,7 +16,9 @@
 
 **D-1b 적대적 설계 리뷰 ✅ (워크플로 6에이전트: 5렌즈→종합)**: naive D-1b(hook에서 `insert()` 직접)는 mysqld 깨짐 — blocker 5건(PK 미전달·Kuku thread-unsafe·page latch 하 malloc·cuckoo 무한/silent-drop·GC가 SIM Trx_manager 기반). **안전 설계 = "enqueue-under-latch, insert-off-latch, GC off, consult hint+fallback"**: hook은 noexcept로 lock-free ring에 스칼라만(+pk_hash+old_db_trx_id), 단일 drainer가 off-latch single-consumer insert. D-1b를 4증분으로 분할(D-1b-1 키배선 count-only → 2 ring/drainer 스캐폴드 → 3 진짜 insert·GC off → 4 하드닝). 상세 [design-D.md](design-D.md) §9.
 
-**→ 다음 = D-1b-1**(키 배선: hook에 pk_hash+old_trx_id, MODIFY 필터, count-only).
+**D-1b-1 ✅ (키 배선)**: hook을 pk_hash+old_trx_id로 확장, call site(trx0rec.cc 성공 경로)에서 clustered PK를 FNV-1a 해시(`rec_get_nth_field(index,rec,offsets,..)` — 8.4는 index 첫 인자) + prior DB_TRX_ID(`row_get_rec_trx_id`) 추출, MODIFY-op만 필터. body는 count-only(데이터 구조 미변경). 검증: pk_buckets_seen=676/1024(row-unique 키), 같은 행 반복→동일 해시(결정적), old<trx, op=2만, 32.3k tps(=vanilla). 패치는 repo `integration/innodb/d1b1_patch.pl`(멱등), 스크립트 `build_d1b1.sh`.
+
+**→ 다음 = D-1b-2**(lock-free MPMC ring + off-latch drainer 스캐폴드 + init/shutdown 생명주기 + ready gate; TSan multi-conn 검증, 아직 진짜 insert X).
 
 ---
 
