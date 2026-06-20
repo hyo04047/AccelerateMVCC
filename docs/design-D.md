@@ -50,7 +50,7 @@ InnoDB consistent read의 핵심 흐름(개략):
 | **D-1a ✅** | populate hook **배선**(count-only facade `accel_hook`) — InnoDB→accelerator 호출 경로 + 빌드 통합 증명 | 완료 — §8 |
 | **D-1b-1 ✅** | 키 배선: hook에 **pk_hash + old_trx_id** 추가(call site에서 clustered PK FNV-1a 추출, `rec_get_nth_field(index,rec,offsets,..)`·`row_get_rec_trx_id`), MODIFY-op 필터, count-only | 완료 — pk_buckets_seen=676/1024(row-unique), 반복행 동일 해시, old<trx, op=2만, 32.3k tps(=vanilla) |
 | **D-1b-2a ✅** | bounded **lock-free MPMC ring**(Vyukov, `integration/innodb/accel_ring.h`) + standalone 스트레스 테스트 | 완료 — Release/ASan/TSan PASS(enq==deq, torn=0, data race 0, drop 경로 발동) |
-| **D-1b-2b** | ring을 accel_hook에 배선(hook=enqueue) + **off-latch drainer 스레드**(pop+count, 진짜 insert 아직 X) + init/shutdown 생명주기 + ready gate | mysqld multi-conn 안정, drop counter, clean shutdown |
+| **D-1b-2b ✅** | ring을 accel_hook에 배선(hook=enqueue) + off-latch drainer(pop+count) + InnoDB 생명주기(srv_start→`accel_init`, srv_shutdown→`accel_shutdown`) + ready gate | 완료 — drainer 동작, enq==drained(1.8M), dropped=0, clean shutdown, 29.9k tps |
 | **D-1b-3** | drainer가 **진짜 single-consumer insert**(Trx_manager/get_mutex 미사용, ctor 사전생성 제거, kuku≥1<<16, return 계약, **GC off**) | chain integrity per (table,pk), insert==drained, 유계 메모리 |
 | **D-1b-4** | 하드닝: noexcept hook 감사, assert-no-malloc-on-latch, accel=leaf-domain 불변식 | full build, mysqld boot, latch-hold 회귀 0 vs D-1a |
 | **D-2** | **consult hook**(consistent read가 accelerator로 가시 version 위치 점프) | **가시성 vanilla와 동일**(정합성 필수) + chain walk 감소 |

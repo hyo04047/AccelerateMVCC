@@ -20,7 +20,9 @@
 
 **D-1b-2a ✅ (lock-free ring 격리 검증)**: bounded MPMC ring(Vyukov per-slot seq, `integration/innodb/accel_ring.h`) header-only 구현 + standalone 스트레스 테스트(`accel_ring_test.cpp`, 8 producer+1 consumer, torn-read 검출기 내장, 작은 ring으로 drop 경로 강제). Release/ASan/TSan **전부 PASS**: enq==deq(모든 enqueue dequeue됨), enq+dropped==2.4M(회계 일치), torn=0, TSan data race 0. EBR/marked-pointer처럼 격리-후-통합.
 
-**→ 다음 = D-1b-2b**(검증된 ring을 accel_hook에 배선: hook=enqueue, off-latch drainer 스레드가 pop+count[진짜 insert는 D-1b-3], InnoDB init/shutdown 생명주기 + ready gate; mysqld multi-conn 안정·drop counter·clean shutdown).
+**D-1b-2b ✅ (ring+drainer를 mysqld에 배선)**: accel_hook이 hook에서 ring enqueue(noexcept, full→drop), off-latch drainer 스레드가 pop+count(진짜 insert는 D-1b-3). InnoDB 생명주기: `srv0start.cc` srv_start 끝에 `accel_init()`(drainer 시작, latch 밖)·srv_shutdown 시작에 `accel_shutdown()`(stop+join) + ready gate. 검증(8 동시 producer churn 1.8M txn @ 29.9k tps): `[accel] init` 로그, drained≈enq·dropped=0(drainer가 따라잡음, 65536 ring), pk_buckets=676/1024(row-unique 키 ring 통과), shutdown에 **enq==drained=1,796,527 정확 일치 + clean join**. ring thread-safety는 D-1b-2a TSan, 통합/생명주기는 여기서.
+
+**→ 다음 = D-1b-3**(drainer가 진짜 single-consumer insert: Accelerate_mvcc+Kuku를 innobase 빌드에 컴파일, 저수준 insert[Trx_manager/get_mutex 미사용], ctor 사전생성 제거·kuku≥1<<16·return 계약 수정·**GC off**·실패 시 노드 free). chain integrity per (table,pk) 검증, 유계 메모리.
 
 ---
 

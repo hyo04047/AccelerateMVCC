@@ -1,37 +1,94 @@
 // Licensed under the MIT license.
 //
-// Stage D-1b-1: count-only body, but now validates KEY PLUMBING. The call site (trx0rec.cc)
-// extracts the clustered PK -> pk_hash and the prior DB_TRX_ID -> old_trx_id and filters to
-// MODIFY-op. Here we only count and track pk_hash BREADTH (a 1024-bucket set) so the log proves
-// the keys are row-unique: if PK extraction were broken (all rows -> one key), pk_buckets_seen
-// would stay 1; a healthy run lights up many buckets. Still zero allocation / locks / InnoDB
-// calls -> no hot-path risk. D-1b-2/3 replace this body with a lock-free enqueue + off-latch
-// drainer that performs the real insert.
+// Stage D-1b-2b: wire the validated bounded MPMC ring (accel_ring.h) into the InnoDB hook.
+// The hook (under the page latch) only ENQUEUES a scalar record -- noexcept, no allocation, no
+// lock, full -> drop (never blocks a latch holder). A single off-latch drainer thread pops and
+// (for now) just counts + tracks pk_hash breadth; D-1b-3 will make it do the real insert into
+// the AccelerateMVCC index. Explicit init/shutdown lifecycle (no static destructor) + a ready
+// gate so the hook is a no-op outside the live window. accel is a LEAF lock domain: nothing here
+// includes an InnoDB header or calls back into InnoDB.
 
 #include "accel_hook.h"
+#include "accel_ring.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <thread>
 
 namespace {
-std::atomic<uint64_t> g_undo_count{0};
-std::atomic<uint32_t> g_pk_seen[1024];  // pk_hash breadth proxy (bit per low-10-bits bucket)
+constexpr unsigned long TRX_UNDO_MODIFY = 2;  // mirrors InnoDB TRX_UNDO_MODIFY_OP
+
+accel::Ring<(1u << 16)> g_ring;          // 65536 slots
+std::atomic<bool> g_started{false};      // accel_init ran
+std::atomic<bool> g_ready{false};        // hook may enqueue
+std::atomic<bool> g_stop{false};         // drainer should exit
+std::atomic<uint64_t> g_enq{0};
+std::atomic<uint64_t> g_dropped{0};
+std::atomic<uint64_t> g_drained{0};
+std::atomic<uint32_t> g_pk_seen[1024];   // pk breadth proxy (drainer-only writer)
+std::thread g_drainer;
+
+int pk_buckets() {
+  int nz = 0;
+  for (int i = 0; i < 1024; ++i)
+    if (g_pk_seen[i].load(std::memory_order_relaxed)) ++nz;
+  return nz;
+}
+
+void consume(const accel::UndoRec &r) {
+  g_pk_seen[r.pk_hash & 1023u].fetch_or(1u, std::memory_order_relaxed);
+  // D-1b-3: the real single-consumer insert into the AccelerateMVCC index lands here.
+  const uint64_t n = g_drained.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (n % 500000 == 0) {
+    std::fprintf(stderr, "[accel] drained=%llu enq=%llu dropped=%llu pk_buckets=%d/1024\n",
+                 (unsigned long long)n, (unsigned long long)g_enq.load(),
+                 (unsigned long long)g_dropped.load(), pk_buckets());
+  }
+}
+
+void drain_loop() {
+  accel::UndoRec r;
+  while (!g_stop.load(std::memory_order_acquire)) {
+    bool any = false;
+    while (g_ring.dequeue(r)) { consume(r); any = true; }
+    if (!any) std::this_thread::sleep_for(std::chrono::microseconds(100));
+  }
+  while (g_ring.dequeue(r)) consume(r);  // final drain after stop
+}
+}  // namespace
+
+void accel_init() noexcept {
+  bool expected = false;
+  if (!g_started.compare_exchange_strong(expected, true)) return;  // already inited
+  g_stop.store(false, std::memory_order_relaxed);
+  try {
+    g_drainer = std::thread(drain_loop);
+  } catch (...) {
+    g_started.store(false, std::memory_order_relaxed);
+    return;
+  }
+  g_ready.store(true, std::memory_order_release);
+  std::fprintf(stderr, "[accel] init: drainer started\n");
+}
+
+void accel_shutdown() noexcept {
+  if (!g_started.load(std::memory_order_acquire)) return;
+  g_ready.store(false, std::memory_order_release);  // hook stops enqueuing
+  g_stop.store(true, std::memory_order_release);
+  if (g_drainer.joinable()) g_drainer.join();
+  std::fprintf(stderr, "[accel] shutdown: enq=%llu drained=%llu dropped=%llu pk_buckets=%d/1024\n",
+               (unsigned long long)g_enq.load(), (unsigned long long)g_drained.load(),
+               (unsigned long long)g_dropped.load(), pk_buckets());
 }
 
 void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_t old_trx_id,
                    uint64_t space_id, uint64_t page_no, uint64_t offset, uint64_t op_type) noexcept {
-  g_pk_seen[pk_hash & 1023u].fetch_or(1u, std::memory_order_relaxed);
-  const uint64_t n = g_undo_count.fetch_add(1, std::memory_order_relaxed) + 1;
-  if (n % 200000 == 0) {
-    int nz = 0;
-    for (int i = 0; i < 1024; ++i)
-      if (g_pk_seen[i].load(std::memory_order_relaxed)) ++nz;
-    std::fprintf(stderr,
-                 "[accel] undo=%llu pk_buckets_seen=%d/1024 (last table=%llu pk=%016llx trx=%llu old=%llu loc=%llu:%llu:%llu op=%llu)\n",
-                 (unsigned long long)n, nz, (unsigned long long)table_id,
-                 (unsigned long long)pk_hash, (unsigned long long)trx_id,
-                 (unsigned long long)old_trx_id, (unsigned long long)space_id,
-                 (unsigned long long)page_no, (unsigned long long)offset,
-                 (unsigned long long)op_type);
-  }
+  if (op_type != TRX_UNDO_MODIFY) return;           // versions only (defensive; call site filters)
+  if (!g_ready.load(std::memory_order_acquire)) return;  // outside live window
+  const accel::UndoRec r{table_id, pk_hash, trx_id, old_trx_id, space_id, page_no, offset, op_type};
+  if (g_ring.enqueue(r))
+    g_enq.fetch_add(1, std::memory_order_relaxed);
+  else
+    g_dropped.fetch_add(1, std::memory_order_relaxed);  // full -> drop, never block the latch
 }
