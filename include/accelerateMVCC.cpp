@@ -37,7 +37,8 @@ mvcc::Accelerate_mvcc::Accelerate_mvcc(uint64_t record_count, uint32_t kuku_log2
 // this will be used when implementing to mysql source code.
 bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
                                    uint64_t version_trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset,
-                                   const unsigned char *img, uint32_t img_len, uint64_t writer_trx_id) {
+                                   const unsigned char *img, uint32_t img_len, uint64_t writer_trx_id,
+                                   const unsigned char *pk, uint32_t pk_len, uint8_t delete_mark) {
     kuku::item_type item = kuku::make_item(table_id, index);
 
     // D-4 (4b-0): writer_trx_id==0 means "standalone: the writer IS the version's own creator".
@@ -53,6 +54,14 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
         for (uint32_t i = 0; i < img_len; ++i) undo_entry->img[i] = img[i];
         undo_entry->img_len = img_len;
     }
+    // D-4 (4b-1): copy the full-PK identity bytes (collision authority for consult) and carry the
+    // delete-mark. Heap-owned like img, freed with the node; absent PK (pk_len==0) stays locator-only.
+    if (pk != nullptr && pk_len > 0) {
+        undo_entry->pk = new unsigned char[pk_len];
+        for (uint32_t i = 0; i < pk_len; ++i) undo_entry->pk[i] = pk[i];
+        undo_entry->pk_len = pk_len;
+    }
+    undo_entry->delete_mark = delete_mark;
     uint64_t epoch_num = get_epoch_num(version_trx_id);
 
     kuku::QueryResult query = kuku_table->query(item);

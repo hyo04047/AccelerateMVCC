@@ -26,10 +26,17 @@ namespace accel {
 // are excluded from caching anyway, so this matches the correctness gate, design-D §13).
 constexpr uint32_t ACCEL_IMG_MAX = 512;
 
-// One captured undo event: scalars (D-1b) + an optional full-row image (D-4). Still a
-// trivially-copyable POD so the under-latch publish is an alloc-free byte copy. enqueue copies
-// only the scalars + img_len image bytes (NOT the whole ACCEL_IMG_MAX) to keep the latched copy
-// small; bytes past img_len are intentionally left stale (unused).
+// D-4 4b-1: cap on the full clustered-PK identity bytes carried per slot. pk_hash (above) is only
+// a bucket hint for the cuckoo table; this is the AUTHORITY consult memcmp-compares to reject
+// pk_hash collisions. A PK longer than this is enqueued with pk_len=0 -> consult cannot prove
+// identity -> MISS (full walk), never a wrong row.
+constexpr uint32_t ACCEL_PK_MAX = 256;
+
+// One captured undo event: scalars (D-1b) + full-PK identity bytes + delete-mark + an optional
+// full-row image (D-4). Still a trivially-copyable POD so the under-latch publish is an alloc-free
+// byte copy. enqueue copies the scalars + the full pk[] + img_len image bytes (NOT the whole
+// ACCEL_IMG_MAX) to keep the latched copy small; bytes past img_len are intentionally left stale.
+// NOTE: `img` MUST remain the LAST member -- enqueue/dequeue copy exactly offsetof(img)+img_len.
 struct UndoRec {
   uint64_t table_id;
   uint64_t pk_hash;
@@ -39,8 +46,11 @@ struct UndoRec {
   uint64_t page_no;
   uint64_t offset;
   uint64_t op_type;
+  uint32_t delete_mark;              // D-4 4b-1: REC_INFO_DELETED_FLAG of the captured version (0/1)
+  uint32_t pk_len;                   // D-4 4b-1: full-PK byte length (0 = over cap/absent -> MISS)
+  unsigned char pk[ACCEL_PK_MAX];    // D-4 4b-1: full clustered-PK identity bytes (length-prefixed)
   uint32_t img_len;                  // 0 = no image captured (row too big / ineligible)
-  unsigned char img[ACCEL_IMG_MAX];  // full-row image; only the first img_len bytes are valid
+  unsigned char img[ACCEL_IMG_MAX];  // full-row image; only the first img_len bytes are valid. LAST.
 };
 
 // D-1b-4 hardening: the under-latch publish must be an allocation-free copy (no ctor/heap work

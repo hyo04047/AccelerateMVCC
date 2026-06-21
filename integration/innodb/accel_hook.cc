@@ -55,17 +55,20 @@ void consume(const accel::UndoRec &r) {
   // the node carries both: changes_visible judges on version_trx_id; the contiguity/purge gates use
   // writer_trx_id. (Pre-4b this passed r.trx_id as the key -> every version judged by its overwriter,
   // off by exactly one version.)
+  // D-4 4b-1: also carry the full-PK identity bytes (collision authority) and the delete-mark.
   if (g_accel) g_accel->insert(r.table_id, r.pk_hash, r.old_trx_id, r.space_id, r.page_no, r.offset,
-                               r.img_len ? r.img : nullptr, r.img_len, r.trx_id);
+                               r.img_len ? r.img : nullptr, r.img_len, r.trx_id,
+                               r.pk_len ? r.pk : nullptr, r.pk_len, static_cast<uint8_t>(r.delete_mark));
   const uint64_t n = g_drained.fetch_add(1, std::memory_order_relaxed) + 1;
   if (n % 500000 == 0) {
     // chain_length is non-guarded, but the drainer is the SOLE mutator of g_accel and we call it
     // from that same thread -> no concurrent mutation -> safe. Shows this (hot) key's chain depth
     // is actually growing (GC off), i.e. the index is being populated for real.
     size_t cl = g_accel ? g_accel->chain_length(r.table_id, r.pk_hash) : 0;
-    std::fprintf(stderr, "[accel] drained=%llu enq=%llu dropped=%llu pk_buckets=%d/1024 cur_key_chain_len=%zu\n",
+    std::fprintf(stderr, "[accel] drained=%llu enq=%llu dropped=%llu pk_buckets=%d/1024 cur_key_chain_len=%zu last_pk_len=%u last_del=%u\n",
                  (unsigned long long)n, (unsigned long long)g_enq.load(),
-                 (unsigned long long)g_dropped.load(), pk_buckets(), cl);
+                 (unsigned long long)g_dropped.load(), pk_buckets(), cl,
+                 (unsigned)r.pk_len, (unsigned)r.delete_mark);
   }
 }
 
@@ -113,7 +116,8 @@ void accel_shutdown() noexcept {
 
 void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_t old_trx_id,
                    uint64_t space_id, uint64_t page_no, uint64_t offset, uint64_t op_type,
-                   const unsigned char *img, uint64_t img_len) noexcept {
+                   const unsigned char *img, uint64_t img_len,
+                   const unsigned char *pk, uint64_t pk_len, uint64_t delete_mark) noexcept {
   // D-1b-4 hardening invariants (this runs UNDER the InnoDB clustered leaf-page X-latch):
   //   * noexcept: cannot unwind into InnoDB (enforced by the keyword).
   //   * no allocation: only atomics + a trivially-copyable UndoRec into a preallocated ring slot
@@ -124,9 +128,18 @@ void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_
   if (op_type != TRX_UNDO_MODIFY) return;           // versions only (defensive; call site filters)
   if (!g_ready.load(std::memory_order_acquire)) return;  // outside live window
   accel::UndoRec r{table_id, pk_hash, trx_id, old_trx_id, space_id, page_no, offset, op_type};
-  // D-4: copy the captured full-row image into the slot (alloc-free prefix memcpy, still under the
-  // latch). Over-cap or absent -> img_len stays 0 -> drainer stores locator-only and consult will
-  // full-walk this version. Bytes are immutable once published (set-once payload).
+  // D-4 4b-1: carry the delete-mark explicitly (the data-payload image excludes the record header
+  // where REC_INFO_DELETED_FLAG lives) and copy the full-PK identity bytes (alloc-free prefix
+  // memcpy under the latch). Over-cap/absent PK -> pk_len stays 0 -> consult cannot prove identity
+  // -> MISS (never a wrong row).
+  r.delete_mark = (delete_mark != 0) ? 1u : 0u;
+  if (pk != nullptr && pk_len > 0 && pk_len <= accel::ACCEL_PK_MAX) {
+    r.pk_len = static_cast<uint32_t>(pk_len);
+    std::memcpy(r.pk, pk, pk_len);
+  }
+  // D-4: copy the captured row-image DATA payload into the slot (alloc-free prefix memcpy, still
+  // under the latch). Over-cap or absent -> img_len stays 0 -> drainer stores locator-only and
+  // consult will full-walk this version. Bytes are immutable once published (set-once payload).
   if (img != nullptr && img_len > 0 && img_len <= accel::ACCEL_IMG_MAX) {
     r.img_len = static_cast<uint32_t>(img_len);
     std::memcpy(r.img, img, img_len);

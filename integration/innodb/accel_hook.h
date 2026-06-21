@@ -35,13 +35,18 @@ void accel_shutdown() noexcept;
 // clustered PK fields (row identity); old_trx_id = the DB_TRX_ID of the record being overwritten
 // (= begin-ts of the version this undo reconstructs, the visibility key D-2 will need).
 //
-// D-4: img/img_len carry the FULL physical row image of the record being overwritten (the
-// version this undo reconstructs), captured at the call site (rec + rec_offs_size). The hook
-// copies up to ACCEL_IMG_MAX bytes into the ring slot under the latch (alloc-free prefix memcpy);
-// rows larger than the cap pass img_len=0 -> stored locator-only -> consult falls back to a full
-// walk for them. Pass img=nullptr/img_len=0 when no image is available.
+// D-4: img/img_len carry the row image of the version being overwritten (the version this undo
+// reconstructs), captured at the call site. The hook copies up to ACCEL_IMG_MAX bytes into the ring
+// slot under the latch (alloc-free prefix memcpy); rows larger than the cap pass img_len=0 ->
+// stored locator-only -> consult falls back to a full walk. Pass img=nullptr/img_len=0 if absent.
+// D-4 4b-1: img must be the DATA payload (rec_offs_data_size from the record origin), NOT
+// rec_offs_size -- the latter over-reads extra_size past the row (M1). pk/pk_len carry the FULL
+// clustered-PK identity bytes (length-prefixed fields) so consult can memcmp past a pk_hash
+// collision (over cap -> pk_len=0 -> consult MISS). delete_mark = REC_INFO_DELETED_FLAG of the
+// captured version (carried explicitly because the data-payload image excludes the record header).
 void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_t old_trx_id,
                    uint64_t space_id, uint64_t page_no, uint64_t offset, uint64_t op_type,
-                   const unsigned char *img, uint64_t img_len) noexcept;
+                   const unsigned char *img, uint64_t img_len,
+                   const unsigned char *pk, uint64_t pk_len, uint64_t delete_mark) noexcept;
 
 #endif  // ACCEL_HOOK_H

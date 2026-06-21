@@ -62,6 +62,13 @@ namespace mvcc {
         // image (row over cap / ineligible) -> consult must full-walk that version.
         uint32_t img_len = 0;
         unsigned char *img = nullptr;
+        // D-4 (4b-1): full clustered-PK identity bytes (length-prefixed fields), the AUTHORITY a
+        // consult memcmp-compares to reject pk_hash collisions (pk_len==0 -> identity unknown ->
+        // MISS). delete_mark = REC_INFO_DELETED_FLAG of this version (carried separately because the
+        // data-payload image excludes the record header). Both heap-owned / set-once / freed in dtor.
+        uint32_t pk_len = 0;
+        unsigned char *pk = nullptr;
+        uint8_t delete_mark = 0;
 
         undo_entry_node(uint64_t version_trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset,
                         uint64_t writer_trx_id)
@@ -70,7 +77,7 @@ namespace mvcc {
         {
             next_entry.store(nullptr);
         }
-        ~undo_entry_node() { delete[] img; }  // nullptr-safe; frees the image with the node
+        ~undo_entry_node() { delete[] img; delete[] pk; }  // nullptr-safe; frees image + PK with the node
     };
 
     struct epoch_node {
