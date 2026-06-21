@@ -169,7 +169,8 @@ namespace mvcc
         }
 
         // insert undo log entry to interval list
-        bool insert(uint64_t table_id, uint64_t index, uint64_t trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset);
+        bool insert(uint64_t table_id, uint64_t index, uint64_t trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset,
+                    const unsigned char *img = nullptr, uint32_t img_len = 0);
 
         bool search(uint64_t table_id, uint64_t index,
             uint64_t trx_id, uint64_t& space_id, uint64_t& page_id, uint64_t& offset,

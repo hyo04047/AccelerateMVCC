@@ -48,12 +48,20 @@ namespace mvcc {
         uint64_t page_id;
         uint64_t offset;
         std::atomic<undo_entry_node *> next_entry;
+        // D-4: cached full-row image of the version this entry locates. Set ONCE at insert (the
+        // single drainer is the sole mutator), heap-owned, and freed in the dtor -- which runs
+        // when the owning epoch_node is EBR-retired (delete e in epoch_table.h::retire_epoch_once),
+        // so the image shares the node's lifetime exactly (no leak, no UAF). img_len==0 means no
+        // image (row over cap / ineligible) -> consult must full-walk that version.
+        uint32_t img_len = 0;
+        unsigned char *img = nullptr;
 
         undo_entry_node(uint64_t trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset)
-                : trx_id(trx_id), space_id(space_id), page_id(page_id), offset(offset) 
+                : trx_id(trx_id), space_id(space_id), page_id(page_id), offset(offset)
         {
             next_entry.store(nullptr);
         }
+        ~undo_entry_node() { delete[] img; }  // nullptr-safe; frees the image with the node
     };
 
     struct epoch_node {

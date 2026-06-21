@@ -50,7 +50,8 @@ void consume(const accel::UndoRec &r) {
   // D-1b-3b: real single-consumer insert into the AccelerateMVCC index. Only the drainer touches
   // g_accel, so the index has exactly one mutator (no contention). Low-level insert() bypasses
   // Trx_manager/get_mutex. BG GC is OFF -> memory grows by design for this populate-only stage.
-  if (g_accel) g_accel->insert(r.table_id, r.pk_hash, r.trx_id, r.space_id, r.page_no, r.offset);
+  if (g_accel) g_accel->insert(r.table_id, r.pk_hash, r.trx_id, r.space_id, r.page_no, r.offset,
+                               r.img_len ? r.img : nullptr, r.img_len);
   const uint64_t n = g_drained.fetch_add(1, std::memory_order_relaxed) + 1;
   if (n % 500000 == 0) {
     // chain_length is non-guarded, but the drainer is the SOLE mutator of g_accel and we call it

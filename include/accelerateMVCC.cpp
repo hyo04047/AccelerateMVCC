@@ -35,10 +35,19 @@ mvcc::Accelerate_mvcc::Accelerate_mvcc(uint64_t record_count, uint32_t kuku_log2
 
 // this will be used when implementing to mysql source code.
 bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
-                                   uint64_t trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset) {
+                                   uint64_t trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset,
+                                   const unsigned char *img, uint32_t img_len) {
     kuku::item_type item = kuku::make_item(table_id, index);
 
     auto *undo_entry = new undo_entry_node(trx_id, space_id, page_id, offset);
+    // D-4: copy the captured full-row image into the node (heap-owned, freed with the node). Short
+    // loop avoids a <cstring> dependency; img_len is small (<= ACCEL_IMG_MAX). Single drainer is the
+    // sole mutator, so this set-once write needs no synchronization beyond the node's publication.
+    if (img != nullptr && img_len > 0) {
+        undo_entry->img = new unsigned char[img_len];
+        for (uint32_t i = 0; i < img_len; ++i) undo_entry->img[i] = img[i];
+        undo_entry->img_len = img_len;
+    }
     uint64_t epoch_num = get_epoch_num(trx_id);
 
     kuku::QueryResult query = kuku_table->query(item);
