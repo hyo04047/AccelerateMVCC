@@ -8,8 +8,65 @@
 #include <thread>
 #include <atomic>
 #include "include/accelerateMVCC.h"
+#include "include/read_view_mirror.h"
 
 using namespace mvcc;
+
+// ---------------------------------------------------------------------------
+// (a0) D-4 (4a): the InnoDB ReadView::changes_visible mirror, tested in isolation.
+//   The four branches (read0types.h):
+//     (1) id < up_limit_id || id == creator_trx_id           -> visible
+//     (2) id >= low_limit_id                                 -> invisible
+//     (3) up<=id<low, m_ids empty                            -> visible
+//     (4) up<=id<low, m_ids nonempty: !binary_search(m_ids)  -> visible iff not active
+//   These are the wrong-result gate for consult: consult must judge a cached version's
+//   visibility byte-for-byte the way a real consistent read does.
+// ---------------------------------------------------------------------------
+TEST(ReadViewMirror, LowAndHighWater) {
+    const std::vector<uint64_t> ids = {120, 140, 160, 180};  // sorted active set
+    const uint64_t up = 100, low = 200, creator = 150;
+    // Branch (1): strictly below the low-water mark -> visible.
+    EXPECT_TRUE(changes_visible(50, up, low, creator, ids));
+    EXPECT_TRUE(changes_visible(99, up, low, creator, ids));
+    // Branch (2): at or above the high-water mark -> invisible (started after the snapshot).
+    EXPECT_FALSE(changes_visible(200, up, low, creator, ids));
+    EXPECT_FALSE(changes_visible(250, up, low, creator, ids));
+}
+
+TEST(ReadViewMirror, CreatorAlwaysVisible) {
+    // The viewing trx's own writes are visible even when its id sits inside the active set /
+    // between the marks (branch (1) short-circuits before the active-set test).
+    const std::vector<uint64_t> ids = {160};
+    EXPECT_TRUE(changes_visible(160, /*up*/100, /*low*/200, /*creator*/160, ids));
+    // ... but a DIFFERENT id equal to that active member is invisible.
+    EXPECT_FALSE(changes_visible(160, /*up*/100, /*low*/200, /*creator*/150, ids));
+}
+
+TEST(ReadViewMirror, ActiveSetMembership) {
+    const std::vector<uint64_t> ids = {120, 140, 160, 180};
+    const uint64_t up = 100, low = 200, creator = 150;
+    // Branch (4): between the marks -> visible iff NOT an active RW trx at snapshot time.
+    EXPECT_FALSE(changes_visible(140, up, low, creator, ids));  // active -> invisible
+    EXPECT_TRUE(changes_visible(130, up, low, creator, ids));   // committed before -> visible
+    EXPECT_TRUE(changes_visible(199, up, low, creator, ids));   // just below high-water, not active
+    // Branch (3): empty active set, between the marks -> visible.
+    EXPECT_TRUE(changes_visible(150, up, low, creator, {}));
+}
+
+TEST(ReadViewMirror, Boundaries) {
+    const std::vector<uint64_t> ids = {120, 140, 160, 180};
+    const uint64_t up = 100, low = 200, creator = 150;
+    // id == up_limit: NOT strictly below, but still < low and not active -> visible.
+    EXPECT_TRUE(changes_visible(100, up, low, creator, ids));
+    // id == low_limit: >= high-water -> invisible (boundary is inclusive on the high side).
+    EXPECT_FALSE(changes_visible(200, up, low, creator, ids));
+    // id one below an active member -> visible; exactly on it -> invisible.
+    EXPECT_TRUE(changes_visible(139, up, low, creator, ids));
+    EXPECT_FALSE(changes_visible(140, up, low, creator, ids));
+    // Degenerate view (up == low): only ids strictly below are visible; equal -> invisible.
+    EXPECT_TRUE(changes_visible(99, 100, 100, 0, {}));
+    EXPECT_FALSE(changes_visible(100, 100, 100, 0, {}));
+}
 
 // ---------------------------------------------------------------------------
 // (a) MVCC visibility: search must return the LATEST committed version that is

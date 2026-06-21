@@ -1,6 +1,7 @@
 // Licensed under the MIT license.
 
 #include "accelerateMVCC.h"
+#include "read_view_mirror.h"  // D-4 (4a): exact InnoDB ReadView::changes_visible mirror
 
 mvcc::Accelerate_mvcc::Accelerate_mvcc(uint64_t record_count, uint32_t kuku_log2) {
     constexpr uint64_t max_value = ~0ULL;
@@ -149,10 +150,19 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
 
 
     /*Phase 2 : find the LATEST version visible to this read view.
-      Visible == undo_entry->trx_id < our trx_id AND not in our active_trx_list.
-      Among visible versions we want the greatest trx_id (latest committed). The
+      Visible == changes_visible(version key) per the InnoDB ReadView mirror (D-4 4a).
+      Among visible versions we want the greatest version key (latest committed). The
       chain is newest-epoch-first but oldest-entry-first within an epoch, so we
       scan all candidates and keep the maximum rather than returning the first. */
+    // D-4 (4a): replace the ad-hoc "trx_id < snapshot && not active" predicate with an EXACT
+    // mirror of InnoDB's ReadView::changes_visible. Derive the read-view limits from this
+    // prototype's (trx_id, active list): low-water = smallest active id (or trx_id when none),
+    // high-water = trx_id (a read-only reader sees nothing >= its own snapshot id), creator =
+    // trx_id (read-only -> never matches a version key). m_ids must be sorted for the binary
+    // search; active_trx_list is a by-value copy, so sorting it here is local. The judged key is
+    // the version's creator (undo_entry->trx_id = old DB_TRX_ID in the InnoDB integration).
+    std::sort(active_trx_list.begin(), active_trx_list.end());
+    const uint64_t rv_up_limit = active_trx_list.empty() ? trx_id : active_trx_list.front();
     // EBR reservation: from here until return we dereference epoch_node /
     // undo_entry pointers that GC may concurrently unlink+retire. The Guard
     // pins reclamation for this traversal's span so GC cannot free them under us.
@@ -218,9 +228,8 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
             for (undo_entry_node *undo_entry = epoch->first_entry;
                  undo_entry != nullptr;
                  undo_entry = undo_entry->next_entry.load()) {
-                if (undo_entry->trx_id < trx_id &&
-                    std::find(active_trx_list.begin(), active_trx_list.end(), undo_entry->trx_id) ==
-                        active_trx_list.end()) {
+                if (changes_visible(undo_entry->trx_id, rv_up_limit, trx_id, trx_id,
+                                    active_trx_list)) {
                     if (!found || undo_entry->trx_id > best_trx_id) {
                         found = true;
                         best_trx_id = undo_entry->trx_id;
