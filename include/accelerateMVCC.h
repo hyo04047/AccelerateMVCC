@@ -181,6 +181,27 @@ namespace mvcc
             std::vector<uint64_t> active_trx_list
             );
 
+        // D-4 (4b-3): the shadow consult. Given a reader's read view (InnoDB ReadView fields) and the
+        // live row's last writer, decide what the cache would serve for (table_id, full PK) and why.
+        // Outcome is ALWAYS one of: HIT (the candidate is the provably-correct visible boundary; if a
+        // buffer is given its image is copied out under the EBR Guard) or one of the MISS reasons
+        // (caller must fall back to InnoDB's full walk -- never a guess). See design-D4b-shadow.md
+        // sec 3 / sec 9.
+        enum class ConsultOutcome : uint8_t {
+            HIT,             // candidate proven = vanilla's visible version; image copied if requested
+            MISS_ABSENT,     // key (or this row's PK) not in the cache
+            MISS_NOVISIBLE,  // PK present but no cached version is visible to this read view
+            MISS_NONCONTIG,  // cache cannot prove contiguity to the live row (drainer lag / ring drop)
+            MISS_INELIGIBLE  // candidate has no usable image (locator-only / over-cap)
+        };
+        ConsultOutcome consult(uint64_t table_id, uint64_t pk_hash,
+                               const unsigned char *pk, uint32_t pk_len,
+                               uint64_t up_limit_id, uint64_t low_limit_id, uint64_t creator_trx_id,
+                               const uint64_t *m_ids, std::size_t m_ids_n,
+                               uint64_t live_top_writer,
+                               unsigned char *out_img = nullptr, uint32_t out_cap = 0,
+                               uint32_t *out_len = nullptr);
+
         static uint64_t get_epoch_num(uint64_t trx_id) {
             return trx_id / EPOCH_SIZE;
         }

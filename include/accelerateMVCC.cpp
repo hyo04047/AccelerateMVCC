@@ -265,3 +265,79 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
 }
 
 
+// D-4 (4b-3): shadow consult. Picks the cached version a reader with this read view should see,
+// proves it is the true visible boundary (full-PK identity + InnoDB changes_visible + contiguity to
+// the live row), and reports the outcome. Read-only over the index (no unlink/retire); the EBR Guard
+// spans the whole probe INCLUDING the image copy into the caller's buffer (so a concurrent evictor
+// cannot free the node mid-copy -- review M2). It never mutates the structure and never returns a
+// pointer into node memory.
+mvcc::Accelerate_mvcc::ConsultOutcome
+mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
+                               const unsigned char *pk, uint32_t pk_len,
+                               uint64_t up_limit_id, uint64_t low_limit_id, uint64_t creator_trx_id,
+                               const uint64_t *m_ids, std::size_t m_ids_n,
+                               uint64_t live_top_writer,
+                               unsigned char *out_img, uint32_t out_cap, uint32_t *out_len) {
+    kuku::item_type item = kuku::make_item(table_id, pk_hash);
+    kuku::QueryResult query = kuku_table->query(item);
+    if (!query.found()) return ConsultOutcome::MISS_ABSENT;
+
+    uint64_t value = query.in_stash()
+        ? kuku::get_value(kuku_table->stash(query.location()))
+        : kuku::get_value(kuku_table->table(query.location()));
+    auto *header = reinterpret_cast<interval_list_header *>(value);
+
+    // Pin reclamation for this whole probe (the image copy below must happen under it -- M2).
+    EpochReclaimer::Guard guard(epoch_table->reclaimer());
+    // Contiguity markers maintained by the drainer (acquire so we see a consistent published pair).
+    const uint64_t head_writer = header->contiguous_head_writer.load(std::memory_order_acquire);
+    const uint64_t suffix_min  = header->contiguous_suffix_min_version.load(std::memory_order_acquire);
+
+    // Walk the chain: among entries whose FULL PK matches this row (defeats pk_hash collisions) and
+    // whose version is changes_visible to this read view, keep the newest (largest version_trx_id).
+    bool any_pk_match = false;
+    bool found = false;
+    uint64_t best_ver = 0;
+    undo_entry_node *best = nullptr;
+    for (epoch_node *epoch = header->next.ptr(); epoch != nullptr; ) {
+        uintptr_t w = epoch->next.load();
+        epoch_node *succ = MarkedPtr<epoch_node>::ptr_of(w);
+        if (!MarkedPtr<epoch_node>::mark_of(w)) {   // skip logically-deleted epochs (read-only, no help-splice)
+            for (undo_entry_node *u = epoch->first_entry; u != nullptr; u = u->next_entry.load()) {
+                // Full-PK identity check (pk_hash is only a bucket hint). pk_len==0 = locator-only
+                // entry whose identity we cannot prove -> skip.
+                if (u->pk_len == 0 || u->pk_len != pk_len) continue;
+                bool pk_eq = true;
+                for (uint32_t i = 0; i < pk_len; ++i) {
+                    if (u->pk[i] != pk[i]) { pk_eq = false; break; }
+                }
+                if (!pk_eq) continue;
+                any_pk_match = true;
+                if (changes_visible(u->version_trx_id, up_limit_id, low_limit_id, creator_trx_id,
+                                    m_ids, m_ids_n)) {
+                    if (!found || u->version_trx_id > best_ver) {
+                        found = true; best_ver = u->version_trx_id; best = u;
+                    }
+                }
+            }
+        }
+        epoch = succ;
+    }
+
+    if (!any_pk_match) return ConsultOutcome::MISS_ABSENT;
+    if (!found)        return ConsultOutcome::MISS_NOVISIBLE;
+    // Contiguity gate: the cache must reach the live row (its gap-free run's newest entry was
+    // overwritten by exactly the live writer) AND the candidate must sit inside that gap-free run.
+    // Otherwise an uncached newer-but-visible version may exist -> do not guess.
+    if (head_writer != live_top_writer || best_ver < suffix_min)
+        return ConsultOutcome::MISS_NONCONTIG;
+
+    if (out_img != nullptr) {
+        if (best->img_len == 0 || best->img_len > out_cap) return ConsultOutcome::MISS_INELIGIBLE;
+        for (uint32_t i = 0; i < best->img_len; ++i) out_img[i] = best->img[i];  // copy UNDER the Guard
+        if (out_len != nullptr) *out_len = best->img_len;
+    }
+    return ConsultOutcome::HIT;
+}
+
+

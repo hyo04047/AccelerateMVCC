@@ -69,6 +69,96 @@ TEST(ReadViewMirror, Boundaries) {
 }
 
 // ---------------------------------------------------------------------------
+// (a1) D-4 (4b-3): the shadow consult, tested OFFLINE (isolate-then-integrate, like EBR/ring).
+//   Verifies the cache picks the same visible version a real consistent read would, and only
+//   serves a HIT when it can PROVE contiguity to the live row -- otherwise a safe MISS. This is
+//   the wrong-result gate, exercised without a running mysqld.
+// ---------------------------------------------------------------------------
+using CO = Accelerate_mvcc::ConsultOutcome;
+// Insert one cached version: ver = its creator (visibility key), wr = the trx that overwrote it
+// (so the NEXT-newer version's creator == wr). Versions for a key must be inserted in version order
+// (a row's X-lock serializes its writers, so the cache really does receive them in order).
+static void ins_ver(Accelerate_mvcc& m, uint64_t pkh, uint64_t ver, uint64_t wr,
+                    const std::vector<unsigned char>& pk, const std::vector<unsigned char>& img) {
+    m.insert(1, pkh, ver, ver * 10, ver * 100, ver * 1000,
+             img.empty() ? nullptr : img.data(), (uint32_t)img.size(), wr,
+             pk.data(), (uint32_t)pk.size(), 0);
+}
+
+TEST(Consult, HitNewestVisibleAndImage) {
+    Accelerate_mvcc m(0, 10);
+    const uint64_t H = 77; std::vector<unsigned char> pk{1, 2, 3, 4};
+    ins_ver(m, H, 10, 20, pk, {0xA0});            // v10, overwritten by 20
+    ins_ver(m, H, 20, 30, pk, {0xB0, 0xB1});      // v20, overwritten by 30
+    ins_ver(m, H, 30, 40, pk, {0xC0, 0xC1, 0xC2});// v30, overwritten by 40 (= live row's writer)
+    unsigned char buf[64]; uint32_t blen = 0;
+    // reader sees < 35, nothing active, live row last written by 40 -> boundary is v30
+    CO o = m.consult(1, H, pk.data(), (uint32_t)pk.size(), /*up*/5, /*low*/35, /*creator*/0,
+                     nullptr, 0, /*live*/40, buf, sizeof(buf), &blen);
+    EXPECT_EQ(o, CO::HIT);
+    ASSERT_EQ(blen, 3u); EXPECT_EQ(buf[0], 0xC0); EXPECT_EQ(buf[2], 0xC2);
+    // older snapshot (< 25) -> boundary is v20
+    o = m.consult(1, H, pk.data(), (uint32_t)pk.size(), 5, 25, 0, nullptr, 0, 40, buf, sizeof(buf), &blen);
+    EXPECT_EQ(o, CO::HIT); ASSERT_EQ(blen, 2u); EXPECT_EQ(buf[0], 0xB0);
+}
+
+TEST(Consult, MissDrainerLagHeadNotLive) {
+    Accelerate_mvcc m(0, 10);
+    const uint64_t H = 1; std::vector<unsigned char> pk{9};
+    ins_ver(m, H, 10, 20, pk, {1}); ins_ver(m, H, 20, 30, pk, {2}); ins_ver(m, H, 30, 40, pk, {3});
+    // The live row was actually overwritten by 50 (its entry isn't drained yet) -> cache head (40)
+    // != live writer (50) -> cannot prove it reaches the head -> MISS.
+    CO o = m.consult(1, H, pk.data(), 1, 5, 35, 0, nullptr, 0, /*live*/50, nullptr, 0, nullptr);
+    EXPECT_EQ(o, CO::MISS_NONCONTIG);
+}
+
+TEST(Consult, MissInteriorDropBelowSuffix) {
+    Accelerate_mvcc m(0, 10);
+    const uint64_t H = 2; std::vector<unsigned char> pk{9};
+    ins_ver(m, H, 10, 20, pk, {1});   // v10 (overwritten by 20)
+    // v20 DROPPED (never inserted) -- simulates a ring-full drop
+    ins_ver(m, H, 30, 40, pk, {3});   // v30 -> linkage breaks, gap-free run restarts at version 30
+    // reader sees < 25: the TRUE boundary is v20 (dropped). cache has v10 (visible) but it is BELOW
+    // the gap-free run [30,..] -> must MISS, not return the stale v10.
+    CO o = m.consult(1, H, pk.data(), 1, 5, 25, 0, nullptr, 0, /*live*/40, nullptr, 0, nullptr);
+    EXPECT_EQ(o, CO::MISS_NONCONTIG);
+}
+
+TEST(Consult, MissAbsentAndCollisionFilteredByFullPk) {
+    Accelerate_mvcc m(0, 10);
+    const uint64_t H = 3; std::vector<unsigned char> pkA{1}, pkB{2};
+    ins_ver(m, H, 10, 20, pkA, {1}); ins_ver(m, H, 20, 30, pkA, {2}); ins_ver(m, H, 30, 40, pkA, {3});
+    // A different row whose PK collides on the same hash bucket -> the full-PK check rejects it.
+    CO o = m.consult(1, H, pkB.data(), 1, 5, 35, 0, nullptr, 0, 40, nullptr, 0, nullptr);
+    EXPECT_EQ(o, CO::MISS_ABSENT);
+    // a hash bucket not present at all
+    o = m.consult(1, 999, pkA.data(), 1, 5, 35, 0, nullptr, 0, 40, nullptr, 0, nullptr);
+    EXPECT_EQ(o, CO::MISS_ABSENT);
+}
+
+TEST(Consult, MissNoVisibleVersion) {
+    Accelerate_mvcc m(0, 10);
+    const uint64_t H = 4; std::vector<unsigned char> pk{7};
+    ins_ver(m, H, 10, 20, pk, {1}); ins_ver(m, H, 20, 30, pk, {2}); ins_ver(m, H, 30, 40, pk, {3});
+    // snapshot below everything (sees < 5) -> no cached version visible
+    CO o = m.consult(1, H, pk.data(), 1, 1, 5, 0, nullptr, 0, 40, nullptr, 0, nullptr);
+    EXPECT_EQ(o, CO::MISS_NOVISIBLE);
+}
+
+TEST(Consult, MissIneligibleWhenImageRequestedButAbsent) {
+    Accelerate_mvcc m(0, 10);
+    const uint64_t H = 5; std::vector<unsigned char> pk{7};
+    ins_ver(m, H, 10, 20, pk, {}); ins_ver(m, H, 20, 30, pk, {}); ins_ver(m, H, 30, 40, pk, {});
+    unsigned char buf[8]; uint32_t blen = 0;
+    // candidate is visible + contiguous, but has no cached image -> cannot serve bytes -> MISS.
+    CO o = m.consult(1, H, pk.data(), 1, 5, 35, 0, nullptr, 0, 40, buf, sizeof(buf), &blen);
+    EXPECT_EQ(o, CO::MISS_INELIGIBLE);
+    // ... but if no image is requested, the same candidate is a clean (locator-level) HIT.
+    o = m.consult(1, H, pk.data(), 1, 5, 35, 0, nullptr, 0, 40, nullptr, 0, nullptr);
+    EXPECT_EQ(o, CO::HIT);
+}
+
+// ---------------------------------------------------------------------------
 // (a) MVCC visibility: search must return the LATEST committed version that is
 //     visible to the read view (trx_id < snapshot AND not in active list).
 // ---------------------------------------------------------------------------
