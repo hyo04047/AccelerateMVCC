@@ -9,7 +9,9 @@ s#\Q      accel_on_undo(index->table->id, trx->id, undo_ptr->rseg->space_id, pag
             accel_pk = (accel_pk ^ accel_f[accel_b]) * 1099511628211ULL;
           accel_pk = (accel_pk ^ accel_len) * 1099511628211ULL;
         }
+        ulint accel_img_len = rec_offs_size(offsets);  /* D-4: full physical record size of the overwritten version */
         accel_on_undo(index->table->id, accel_pk, trx->id,
                       row_get_rec_trx_id(rec, index, offsets),
-                      undo_ptr->rseg->space_id, page_no, offset, op_type);
+                      undo_ptr->rseg->space_id, page_no, offset, op_type,
+                      reinterpret_cast<const unsigned char*>(rec), accel_img_len);
       }#;

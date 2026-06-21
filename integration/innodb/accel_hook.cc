@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <thread>
 
 namespace {
@@ -105,7 +106,8 @@ void accel_shutdown() noexcept {
 }
 
 void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_t old_trx_id,
-                   uint64_t space_id, uint64_t page_no, uint64_t offset, uint64_t op_type) noexcept {
+                   uint64_t space_id, uint64_t page_no, uint64_t offset, uint64_t op_type,
+                   const unsigned char *img, uint64_t img_len) noexcept {
   // D-1b-4 hardening invariants (this runs UNDER the InnoDB clustered leaf-page X-latch):
   //   * noexcept: cannot unwind into InnoDB (enforced by the keyword).
   //   * no allocation: only atomics + a trivially-copyable UndoRec into a preallocated ring slot
@@ -115,7 +117,14 @@ void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_
   //     InnoDB->accel edge stays one-way and cannot form a cross-domain latch cycle.
   if (op_type != TRX_UNDO_MODIFY) return;           // versions only (defensive; call site filters)
   if (!g_ready.load(std::memory_order_acquire)) return;  // outside live window
-  const accel::UndoRec r{table_id, pk_hash, trx_id, old_trx_id, space_id, page_no, offset, op_type};
+  accel::UndoRec r{table_id, pk_hash, trx_id, old_trx_id, space_id, page_no, offset, op_type};
+  // D-4: copy the captured full-row image into the slot (alloc-free prefix memcpy, still under the
+  // latch). Over-cap or absent -> img_len stays 0 -> drainer stores locator-only and consult will
+  // full-walk this version. Bytes are immutable once published (set-once payload).
+  if (img != nullptr && img_len > 0 && img_len <= accel::ACCEL_IMG_MAX) {
+    r.img_len = static_cast<uint32_t>(img_len);
+    std::memcpy(r.img, img, img_len);
+  }
   if (g_ring.enqueue(r))
     g_enq.fetch_add(1, std::memory_order_relaxed);
   else

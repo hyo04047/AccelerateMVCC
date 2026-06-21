@@ -34,7 +34,14 @@ void accel_shutdown() noexcept;
 // full -> drop, never block); the off-latch drainer does the real work. pk_hash = hash of the
 // clustered PK fields (row identity); old_trx_id = the DB_TRX_ID of the record being overwritten
 // (= begin-ts of the version this undo reconstructs, the visibility key D-2 will need).
+//
+// D-4: img/img_len carry the FULL physical row image of the record being overwritten (the
+// version this undo reconstructs), captured at the call site (rec + rec_offs_size). The hook
+// copies up to ACCEL_IMG_MAX bytes into the ring slot under the latch (alloc-free prefix memcpy);
+// rows larger than the cap pass img_len=0 -> stored locator-only -> consult falls back to a full
+// walk for them. Pass img=nullptr/img_len=0 when no image is available.
 void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_t old_trx_id,
-                   uint64_t space_id, uint64_t page_no, uint64_t offset, uint64_t op_type) noexcept;
+                   uint64_t space_id, uint64_t page_no, uint64_t offset, uint64_t op_type,
+                   const unsigned char *img, uint64_t img_len) noexcept;
 
 #endif  // ACCEL_HOOK_H
