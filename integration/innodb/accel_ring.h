@@ -16,11 +16,20 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <type_traits>
 
 namespace accel {
 
-// One captured undo event (all scalar, POD -> copied whole into a slot under seq protection).
+// D-4: cap on the cached full-row image carried per slot. A row larger than this is enqueued
+// WITHOUT an image (img_len=0) -> consult falls back to a full walk for it (off-page LOB rows
+// are excluded from caching anyway, so this matches the correctness gate, design-D §13).
+constexpr uint32_t ACCEL_IMG_MAX = 512;
+
+// One captured undo event: scalars (D-1b) + an optional full-row image (D-4). Still a
+// trivially-copyable POD so the under-latch publish is an alloc-free byte copy. enqueue copies
+// only the scalars + img_len image bytes (NOT the whole ACCEL_IMG_MAX) to keep the latched copy
+// small; bytes past img_len are intentionally left stale (unused).
 struct UndoRec {
   uint64_t table_id;
   uint64_t pk_hash;
@@ -30,15 +39,16 @@ struct UndoRec {
   uint64_t page_no;
   uint64_t offset;
   uint64_t op_type;
+  uint32_t img_len;                  // 0 = no image captured (row too big / ineligible)
+  unsigned char img[ACCEL_IMG_MAX];  // full-row image; only the first img_len bytes are valid
 };
 
-// D-1b-4 hardening tripwires: the under-latch enqueue does `slot.rec = r`, which must be an
-// allocation-free trivial copy (no constructor/heap work while InnoDB holds the page latch).
-// The fixed size guards against a future field addition silently bloating the latched copy.
+// D-1b-4 hardening: the under-latch publish must be an allocation-free copy (no ctor/heap work
+// while InnoDB holds the page latch). Still trivially-copyable after adding the image (a POD byte
+// array), so the prefix memcpy in enqueue/dequeue is well-defined. (The D-1b fixed-size tripwire
+// is retired in D-4 -- the slot intentionally grew by the image cap.)
 static_assert(std::is_trivially_copyable<UndoRec>::value,
               "UndoRec must be trivially copyable (alloc-free copy into the ring slot)");
-static_assert(sizeof(UndoRec) == 8 * sizeof(uint64_t),
-              "UndoRec grew -- keep the under-latch enqueue payload small/POD");
 
 template <size_t N>
 class Ring {
@@ -67,7 +77,10 @@ class Ring {
         pos = enq_.load(std::memory_order_relaxed);
       }
     }
-    slot->rec = r;
+    // D-4: copy scalars + only the used image bytes (offsetof(img) + img_len), never the whole
+    // ACCEL_IMG_MAX -- keeps the under-latch copy small. UndoRec is trivially copyable, so a prefix
+    // memcpy is well-defined; bytes past img_len in the slot are left stale (consumer reads img_len).
+    std::memcpy(&slot->rec, &r, offsetof(UndoRec, img) + r.img_len);
     slot->seq.store(pos + 1, std::memory_order_release);  // publish
     return true;
   }
@@ -88,7 +101,9 @@ class Ring {
         pos = deq_.load(std::memory_order_relaxed);
       }
     }
-    out = slot->rec;
+    // Mirror enqueue: copy scalars + img_len bytes only (the publish via seq-release happened-before
+    // makes slot->rec.img_len visible here).
+    std::memcpy(&out, &slot->rec, offsetof(UndoRec, img) + slot->rec.img_len);
     slot->seq.store(pos + N, std::memory_order_release);  // free slot for a future lap
     return true;
   }

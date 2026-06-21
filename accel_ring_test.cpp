@@ -23,15 +23,28 @@ static Ring<1024> g_ring;  // small on purpose -> forces drops under 8 producers
 
 static UndoRec make_rec(uint64_t v) {
   // Encode relationships so the consumer can detect a torn (partially-published) read.
-  return UndoRec{/*table_id*/ ~v, /*pk_hash*/ v * 2654435761u + 1, /*trx_id*/ v,
-                 /*old_trx_id*/ v ^ 0xA5A5A5A5A5A5A5A5ULL, /*space_id*/ v + 7,
-                 /*page_no*/ v + 11, /*offset*/ v + 13, /*op_type*/ 2};
+  UndoRec r{/*table_id*/ ~v, /*pk_hash*/ v * 2654435761u + 1, /*trx_id*/ v,
+            /*old_trx_id*/ v ^ 0xA5A5A5A5A5A5A5A5ULL, /*space_id*/ v + 7,
+            /*page_no*/ v + 11, /*offset*/ v + 13, /*op_type*/ 2};
+  // D-4: exercise the variable-length image path -- img_len varies per record (0..IMG_MAX) so the
+  // prefix memcpy in enqueue/dequeue and slot reuse across laps (stale bytes past img_len) are
+  // stress-tested. The pattern is v-derived so a torn / partial / leaked image is detectable.
+  r.img_len = (uint32_t)(v % (accel::ACCEL_IMG_MAX + 1));
+  for (uint32_t i = 0; i < r.img_len; ++i) r.img[i] = (unsigned char)((v + i) & 0xFFu);
+  return r;
 }
 static bool check_rec(const UndoRec &r) {
   uint64_t v = r.trx_id;
-  return r.table_id == ~v && r.pk_hash == v * 2654435761u + 1 &&
-         r.old_trx_id == (v ^ 0xA5A5A5A5A5A5A5A5ULL) && r.space_id == v + 7 &&
-         r.page_no == v + 11 && r.offset == v + 13 && r.op_type == 2;
+  if (!(r.table_id == ~v && r.pk_hash == v * 2654435761u + 1 &&
+        r.old_trx_id == (v ^ 0xA5A5A5A5A5A5A5A5ULL) && r.space_id == v + 7 &&
+        r.page_no == v + 11 && r.offset == v + 13 && r.op_type == 2))
+    return false;
+  // D-4: the image must match exactly img_len bytes of the v-derived pattern. A torn/partial
+  // image, or stale bytes leaking past img_len from a previous lap, fails here.
+  if (r.img_len != (uint32_t)(v % (accel::ACCEL_IMG_MAX + 1))) return false;
+  for (uint32_t i = 0; i < r.img_len; ++i)
+    if (r.img[i] != (unsigned char)((v + i) & 0xFFu)) return false;
+  return true;
 }
 
 int main() {
