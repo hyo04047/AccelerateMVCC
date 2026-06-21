@@ -43,7 +43,14 @@ namespace mvcc {
     };
 
     struct undo_entry_node {
-        uint64_t trx_id;
+        // D-4 (4b-0): split the single trx_id into the two distinct ids InnoDB visibility needs.
+        //   version_trx_id = the VERSION's creator = old DB_TRX_ID (the begin-ts of the version this
+        //     entry locates). This is the visibility key judged by changes_visible -- NOT the writer.
+        //   writer_trx_id  = the trx that OVERWROTE this version (= trx->id at the populate hook =
+        //     the next-newer version's creator). Needed by the contiguity primitive (4b-2) and the
+        //     purge gate. In the standalone prototype both equal the inserted trx_id (default).
+        uint64_t version_trx_id;
+        uint64_t writer_trx_id;
         uint64_t space_id;
         uint64_t page_id;
         uint64_t offset;
@@ -56,8 +63,10 @@ namespace mvcc {
         uint32_t img_len = 0;
         unsigned char *img = nullptr;
 
-        undo_entry_node(uint64_t trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset)
-                : trx_id(trx_id), space_id(space_id), page_id(page_id), offset(offset)
+        undo_entry_node(uint64_t version_trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset,
+                        uint64_t writer_trx_id)
+                : version_trx_id(version_trx_id), writer_trx_id(writer_trx_id),
+                  space_id(space_id), page_id(page_id), offset(offset)
         {
             next_entry.store(nullptr);
         }

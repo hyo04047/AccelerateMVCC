@@ -50,8 +50,13 @@ void consume(const accel::UndoRec &r) {
   // D-1b-3b: real single-consumer insert into the AccelerateMVCC index. Only the drainer touches
   // g_accel, so the index has exactly one mutator (no contention). Low-level insert() bypasses
   // Trx_manager/get_mutex. BG GC is OFF -> memory grows by design for this populate-only stage.
-  if (g_accel) g_accel->insert(r.table_id, r.pk_hash, r.trx_id, r.space_id, r.page_no, r.offset,
-                               r.img_len ? r.img : nullptr, r.img_len);
+  // D-4 (4b-0): the VISIBILITY key is the version's creator = old DB_TRX_ID (r.old_trx_id), NOT the
+  // writer. The writer (r.trx_id = the overwriting trx->id) is passed separately as the last arg so
+  // the node carries both: changes_visible judges on version_trx_id; the contiguity/purge gates use
+  // writer_trx_id. (Pre-4b this passed r.trx_id as the key -> every version judged by its overwriter,
+  // off by exactly one version.)
+  if (g_accel) g_accel->insert(r.table_id, r.pk_hash, r.old_trx_id, r.space_id, r.page_no, r.offset,
+                               r.img_len ? r.img : nullptr, r.img_len, r.trx_id);
   const uint64_t n = g_drained.fetch_add(1, std::memory_order_relaxed) + 1;
   if (n % 500000 == 0) {
     // chain_length is non-guarded, but the drainer is the SOLE mutator of g_accel and we call it

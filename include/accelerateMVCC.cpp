@@ -36,11 +36,15 @@ mvcc::Accelerate_mvcc::Accelerate_mvcc(uint64_t record_count, uint32_t kuku_log2
 
 // this will be used when implementing to mysql source code.
 bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
-                                   uint64_t trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset,
-                                   const unsigned char *img, uint32_t img_len) {
+                                   uint64_t version_trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset,
+                                   const unsigned char *img, uint32_t img_len, uint64_t writer_trx_id) {
     kuku::item_type item = kuku::make_item(table_id, index);
 
-    auto *undo_entry = new undo_entry_node(trx_id, space_id, page_id, offset);
+    // D-4 (4b-0): writer_trx_id==0 means "standalone: the writer IS the version's own creator".
+    // Everything below (epoch placement, deadzone min/max/superseded bounds) is in the VERSION
+    // domain (version_trx_id = old DB_TRX_ID), since that is what readers judge visibility against.
+    const uint64_t wtrx = writer_trx_id ? writer_trx_id : version_trx_id;
+    auto *undo_entry = new undo_entry_node(version_trx_id, space_id, page_id, offset, wtrx);
     // D-4: copy the captured full-row image into the node (heap-owned, freed with the node). Short
     // loop avoids a <cstring> dependency; img_len is small (<= ACCEL_IMG_MAX). Single drainer is the
     // sole mutator, so this set-once write needs no synchronization beyond the node's publication.
@@ -49,7 +53,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
         for (uint32_t i = 0; i < img_len; ++i) undo_entry->img[i] = img[i];
         undo_entry->img_len = img_len;
     }
-    uint64_t epoch_num = get_epoch_num(trx_id);
+    uint64_t epoch_num = get_epoch_num(version_trx_id);
 
     kuku::QueryResult query = kuku_table->query(item);
     if (query.found()) {
@@ -64,7 +68,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
         auto *header = reinterpret_cast<interval_list_header *>(value);
         if (header->next.ptr() == nullptr) {
             auto* epoch = new epoch_node();
-            update_epoch_node(epoch, epoch_num, trx_id, undo_entry, nullptr);
+            update_epoch_node(epoch, epoch_num, version_trx_id, undo_entry, nullptr);
             epoch->header = header;
 
             header->next_epoch_num = epoch_num;
@@ -76,7 +80,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
             // create new epoch and prepend it at the head
             epoch_node *old_head = header->next.ptr();
             auto *epoch = new epoch_node();
-            update_epoch_node(epoch, epoch_num, trx_id, undo_entry, old_head);
+            update_epoch_node(epoch, epoch_num, version_trx_id, undo_entry, old_head);
             epoch->header = header;
 
             // The previous head is now superseded by this new version: record its tight xmax
@@ -84,7 +88,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
             // conservative bound for the new epoch's first version (a later smaller append would
             // only supersede it sooner, which keeps v_end larger -> under-prune, never over).
             if (old_head != nullptr)
-                old_head->superseded_ts.store(trx_id, std::memory_order_release);
+                old_head->superseded_ts.store(version_trx_id, std::memory_order_release);
 
             header->next_epoch_num = epoch_num;
             header->next.store(epoch, false);
@@ -95,17 +99,17 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
             epoch_node *epoch = header->next.ptr();
             epoch->count++;
             undo_entry_node *last_entry = epoch->last_entry.load();
-            if (trx_id < epoch->min_trx_id) {
-                epoch->min_trx_id = trx_id;
+            if (version_trx_id < epoch->min_trx_id) {
+                epoch->min_trx_id = version_trx_id;
             }
-            if (trx_id > epoch->max_trx_id) {
-                epoch->max_trx_id = trx_id;
+            if (version_trx_id > epoch->max_trx_id) {
+                epoch->max_trx_id = version_trx_id;
             }
             last_entry->next_entry.store(undo_entry);
             epoch->last_entry.store(undo_entry);
         }
     } else {
-        auto *epoch = new epoch_node(epoch_num, trx_id, undo_entry, nullptr);
+        auto *epoch = new epoch_node(epoch_num, version_trx_id, undo_entry, nullptr);
         auto *header = new interval_list_header();
         epoch->header = header;
         header->next_epoch_num = epoch_num;
@@ -160,7 +164,7 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
     // high-water = trx_id (a read-only reader sees nothing >= its own snapshot id), creator =
     // trx_id (read-only -> never matches a version key). m_ids must be sorted for the binary
     // search; active_trx_list is a by-value copy, so sorting it here is local. The judged key is
-    // the version's creator (undo_entry->trx_id = old DB_TRX_ID in the InnoDB integration).
+    // the version's creator (undo_entry->version_trx_id = old DB_TRX_ID in the InnoDB integration).
     std::sort(active_trx_list.begin(), active_trx_list.end());
     const uint64_t rv_up_limit = active_trx_list.empty() ? trx_id : active_trx_list.front();
     // EBR reservation: from here until return we dereference epoch_node /
@@ -228,11 +232,11 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
             for (undo_entry_node *undo_entry = epoch->first_entry;
                  undo_entry != nullptr;
                  undo_entry = undo_entry->next_entry.load()) {
-                if (changes_visible(undo_entry->trx_id, rv_up_limit, trx_id, trx_id,
+                if (changes_visible(undo_entry->version_trx_id, rv_up_limit, trx_id, trx_id,
                                     active_trx_list)) {
-                    if (!found || undo_entry->trx_id > best_trx_id) {
+                    if (!found || undo_entry->version_trx_id > best_trx_id) {
                         found = true;
-                        best_trx_id = undo_entry->trx_id;
+                        best_trx_id = undo_entry->version_trx_id;
                         space_id = undo_entry->space_id;
                         page_id = undo_entry->page_id;
                         offset = undo_entry->offset;
