@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-06-21 — 세션 5: D-1b 재검증 + D-2/D-3 적대적 리뷰 + D-0 비용 분해 → 방향=version 캐시 확정
+
+> 새 세션 재개. 핸드오프대로 맥락 복원 → 검증 → D-2 설계 진입. **방향 전환**: consult-as-locator(roll_ptr 점프)로는 D-0 평탄화가 안 됨을 적대적 리뷰+측정으로 확정 → **version-level materialized cache**로 재정의.
+
+**재개 검증 ✅**: HEAD=`997d5c0`(clean, origin 동기화) → 20 correctness Release/ASan/TSan green 재확인 + `integration/scripts/build_d1b4.sh`로 통합 mysqld 무결(enq==drained, dropped=0, cur_key_chain_len 1442→19988, clean shutdown). populate 경로(D-1b) 재현 확인.
+
+**D-2/D-3 적대적 설계 리뷰 ✅ (워크플로 42에이전트, 6렌즈 병렬→finding별 verify→synth; go_with_conditions, 23/35 confirmed)**: 스코프 (b)(consult+purge-view GC). **load-bearing 결론**: undo는 delta라 version을 top→down 순차 재구성(`trx_undo_prev_version_build`→`row_upd_rec_in_place`) → **consult-as-locator는 undo apply 횟수를 못 줄여 D-0 평탄화 불가**. D-3가 우리 인덱스를 compact해도 InnoDB 물리 undo chain은 그대로(Stage C 5500×는 우리 in-memory list 비용이라 전이 X). 유일한 정직한 길 = per-snapshot materialized-version cache. correctness blocker 5건(populate가 writer trx_id 저장·search≠changes_visible·GC가 standalone Trx_manager 기반·rollback/drainer-lag/recycled roll_ptr·head 2-writer race)에 대해 안전 consult 형태(LOCATOR + purge-view gate + head watermark + real-chain 재앵커, miss→full walk) 도출. 상세 [design-D.md](design-D.md) §11, 종합본 `/mnt/c/.../d2_review_synth.txt`.
+
+**D-0 비용 분해 측정 ✅**: ① BP 4G — deep scan 0.49s, **물리 disk read 4(≈0)**·논리 page 접근 672만 = **CPU-bound**(buffer-pool-resident인데도 느림). ② gdb sampling **40/40**이 `row_search_mvcc`→version build(원래 주원인 확정). ③ **BP sweep** — 4G 0.49s/read 4 → 64M **75s/read 6만(~150×)** → 16M 70s/read 5.7만 = 작은 BP에서 **I/O-bound 전환** + churn tps 18.9k→14.9k(pollution). → 사용자 가설("메모리/buffer pool 작을 때 HTAP I/O 문제 폭발") 데이터로 입증. 스크립트 레포 밖 `d0_profile1.sh`·`d0_profile2.sh`·`d0_bpsweep.sh`.
+
+**방향 결정**: D = consult-as-locator가 아니라 **version-level materialized cache**(재구성 version image를 in-memory, deadzone 제외 working-set, ephemeral=durability/atomicity InnoDB·crash 시 재구축, miss→full walk). 큰 BP=재구성 CPU·작은 BP=undo disk I/O+pollution 제거, 다양한 메모리 환경(특히 작은 BP)에서 효과(DIVA류 정합). buffer pool과 차별=page 캐싱(재구성 매번) vs 재구성 결과 캐싱(0회), 같은 메모리로 더 효율. ACID는 캐시가 authority 아님(committed past version immutable, isolation=changes_visible 재현+InnoDB 검증)으로 보존. **개정 증분**: D-2a populate fix→2b changes_visible 미러→2c consult shadow(mismatch=0)→2d authoritative→D-3 purge-view GC(1c-5 선행)→D-4 cache. **다음 = D-4 설계 전 ACID/correctness 적대적 검증.** 상세 [design-D.md](design-D.md) §12.
+
+---
+
 ## 2026-06-21 — 세션 4 (이어서): Stage D 착수 — D-0(InnoDB baseline) ✅
 
 > Stage C lock-in(커밋·push) 후 사용자 요청으로 **A~C 논문급 보고서**(`docs/REPORT.md`) 작성·커밋, 이어서 **Stage D(InnoDB 실통합)** 착수. 설계는 [design-D.md](design-D.md).

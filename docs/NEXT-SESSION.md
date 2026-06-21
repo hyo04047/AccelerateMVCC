@@ -15,8 +15,9 @@
 
 ---
 
-## D. Stage D 진행 (현재 위치 — D-0 ✅, 다음 = D-1)
-> 1차 목표 A+B+C는 완료(보고서 [REPORT.md](REPORT.md)). 지금은 최종 D(InnoDB 실통합) PoC 진행 중. 설계·D-0 결과 상세는 [design-D.md](design-D.md).
+## D. Stage D 진행 (현재 위치 — D-1b(populate) 완료, 방향=version 캐시 확정, 다음 = ACID 적대적 검증 → D-4)
+> **세션 5 갱신(2026-06-21)**: populate 경로(D-1a~D-1b-4) 완료 재검증 ✅ → **D-2/D-3 적대적 리뷰**(워크플로 42에이전트)에서 **consult-as-locator로는 D-0 평탄화 불가**(undo delta = top→down 순차 재구성) 확정 → **D-0 비용 분해 측정**으로 확증: 큰 BP는 CPU-bound version reconstruction(deep 0.49s, 물리 read 0, gdb로 `row_search_mvcc`→version build 40/40), 작은 BP(64M)는 **I/O-bound 75s/read 6만(~150×)**+pollution. → **방향 = version-level materialized cache**(재구성 결과 캐싱, deadzone 제외 working-set, ephemeral, miss→full walk fallback; 큰 BP=재구성 CPU·작은 BP=undo I/O+pollution 제거; DIVA류 "작은 메모리" 문제제기와 정합). ACID는 캐시가 authority 아님(committed past version immutable, isolation=changes_visible 재현+InnoDB 검증)으로 보존. **다음 = D-4 설계 전 ACID/correctness 적대적 검증** → 개정 증분 **D-2a(populate fix)→2b(changes_visible 미러)→2c(consult shadow, mismatch=0)→2d→D-3(purge-view GC)→D-4(cache)**. 상세 [design-D.md](design-D.md) §11·§12, 측정 스크립트 레포 밖 `d0_profile1/2.sh`·`d0_bpsweep.sh`, 리뷰 종합본 `d2_review_synth.txt`. **아래 §D 본문(D-1b까지)은 historical — 최신 방향은 이 단락.**
+> 1차 목표 A+B+C는 완료(보고서 [REPORT.md](REPORT.md)). 설계·결과 상세는 [design-D.md](design-D.md).
 - **결정 잠금**: MySQL **8.4.10 LTS** + **scoped PoC**(consult hook 1경로 + 측정) + **gcc-13**(gcc15 빌드 리스크 회피).
 - **MySQL 빌드/실행 레시피**(WSL, 레포 밖 스크립트 재사용):
   - 소스 `~/mysql-server`(8.4 shallow clone), 빌드 `~/mysql-build`(RelWithDebInfo/gcc-13/ninja, ~11분). 재빌드: `build_d0b.sh`.
