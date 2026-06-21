@@ -162,3 +162,58 @@ no-UAF:
 - **단 ROLLBACK TO SAVEPOINT(`savepoint-rollback-false-hit`, split)**: live-top==contiguous_head라
   contiguity가 MISS로 못 떨굴 수 있음 → shadow면 byte-compare가 mismatch로 표시. sysbench는 savepoint
   안 씀(평소 미발생)이나 테스트 매트릭스에 별도 케이스로 두고, 4d 전 committed-only/re-anchor 게이트로 닫음.
+
+## 9. 4b-2 contiguity 메커니즘 (구체 설계 — 코딩 전 사인 대상)
+### 9.1 왜 필요한가 (shadow에서도)
+consult가 고르는 "candidate"는 (table,full-PK 일치 + changes_visible인 가장 새 캐시 버전)이다. 캐시에
+**interior hole**(candidate와 live-top 사이에 캐시 안 된 committed 버전 — ring drop이나 drainer-lag)이
+있으면, consult가 더 오래된 candidate를 newest-visible로 오인 → byte-compare가 **mismatch**로 뜬다(캡처는
+옳은데 *선택*이 틀림). 즉 contiguity 게이트가 없으면 shadow의 hit_MISMATCH가 0이 안 된다. 게이트는 그런
+경우를 **MISS(full walk)** 로 떨궈 hit_MISMATCH=0을 만든다(안전 불변식: HIT는 항상 vanilla와 동일, 아니면 MISS).
+
+### 9.2 핵심 단순화 — per-key arrival은 version 순서다
+같은 row의 update는 InnoDB **clustered record X-lock**으로 직렬화된다(다음 writer는 이전 trx commit까지
+대기). populate hook은 그 update의 modify 중(lock 보유) 발화하므로, 한 키의 enqueue는 **version 순서**로
+일어나고 **FIFO ring이 보존**한다. → drainer는 키별로 버전을 **순서대로** 본다. (ring의 "순서 안 맞음"은
+서로 **다른 키들** 사이에서만이고 per-key contiguity와 무관.) gap의 유일한 원천 = **ring drop(full)**.
+
+### 9.3 linkage 불변식
+entry E = (version_trx_id=V=이 버전 생성자, writer_trx_id=W=이 버전을 덮어쓴 trx = 다음-더-새 버전의 생성자).
+→ 연속 두 캐시 entry는 **E_newer.version_trx_id == E_older.writer_trx_id** 이면 gap-free. drop으로 중간
+버전이 빠지면 이 등식이 깨진다(다음 entry의 version != 직전 head의 writer).
+
+### 9.4 drainer가 O(1)로 유지 (header에 atomic 2개)
+per-key `interval_list_header`에 추가:
+- `contiguous_head_writer` (std::atomic<uint64_t>): gap-free suffix가 head까지 닿을 때, 그 **최신 entry의
+  writer**. (= cache가 닿은 "바로 아래 live" 버전을 덮은 trx.)
+- `contiguous_suffix_min_version` (std::atomic<uint64_t>): 현재 gap-free run의 **가장 오래된 entry의 version**.
+
+drainer가 새 entry E_new(=현재 키의 최신, version 순서)를 insert할 때 (release-store):
+- 첫 entry이거나 `E_new.version_trx_id != contiguous_head_writer(현재)` → **gap/시작**: reset →
+  `contiguous_suffix_min_version = E_new.version`, `contiguous_head_writer = E_new.writer`.
+- `E_new.version_trx_id == contiguous_head_writer(현재)` → **extend**: `contiguous_head_writer = E_new.writer`
+  (min 유지).
+self-update(같은 trx 다중 update)는 V_2==W_2==trx_id이고 V_2==E_1.writer라 extend로 자연 처리(리뷰의
+self-loop 우려는 이래서 무해 — 기각과 일치).
+
+### 9.5 consult의 contiguity 게이트 (4b-3에서 사용)
+read site에서 `L = row_get_rec_trx_id(rec)`(이미 latch된 clustered top). candidate(table+full-PK 일치 +
+changes_visible 최신)가 **boundary로 인정**되려면 (acquire-load):
+1. `contiguous_head_writer == L` (캐시가 live-top까지 gap-free로 닿음 — drainer-lag/최신 drop이면 불일치 → MISS),
+2. `candidate.version_trx_id >= contiguous_suffix_min_version` (candidate가 gap-free run 안 — 그 아래 hole 무관),
+3. (full-PK memcmp 일치 — 4b-1).
+셋 다 충족 → **candidate가 증명된 newest-visible boundary = HIT**. 하나라도 아니면 **MISS → full walk**.
+candidate **위쪽**만 gap-free면 됨(그 아래는 더 오래돼 무관). drop된 구역의 reader는 ②/③에서 걸러 MISS.
+
+### 9.6 동시성 (M3)
+header의 두 scalar는 단일 writer(drainer) release-store / consult acquire-load = atomic. node의
+version/writer/pk/img는 set-once 후 chain publication(기존 `header->next`/`last_entry` release store)으로
+가시화 → consult가 acquire 후 읽으면 안전. **consult는 epoch min/max/count(비원자, GC용)는 안 읽는다**
+(4b-3에서 그 필드 touch 금지) → 그 pre-existing race는 consult 경로 밖. EBR Guard는 byte-compare까지 산다(M2).
+
+### 9.7 4b-2 범위/검증
+- 구현: `interval_list_header`에 atomic 2개 + drainer(=insert) 유지 로직. standalone은 단일 키·version
+  순서라 자연 충족(무회귀). consult는 아직 없음(4b-3) — 이 증분은 **bookkeeping만**.
+- 검증: standalone 24 green(구조 추가만, 동작 불변) + mysqld populate enq==drained·dropped=0. drop 주입
+  (작은 ring으로 강제 drop)해서 gap 발생 시 contiguity가 reset되는지 카운터로 확인(거짓 contiguous=0).
+  단, drop 주입 케이스는 4b-3 consult 카운터에서 더 자연스럽게 검증되므로 4b-2에선 로그 레벨로만.

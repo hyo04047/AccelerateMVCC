@@ -84,6 +84,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
             header->next.store(epoch, false);
 
             epoch_table->insert(epoch);
+            header->note_newest(version_trx_id, wtrx);   // D-4 4b-2: contiguity bookkeeping
         }
         else if (header->next_epoch_num < epoch_num) {
             // create new epoch and prepend it at the head
@@ -103,6 +104,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
             header->next.store(epoch, false);
 
             epoch_table->insert(epoch);
+            header->note_newest(version_trx_id, wtrx);   // D-4 4b-2: contiguity bookkeeping
         } else {
             // insert undo log entry to existing epoch
             epoch_node *epoch = header->next.ptr();
@@ -116,6 +118,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
             }
             last_entry->next_entry.store(undo_entry);
             epoch->last_entry.store(undo_entry);
+            header->note_newest(version_trx_id, wtrx);   // D-4 4b-2: contiguity bookkeeping
         }
     } else {
         auto *epoch = new epoch_node(epoch_num, version_trx_id, undo_entry, nullptr);
@@ -128,6 +131,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
         kuku::set_value(value, item);
 
         epoch_table->insert(epoch);
+        header->note_newest(version_trx_id, wtrx);   // D-4 4b-2: contiguity bookkeeping
         return kuku_table->insert(item);
     }
 

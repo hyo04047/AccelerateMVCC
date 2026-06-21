@@ -127,6 +127,35 @@ namespace mvcc {
         uint64_t next_epoch_num;
         MarkedPtr<epoch_node> next;   // forward chain head (never marked: the header is not a deletable node)
 
+        // D-4 (4b-2): contiguity bookkeeping. Lets a consult prove the cached versions form an
+        // unbroken run from a candidate up to the live row, so it can trust the cache (HIT) or
+        // otherwise fall back to a full walk (MISS) -- never serve a guess. Maintained by the single
+        // drainer (sole mutator), read by concurrent consults, hence atomic (release/acquire).
+        //   contiguous_head_writer       = the overwriter of the newest cached version IF the
+        //     gap-free run reaches it (0 = no versions yet). A consult requires this to equal the
+        //     live row's last writer (proof the cache reaches the head); otherwise MISS.
+        //   contiguous_suffix_min_version = the oldest version in the current gap-free run. A
+        //     candidate older than this sits below a hole -> MISS.
+        // Per-key updates arrive in version order (the row's X-lock serializes writers, the FIFO ring
+        // preserves it), so the ONLY source of a hole is a ring drop, caught by the linkage break in
+        // note_newest below.
+        std::atomic<uint64_t> contiguous_head_writer{0};
+        std::atomic<uint64_t> contiguous_suffix_min_version{0};
+
+        // Called by the drainer right after it links the NEWEST version for this key (version =
+        // that version's creator, writer = the trx that overwrote it). If this version is the one the
+        // current head expected next (its writer), the gap-free run extends; otherwise (first version,
+        // or a dropped one broke the chain) the run restarts at this version.
+        void note_newest(uint64_t version, uint64_t writer) {
+            uint64_t cur = contiguous_head_writer.load(std::memory_order_acquire);
+            if (cur != 0 && version == cur) {
+                contiguous_head_writer.store(writer, std::memory_order_release);          // extend
+            } else {
+                contiguous_suffix_min_version.store(version, std::memory_order_release);   // restart
+                contiguous_head_writer.store(writer, std::memory_order_release);
+            }
+        }
+
         interval_list_header()
                 : next_epoch_num(0), next()
         {
