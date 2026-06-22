@@ -37,13 +37,15 @@ std::thread g_drainer;
 // consistent read actually rebuilt. The MISS buckets are expected (drainer lag, no-visible, etc.);
 // they just mean "fall back to the full walk" and never a wrong result.
 std::atomic<uint64_t> g_c_calls{0};
-std::atomic<uint64_t> g_c_hit_match{0};
-std::atomic<uint64_t> g_c_hit_mismatch{0};
+std::atomic<uint64_t> g_c_hit{0};            // consult outcome HIT
 std::atomic<uint64_t> g_c_miss_absent{0};
 std::atomic<uint64_t> g_c_miss_novisible{0};
 std::atomic<uint64_t> g_c_miss_noncontig{0};
 std::atomic<uint64_t> g_c_miss_ineligible{0};
-std::atomic<uint64_t> g_c_vanilla_null{0};
+// D-4 4d-prep: of the HITs, did the rec_t the caller built from the fetched image match vanilla's
+// rebuilt *old_vers (data + delete flag + valid offsets)? Gate: construct_bad==0, construct_ok==hit.
+std::atomic<uint64_t> g_c_construct_ok{0};
+std::atomic<uint64_t> g_c_construct_bad{0};
 
 // D-4 4b-3c TEST-ONLY toggles, read once from the environment at accel_init (set before g_ready is
 // released, so the live hook/consult see them after their acquire of g_ready). Default off = prod.
@@ -82,7 +84,8 @@ void consume(const accel::UndoRec &r) {
   // D-4 4b-1: also carry the full-PK identity bytes (collision authority) and the delete-mark.
   if (g_accel) g_accel->insert(r.table_id, r.pk_hash, r.old_trx_id, r.space_id, r.page_no, r.offset,
                                r.img_len ? r.img : nullptr, r.img_len, r.trx_id,
-                               r.pk_len ? r.pk : nullptr, r.pk_len, static_cast<uint8_t>(r.delete_mark));
+                               r.pk_len ? r.pk : nullptr, r.pk_len, static_cast<uint8_t>(r.delete_mark),
+                               r.extra_len);
   const uint64_t n = g_drained.fetch_add(1, std::memory_order_relaxed) + 1;
   if (n % 500000 == 0) {
     // chain_length is non-guarded, but the drainer is the SOLE mutator of g_accel and we call it
@@ -145,15 +148,16 @@ void accel_shutdown() noexcept {
                (unsigned long long)g_enq.load(), (unsigned long long)g_drained.load(),
                (unsigned long long)g_dropped.load(), pk_buckets(),
                g_accel ? g_accel->long_live_size() : 0);
-  // D-4 4b-3b SHADOW result. The gate is hit_MISMATCH=0 with hit_match>0 (cache verified against
-  // vanilla on real consistent reads). MISS buckets = safe full-walk fallbacks.
+  // D-4 4d-prep result. consult outcome buckets + the CONSTRUCT proof: of the HITs, the rec_t the
+  // caller built from the fetched cache image matched vanilla's rebuilt *old_vers. Gate:
+  // construct_bad=0 and construct_ok==hit (a cache-built record is a valid servable substitute).
   std::fprintf(stderr,
-               "[accel] consult(shadow): calls=%llu hit_match=%llu hit_MISMATCH=%llu "
-               "miss{absent=%llu novisible=%llu noncontig=%llu ineligible=%llu} vanilla_null=%llu\n",
-               (unsigned long long)g_c_calls.load(), (unsigned long long)g_c_hit_match.load(),
-               (unsigned long long)g_c_hit_mismatch.load(), (unsigned long long)g_c_miss_absent.load(),
-               (unsigned long long)g_c_miss_novisible.load(), (unsigned long long)g_c_miss_noncontig.load(),
-               (unsigned long long)g_c_miss_ineligible.load(), (unsigned long long)g_c_vanilla_null.load());
+               "[accel] consult: calls=%llu hit=%llu miss{absent=%llu novisible=%llu noncontig=%llu "
+               "ineligible=%llu} | construct_ok=%llu construct_BAD=%llu\n",
+               (unsigned long long)g_c_calls.load(), (unsigned long long)g_c_hit.load(),
+               (unsigned long long)g_c_miss_absent.load(), (unsigned long long)g_c_miss_novisible.load(),
+               (unsigned long long)g_c_miss_noncontig.load(), (unsigned long long)g_c_miss_ineligible.load(),
+               (unsigned long long)g_c_construct_ok.load(), (unsigned long long)g_c_construct_bad.load());
   delete g_accel;  // drainer joined -> sole owner; dtor is a no-op for BG GC (never started)
   g_accel = nullptr;
 }
@@ -161,7 +165,8 @@ void accel_shutdown() noexcept {
 void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_t old_trx_id,
                    uint64_t space_id, uint64_t page_no, uint64_t offset, uint64_t op_type,
                    const unsigned char *img, uint64_t img_len,
-                   const unsigned char *pk, uint64_t pk_len, uint64_t delete_mark) noexcept {
+                   const unsigned char *pk, uint64_t pk_len, uint64_t delete_mark,
+                   uint64_t extra_len) noexcept {
   // D-1b-4 hardening invariants (this runs UNDER the InnoDB clustered leaf-page X-latch):
   //   * noexcept: cannot unwind into InnoDB (enforced by the keyword).
   //   * no allocation: only atomics + a trivially-copyable UndoRec into a preallocated ring slot
@@ -178,6 +183,7 @@ void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_
   // memcpy under the latch). Over-cap/absent PK -> pk_len stays 0 -> consult cannot prove identity
   // -> MISS (never a wrong row).
   r.delete_mark = (delete_mark != 0) ? 1u : 0u;
+  r.extra_len = static_cast<uint32_t>(extra_len);   // D-4 4d: record header size within img
   if (pk != nullptr && pk_len > 0 && pk_len <= accel::ACCEL_PK_MAX) {
     r.pk_len = static_cast<uint32_t>(pk_len);
     std::memcpy(r.pk, pk, pk_len);
@@ -195,51 +201,45 @@ void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_
     g_dropped.fetch_add(1, std::memory_order_relaxed);  // full -> drop, never block the latch
 }
 
-void accel_consult_shadow(uint64_t table_id, uint64_t pk_hash,
-                          const unsigned char *pk, uint64_t pk_len,
-                          uint64_t up_limit_id, uint64_t low_limit_id, uint64_t creator_trx_id,
-                          const uint64_t *m_ids, uint64_t m_ids_n,
-                          uint64_t live_top_writer, uint64_t live_schema_epoch,
-                          const unsigned char *vanilla, uint64_t vanilla_len) noexcept {
-  // D-4 4b-3b: SHADOW. Runs on InnoDB reader threads at the consistent-read version-build site,
-  // AFTER vanilla rebuilt the visible version. We ask our cache what it would serve and byte-compare
-  // it against vanilla's bytes -- but never use our answer (InnoDB returns its own). The consult is
-  // read-only and copies the image into our stack buffer UNDER its EBR Guard (M2), so nothing escapes.
-  if (!g_ready.load(std::memory_order_acquire) || g_accel == nullptr) return;
+int accel_consult_fetch(uint64_t table_id, uint64_t pk_hash,
+                        const unsigned char *pk, uint64_t pk_len,
+                        uint64_t up_limit_id, uint64_t low_limit_id, uint64_t creator_trx_id,
+                        const uint64_t *m_ids, uint64_t m_ids_n,
+                        uint64_t live_top_writer, uint64_t live_schema_epoch,
+                        unsigned char *out_buf, unsigned int out_cap,
+                        unsigned int *out_len, unsigned int *out_extra) noexcept {
+  // D-4 4d-prep: runs on InnoDB reader threads at the consistent-read version-build site. Read-only
+  // consult; on HIT copies the cached FULL physical record into out_buf UNDER the EBR Guard (M2) so
+  // nothing escapes the guard. Returns the outcome code (0=HIT, 1..4 = miss reasons) and bumps the
+  // outcome counters. The caller (InnoDB domain) builds a rec_t from out_buf and compares to vanilla.
+  if (!g_ready.load(std::memory_order_acquire) || g_accel == nullptr) return 1;
   g_c_calls.fetch_add(1, std::memory_order_relaxed);
   if (g_pk_mask) pk_hash &= g_pk_mask;   // test-only: same mask as populate so collisions line up
   const uint64_t sch = g_no_schema_check ? ~uint64_t(0) : live_schema_epoch;  // ~0 = skip schema gate
   using CO = mvcc::Accelerate_mvcc::ConsultOutcome;
-  unsigned char buf[accel::ACCEL_IMG_MAX];
-  uint32_t outlen = 0;
+  uint32_t outlen = 0, outextra = 0;
   CO o;
   try {
     o = g_accel->consult(table_id, pk_hash, pk, static_cast<uint32_t>(pk_len),
                          up_limit_id, low_limit_id, creator_trx_id,
                          m_ids, static_cast<std::size_t>(m_ids_n), live_top_writer,
-                         (vanilla != nullptr) ? buf : nullptr, sizeof(buf), &outlen,
-                         /*require_full_pk=*/!g_no_full_pk, sch);
-  } catch (...) { return; }  // defensive: consult does not allocate/throw, but the facade is noexcept
-
-  if (vanilla == nullptr) {
-    // vanilla found NO visible version (fresh insert / no history). The cache must not claim a HIT.
-    if (o == CO::HIT) g_c_hit_mismatch.fetch_add(1, std::memory_order_relaxed);
-    else              g_c_vanilla_null.fetch_add(1, std::memory_order_relaxed);
-    return;
-  }
+                         out_buf, out_cap, &outlen,
+                         /*require_full_pk=*/!g_no_full_pk, sch, &outextra);
+  } catch (...) { return 1; }  // defensive: consult does not allocate/throw, but the facade is noexcept
   switch (o) {
-    case CO::HIT: {
-      bool eq = (static_cast<uint64_t>(outlen) == vanilla_len);
-      if (eq) {
-        for (uint32_t i = 0; i < outlen; ++i)
-          if (buf[i] != vanilla[i]) { eq = false; break; }
-      }
-      (eq ? g_c_hit_match : g_c_hit_mismatch).fetch_add(1, std::memory_order_relaxed);
-      break;
-    }
-    case CO::MISS_ABSENT:     g_c_miss_absent.fetch_add(1, std::memory_order_relaxed); break;
-    case CO::MISS_NOVISIBLE:  g_c_miss_novisible.fetch_add(1, std::memory_order_relaxed); break;
-    case CO::MISS_NONCONTIG:  g_c_miss_noncontig.fetch_add(1, std::memory_order_relaxed); break;
-    case CO::MISS_INELIGIBLE: g_c_miss_ineligible.fetch_add(1, std::memory_order_relaxed); break;
+    case CO::HIT:
+      g_c_hit.fetch_add(1, std::memory_order_relaxed);
+      if (out_len) *out_len = outlen;
+      if (out_extra) *out_extra = outextra;
+      return 0;
+    case CO::MISS_ABSENT:     g_c_miss_absent.fetch_add(1, std::memory_order_relaxed);     return 1;
+    case CO::MISS_NOVISIBLE:  g_c_miss_novisible.fetch_add(1, std::memory_order_relaxed);  return 2;
+    case CO::MISS_NONCONTIG:  g_c_miss_noncontig.fetch_add(1, std::memory_order_relaxed);  return 3;
+    case CO::MISS_INELIGIBLE: g_c_miss_ineligible.fetch_add(1, std::memory_order_relaxed); return 4;
   }
+  return 1;
+}
+
+void accel_note_construct(int matched) noexcept {
+  (matched ? g_c_construct_ok : g_c_construct_bad).fetch_add(1, std::memory_order_relaxed);
 }

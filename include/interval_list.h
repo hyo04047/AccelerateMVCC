@@ -69,6 +69,10 @@ namespace mvcc {
         uint32_t pk_len = 0;
         unsigned char *pk = nullptr;
         uint8_t delete_mark = 0;
+        // D-4 4d: img is the FULL physical record (header+data); extra_len = header size, so the
+        // data origin (a servable rec_t) is at img + extra_len. Lets consult hand back a record the
+        // read path can parse with rec_get_offsets.
+        uint32_t extra_len = 0;
 
         undo_entry_node(uint64_t version_trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset,
                         uint64_t writer_trx_id)

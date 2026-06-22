@@ -47,20 +47,28 @@ void accel_shutdown() noexcept;
 void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_t old_trx_id,
                    uint64_t space_id, uint64_t page_no, uint64_t offset, uint64_t op_type,
                    const unsigned char *img, uint64_t img_len,
-                   const unsigned char *pk, uint64_t pk_len, uint64_t delete_mark) noexcept;
+                   const unsigned char *pk, uint64_t pk_len, uint64_t delete_mark,
+                   uint64_t extra_len) noexcept;
 
-// D-4 4b-3b: SHADOW consult. Called from row_vers_build_for_consistent_read on the NON-locking
-// consistent-read path, AFTER InnoDB rebuilt the visible version, with: the row key (table_id +
-// pk_hash + full PK bytes extracted exactly like the populate hook), the reader's ReadView fields
-// (up/low limit, creator, sorted m_ids), the live row's last writer (DB_TRX_ID of the top record),
-// and vanilla's rebuilt bytes (data payload + length). It asks the cache what it would serve and
-// byte-compares against vanilla, counting match/mismatch/miss -- the result is NOT used (InnoDB
-// returns its own). Pass vanilla=nullptr/vanilla_len=0 when vanilla found no visible version.
-void accel_consult_shadow(uint64_t table_id, uint64_t pk_hash,
-                          const unsigned char *pk, uint64_t pk_len,
-                          uint64_t up_limit_id, uint64_t low_limit_id, uint64_t creator_trx_id,
-                          const uint64_t *m_ids, uint64_t m_ids_n,
-                          uint64_t live_top_writer, uint64_t live_schema_epoch,
-                          const unsigned char *vanilla, uint64_t vanilla_len) noexcept;
+// D-4 4d-prep: consult FETCH (shadow). Called from row_vers_build_for_consistent_read on the
+// NON-locking consistent-read path with the row key (table_id + pk_hash + full PK bytes extracted
+// exactly like the populate hook), the reader's ReadView fields, the live row's last writer, and the
+// reader's schema epoch. Returns the consult outcome (0=HIT, 1=MISS_ABSENT, 2=MISS_NOVISIBLE,
+// 3=MISS_NONCONTIG, 4=MISS_INELIGIBLE) and bumps the outcome counters. On HIT it copies the cached
+// FULL physical record into out_buf UNDER the EBR Guard (data origin at out_buf+*out_extra,
+// *out_len = full rec length). The caller (InnoDB domain) then builds a rec_t from it and compares
+// to vanilla -- the cache result is NOT served yet (4d-prep proves the construction in shadow).
+int accel_consult_fetch(uint64_t table_id, uint64_t pk_hash,
+                        const unsigned char *pk, uint64_t pk_len,
+                        uint64_t up_limit_id, uint64_t low_limit_id, uint64_t creator_trx_id,
+                        const uint64_t *m_ids, uint64_t m_ids_n,
+                        uint64_t live_top_writer, uint64_t live_schema_epoch,
+                        unsigned char *out_buf, unsigned int out_cap,
+                        unsigned int *out_len, unsigned int *out_extra) noexcept;
+
+// D-4 4d-prep: the caller reports whether the rec_t it built from the fetched image matched vanilla's
+// rebuilt *old_vers (data bytes + delete flag + valid offsets). matched!=0 -> construct_ok else
+// construct_bad. The gate is construct_bad==0 with construct_ok == HIT count.
+void accel_note_construct(int matched) noexcept;
 
 #endif  // ACCEL_HOOK_H

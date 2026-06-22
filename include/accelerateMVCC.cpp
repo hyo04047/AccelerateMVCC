@@ -38,7 +38,8 @@ mvcc::Accelerate_mvcc::Accelerate_mvcc(uint64_t record_count, uint32_t kuku_log2
 bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
                                    uint64_t version_trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset,
                                    const unsigned char *img, uint32_t img_len, uint64_t writer_trx_id,
-                                   const unsigned char *pk, uint32_t pk_len, uint8_t delete_mark) {
+                                   const unsigned char *pk, uint32_t pk_len, uint8_t delete_mark,
+                                   uint32_t extra_len) {
     kuku::item_type item = kuku::make_item(table_id, index);
 
     // D-4 (4b-0): writer_trx_id==0 means "standalone: the writer IS the version's own creator".
@@ -62,6 +63,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
         undo_entry->pk_len = pk_len;
     }
     undo_entry->delete_mark = delete_mark;
+    undo_entry->extra_len = extra_len;   // D-4 4d: header size within img (full physical rec)
     uint64_t epoch_num = get_epoch_num(version_trx_id);
 
     kuku::QueryResult query = kuku_table->query(item);
@@ -278,7 +280,7 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
                                const uint64_t *m_ids, std::size_t m_ids_n,
                                uint64_t live_top_writer,
                                unsigned char *out_img, uint32_t out_cap, uint32_t *out_len,
-                               bool require_full_pk, uint64_t live_schema_epoch) {
+                               bool require_full_pk, uint64_t live_schema_epoch, uint32_t *out_extra) {
     // D-4 4c-2: instant-DDL safety. live_schema_epoch = the READER's table current_row_version. If
     // that table has had any instant ADD/DROP COLUMN (>0), a cached raw-byte image may decode wrong
     // under the changed layout, so we do not trust the cache for this table at all -> MISS (the table
@@ -349,6 +351,7 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
         if (best->img_len == 0 || best->img_len > out_cap) return ConsultOutcome::MISS_INELIGIBLE;
         for (uint32_t i = 0; i < best->img_len; ++i) out_img[i] = best->img[i];  // copy UNDER the Guard
         if (out_len != nullptr) *out_len = best->img_len;
+        if (out_extra != nullptr) *out_extra = best->extra_len;
     }
     return ConsultOutcome::HIT;
 }

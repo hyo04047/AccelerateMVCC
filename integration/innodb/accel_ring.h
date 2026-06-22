@@ -48,9 +48,11 @@ struct UndoRec {
   uint64_t op_type;
   uint32_t delete_mark;              // D-4 4b-1: REC_INFO_DELETED_FLAG of the captured version (0/1)
   uint32_t pk_len;                   // D-4 4b-1: full-PK byte length (0 = over cap/absent -> MISS)
+  uint32_t extra_len;                // D-4 4d: record header (extra) size; img is the FULL physical
+                                     // rec [phys .. phys+img_len), data origin at img+extra_len.
   unsigned char pk[ACCEL_PK_MAX];    // D-4 4b-1: full clustered-PK identity bytes (length-prefixed)
   uint32_t img_len;                  // 0 = no image captured (row too big / ineligible)
-  unsigned char img[ACCEL_IMG_MAX];  // full-row image; only the first img_len bytes are valid. LAST.
+  unsigned char img[ACCEL_IMG_MAX];  // D-4 4d: FULL physical record (header+data); first img_len valid. LAST.
 };
 
 // D-1b-4 hardening: the under-latch publish must be an allocation-free copy (no ctor/heap work

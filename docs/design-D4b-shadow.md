@@ -261,3 +261,20 @@ hit율 불변). coverage는 BP 크기와 무관(hit율은 "버전이 캐시에 c
    byte-위험 negative control은 staging(미커밋 writer interleaving) 난이도로 best-effort.
 3. 위는 **coverage(hit율)** 측정 — **실제 I/O/지연 감소(성능)** 는 4d(walk skip)+⑥(작은 BP에서 D-0
    0.49s/75s 곡선 평탄화)에서 측정. coverage~100%는 "4d면 깊은 읽기 거의 다 skip"의 필요조건.
+
+## 12. 4d-prep — authoritative record 합성 증명 (세션 6, shadow)
+4d(authoritative)의 위험한 부분은 "walk skip"이 아니라 **캐시로부터 InnoDB가 소비할 version record를
+합성해 반환**하는 것. 4b shadow는 데이터 바이트만 비교했지 servable record를 만든 적이 없음. 4d-prep은
+그 합성을 **shadow로 증명**(서빙은 안 함 = 리스크 0):
+- **캡처 변경**: data payload → **전체 물리 레코드**(`rec - rec_offs_extra_size`, 길이 `rec_offs_size`) +
+  `extra_len`(헤더 크기). ring/노드/insert/consult에 `extra_len` 플럼빙(`accel_consult_fetch`가 image+extra 반환).
+- **합성 증명(row0vers)**: HIT면 캐시 full-rec를 로컬 버퍼로 받아 `crec = buf+extra`로 `rec_get_offsets`
+  파싱 → vanilla `*old_vers`와 (a) data_size 동일 (b) `memcmp` data 동일 (c) `rec_get_deleted_flag` 동일
+  검증. `accel_note_construct`로 카운트. **서빙 안 함**(vanilla 답 반환). EBR Guard가 image 복사까지 span.
+- **결과(`build_d4d_prep.sh`, 4G BP, held-snapshot reader ‖ churn)**: `calls=12999 hit=12998
+  miss{noncontig=1} construct_ok=12998 construct_BAD=0`. → 모든 HIT에서 캐시-합성 rec가 vanilla 재구성본의
+  유효한 byte-동일 대체물(파싱 OK·data 동일·delete flag 동일). standalone 32 green.
+- **다음(4d authoritative 스위치)**: consult를 함수 상단으로 이동 → HIT면 `*old_vers = rec_copy(in_heap에
+  캐시 full-rec)` 후 walk loop skip + `return DB_SUCCESS`. correctness는 4d-prep로 증명됐으니 순수 perf.
+  debug 빌드엔 walk+compare assert 유지. heap_no 등 page-relative 헤더 필드는 소비 경로가 안 읽음(version
+  rec는 standalone) — 4d 켜기 전 그 invariant만 코드로 재확인. → ⑥ D-0 곡선 평탄화 측정.

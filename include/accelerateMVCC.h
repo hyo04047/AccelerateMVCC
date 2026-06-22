@@ -174,7 +174,8 @@ namespace mvcc
         // version_trx_id" -- the standalone prototype, where each insert IS the version's own writer.
         bool insert(uint64_t table_id, uint64_t index, uint64_t version_trx_id, uint64_t space_id, uint64_t page_id, uint64_t offset,
                     const unsigned char *img = nullptr, uint32_t img_len = 0, uint64_t writer_trx_id = 0,
-                    const unsigned char *pk = nullptr, uint32_t pk_len = 0, uint8_t delete_mark = 0);
+                    const unsigned char *pk = nullptr, uint32_t pk_len = 0, uint8_t delete_mark = 0,
+                    uint32_t extra_len = 0);
 
         bool search(uint64_t table_id, uint64_t index,
             uint64_t trx_id, uint64_t& space_id, uint64_t& page_id, uint64_t& offset,
@@ -205,7 +206,7 @@ namespace mvcc
                                uint64_t live_top_writer,
                                unsigned char *out_img = nullptr, uint32_t out_cap = 0,
                                uint32_t *out_len = nullptr, bool require_full_pk = true,
-                               uint64_t live_schema_epoch = 0);
+                               uint64_t live_schema_epoch = 0, uint32_t *out_extra = nullptr);
 
         static uint64_t get_epoch_num(uint64_t trx_id) {
             return trx_id / EPOCH_SIZE;
