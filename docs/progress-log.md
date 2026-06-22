@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-06-22 — 세션 6: D-4 ④ 읽기연결 4a+4b(SHADOW consult) 완료 — wrong-result 관문 통과(hit_MISMATCH=0)
+
+> 핸드오프대로 맥락 복원 + 3게이트 검증(HEAD 189c172, 20→24 correctness green, build_d2img enq==drained) 후 **④ 읽기연결** 진행. "우리 in-memory cache가 디스크 MVCC를 consistent하게 반영하나"를 shadow byte 비교로 실측 입증.
+
+**4a ✅ (`1a79b83`)**: InnoDB `ReadView::changes_visible` 4분기(up/low_limit·creator·m_ids)를 `include/read_view_mirror.h`에 정확 미러 + search의 ad-hoc max-trx_id predicate 교체. 오프라인 단위테스트 `ReadViewMirror.*`. 읽기전용 reader에선 기존과 동치라 20 correctness 불변(24 green).
+
+**4b ✅ SHADOW consult (`dcbd81f`·`0ba4781`·`4cda4f5`·`3f4ac95`·`5540ba7`·`ed3f757`)**: 적대적 설계 리뷰(워크플로 wf_16b038a8, verify 단계 hang→journal에서 6 find/84 verdict 직접 종합)로 must-fix 6개 도출 후 하위증분 구현. **4b-0** 노드 키 version_trx_id(=old DB_TRX_ID)/writer_trx_id 분리(consume 버그 교정). **4b-1** full-PK 식별 바이트+delete-mark + 캡처 윈도우 `rec_offs_data_size`(M1). **4b-2** per-key contiguity bookkeeping(per-key arrival은 row X-lock+FIFO ring으로 version 순서 → gap의 유일 원천=ring drop, linkage로 검출). **4b-3a** `Accelerate_mvcc::consult()`(full-PK+changes_visible+contiguity, EBR Guard가 image 복사까지 span=M2)+오프라인 6 테스트. **4b-3b** `row0vers.cc`에 SHADOW 배선+byte 비교 — **calls=13000 hit_match=12998 hit_MISMATCH=0 noncontig=2**. **4b-3c** 매트릭스(60s LLT 29998/30000·rollback 0오답·충돌·동시성 ASan/TSan)+오프라인 negative control. standalone 32 green.
+
+**불변식**: consult=LOCATOR/HINT — 모든 결과 HIT(=vanilla byte) 또는 MISS(full walk), silent wrong result 구조적 불가. shadow=동작 불변. 설계·결과 [design-D4b-shadow.md](design-D4b-shadow.md). 재현 `build_test_4b3.sh`·`build_d4b3b.sh`·`build_d4b3c.sh`. **다음 = 4c**(캐싱 제외 게이트) → 4d authoritative → ⑤ purge-view GC → ⑥ D-0 곡선 평탄화 측정.
+
+---
+
 ## 2026-06-21 — 세션 5: D-1b 재검증 + D-2/D-3 적대적 리뷰 + D-0 비용 분해 → 방향=version 캐시 확정
 
 > 새 세션 재개. 핸드오프대로 맥락 복원 → 검증 → D-2 설계 진입. **방향 전환**: consult-as-locator(roll_ptr 점프)로는 D-0 평탄화가 안 됨을 적대적 리뷰+측정으로 확정 → **version-level materialized cache**로 재정의.

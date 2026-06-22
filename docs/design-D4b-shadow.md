@@ -1,8 +1,9 @@
 # D-4 ④ 읽기 연결 — 4b SHADOW consult 설계 (적대적 리뷰 대상)
 
-> 상태: 4a(changes_visible 미러 + search predicate 교체) ✅ 커밋 `1a79b83`. 이 문서는 **4b(SHADOW
-> consult)** 의 구체 설계로, 코딩 전 적대적 멀티에이전트 리뷰에 건다. 배경/ACID 종합 = 레포 밖
-> `d4_acid_synth.txt`(22 confirmed). 캡처 방식 = **write-path**(design-D §13에서 확정, 구현 ③ 완료).
+> 상태: **4a✅·4b✅ 완료(세션 6)** — SHADOW consult 전부 구현·검증, **hit_MISMATCH=0**. 4b-0 `dcbd81f`
+> · 4b-1 `0ba4781` · 4b-2 `4cda4f5` · 4b-3a `3f4ac95` · 4b-3b `5540ba7` · 4b-3c `ed3f757`(4a `1a79b83`).
+> 결과 = §10. 배경/ACID 종합 = 레포 밖 `d4_acid_synth.txt`(22 confirmed). 캡처 방식 = **write-path**
+> (design-D §13에서 확정, 구현 ③ 완료). **다음 = 4c**(캐싱 제외 게이트) → 4d authoritative.
 
 ## 0. 목표 (이 증분의 DoD)
 InnoDB consistent read가 walk로 재구성한 visible 버전(`*old_vers`)과, 우리가 **쓰기 시점에 캡처한
@@ -217,3 +218,19 @@ version/writer/pk/img는 set-once 후 chain publication(기존 `header->next`/`l
 - 검증: standalone 24 green(구조 추가만, 동작 불변) + mysqld populate enq==drained·dropped=0. drop 주입
   (작은 ring으로 강제 drop)해서 gap 발생 시 contiguity가 reset되는지 카운터로 확인(거짓 contiguous=0).
   단, drop 주입 케이스는 4b-3 consult 카운터에서 더 자연스럽게 검증되므로 4b-2에선 로그 레벨로만.
+
+## 10. 4b 결과 (세션 6, 완료) — 모든 hit_MISMATCH=0
+consult가 고른 버전이 InnoDB 재구성 visible 버전과 byte-동일; 안 맞은 건 전부 안전 MISS(full walk).
+- **standalone (Release/ASan/TSan, 32 tests green)**: `ReadViewMirror.*`(4분기 경계) · `Consult.*` —
+  HIT+image 일치, drainer-lag/interior-drop→MISS, 충돌 full-PK 필터, no-visible, ineligible, 동시성
+  consult‖insert race/UAF 0, **negative control**(full-PK OFF면 cross-row 오답 = 가드 작동 증명).
+- **mysqld (4G BP, held-snapshot reader ‖ churn)**: 평상 `calls=13000 hit_match=12998 hit_MISMATCH=0
+  noncontig=2`; **60s LLT** `29998/30000, mismatch 0`(~1800 versions/row); **rollback 폭풍**
+  `hit_match=616 mismatch 0 noncontig=13384`(롤백→live-top 되돌아가 contiguity 불일치→안전 MISS);
+  **강제 충돌**(ACCEL_PK_MASK_BITS=6) full-PK ON/OFF 둘 다 mismatch 0이나 contiguity가 먼저 전부 MISS
+  → mysqld 음성대조는 **vacuous**(리뷰 M6 함정) → negative control은 오프라인으로.
+- **must-fix 처리**: M1(data-payload 비교 윈도우)✅·M2(EBR Guard가 image 복사까지 span)✅·M3(contiguity/노드
+  필드 atomic; consult는 GC용 min/max/count 안 읽음)✅·M4(full-PK, consult FNV=populate 동일)✅·M5(version/
+  writer 분리)✅·M6(동시 consult TSan·결정적 negative control)✅.
+- **재현**: `build_test_4b3.sh`(standalone 32)·`build_d4b3b.sh`(shadow)·`build_d4b3c.sh`(매트릭스). row0vers/
+  read0types/trx0rec 패치는 build script가 멱등 적용(MySQL 소스라 repo에 vendor 안 함).
