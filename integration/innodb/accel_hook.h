@@ -71,4 +71,18 @@ int accel_consult_fetch(uint64_t table_id, uint64_t pk_hash,
 // construct_bad. The gate is construct_bad==0 with construct_ok == HIT count.
 void accel_note_construct(int matched) noexcept;
 
+// D-4 4d-2: authoritative SERVE mode, read once from ACCEL_AUTHORITATIVE at accel_init.
+//   0 = OFF (shadow; the walk's vanilla answer is served, cache only compared).
+//   1 = serve-only: on HIT the caller builds *old_vers from the cached image and SKIPS the walk
+//       (the performance path -- this is what flattens the D-0 curve).
+//   2 = verify-serve: the caller still walks to rebuild vanilla, byte-compares, and ONLY then serves
+//       the cache-built record (proves every served answer == vanilla; no walk-skip, no perf gain).
+// The caller gates serving on n_v_cols==0 (virtual-column rows are never cached, 4c-1) and, in mode 2,
+// on the byte-compare matching (mismatch -> keep vanilla -> never a wrong row).
+int accel_authoritative_mode() noexcept;
+
+// D-4 4d-2: the caller reports it actually served a cache-built record for this consult HIT. The gate
+// for a serve run is served == HIT count (every HIT served), with construct_bad==0 in mode 2.
+void accel_note_serve() noexcept;
+
 #endif  // ACCEL_HOOK_H

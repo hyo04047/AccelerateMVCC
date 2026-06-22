@@ -46,6 +46,8 @@ std::atomic<uint64_t> g_c_miss_ineligible{0};
 // rebuilt *old_vers (data + delete flag + valid offsets)? Gate: construct_bad==0, construct_ok==hit.
 std::atomic<uint64_t> g_c_construct_ok{0};
 std::atomic<uint64_t> g_c_construct_bad{0};
+// D-4 4d-2: cache-built records actually SERVED (returned to InnoDB in place of the walked version).
+std::atomic<uint64_t> g_c_serve{0};
 
 // D-4 4b-3c TEST-ONLY toggles, read once from the environment at accel_init (set before g_ready is
 // released, so the live hook/consult see them after their acquire of g_ready). Default off = prod.
@@ -56,6 +58,10 @@ std::atomic<uint64_t> g_c_construct_bad{0};
 uint64_t g_pk_mask = 0;     // 0 = off; else (1<<bits)-1
 bool g_no_full_pk = false;
 bool g_no_schema_check = false;  // D-4 4c-2 negative control: consult ignores the schema_epoch tag
+// D-4 4d-2 authoritative SERVE mode (0=off/shadow, 1=serve-only/skip-walk, 2=verify-serve). Read once
+// at accel_init before g_ready is released; the live consult path acquires g_ready first, so a reader
+// thread sees this write before it ever acts on the mode. Default 0 = shadow (safe).
+int g_authoritative_mode = 0;
 
 // D-1b-3a: the real AccelerateMVCC index lives inside mysqld now. record_count=0 -> no ctor
 // pre-creation (keys are created dynamically). BG GC is intentionally NOT started (populate-only;
@@ -125,6 +131,10 @@ void accel_init() noexcept {
   if (const char *ns = std::getenv("ACCEL_NO_SCHEMA_CHECK")) {
     if (ns[0] == '1') g_no_schema_check = true;
   }
+  if (const char *au = std::getenv("ACCEL_AUTHORITATIVE")) {
+    if (au[0] == '1') g_authoritative_mode = 1;        // serve-only (skip the walk)
+    else if (au[0] == '2') g_authoritative_mode = 2;   // verify-serve (walk + compare, then serve)
+  }
   try {
     g_accel = new mvcc::Accelerate_mvcc(0, 16);  // dynamic keys, 64k-bin cuckoo, BG GC NOT started
     g_drainer = std::thread(drain_loop);
@@ -153,11 +163,12 @@ void accel_shutdown() noexcept {
   // construct_bad=0 and construct_ok==hit (a cache-built record is a valid servable substitute).
   std::fprintf(stderr,
                "[accel] consult: calls=%llu hit=%llu miss{absent=%llu novisible=%llu noncontig=%llu "
-               "ineligible=%llu} | construct_ok=%llu construct_BAD=%llu\n",
+               "ineligible=%llu} | construct_ok=%llu construct_BAD=%llu | auth_mode=%d served=%llu\n",
                (unsigned long long)g_c_calls.load(), (unsigned long long)g_c_hit.load(),
                (unsigned long long)g_c_miss_absent.load(), (unsigned long long)g_c_miss_novisible.load(),
                (unsigned long long)g_c_miss_noncontig.load(), (unsigned long long)g_c_miss_ineligible.load(),
-               (unsigned long long)g_c_construct_ok.load(), (unsigned long long)g_c_construct_bad.load());
+               (unsigned long long)g_c_construct_ok.load(), (unsigned long long)g_c_construct_bad.load(),
+               g_authoritative_mode, (unsigned long long)g_c_serve.load());
   delete g_accel;  // drainer joined -> sole owner; dtor is a no-op for BG GC (never started)
   g_accel = nullptr;
 }
@@ -243,3 +254,9 @@ int accel_consult_fetch(uint64_t table_id, uint64_t pk_hash,
 void accel_note_construct(int matched) noexcept {
   (matched ? g_c_construct_ok : g_c_construct_bad).fetch_add(1, std::memory_order_relaxed);
 }
+
+// D-4 4d-2: authoritative serve mode + serve counter (see accel_hook.h). g_authoritative_mode is
+// published before g_ready's release-store in accel_init; the consult path's g_ready acquire-load
+// happens-before this read on the same reader thread, so no separate atomic is needed.
+int accel_authoritative_mode() noexcept { return g_authoritative_mode; }
+void accel_note_serve() noexcept { g_c_serve.fetch_add(1, std::memory_order_relaxed); }
