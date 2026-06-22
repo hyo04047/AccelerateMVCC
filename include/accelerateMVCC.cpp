@@ -278,7 +278,16 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
                                const uint64_t *m_ids, std::size_t m_ids_n,
                                uint64_t live_top_writer,
                                unsigned char *out_img, uint32_t out_cap, uint32_t *out_len,
-                               bool require_full_pk) {
+                               bool require_full_pk, uint64_t live_schema_epoch) {
+    // D-4 4c-2: instant-DDL safety. live_schema_epoch = the READER's table current_row_version. If
+    // that table has had any instant ADD/DROP COLUMN (>0), a cached raw-byte image may decode wrong
+    // under the changed layout, so we do not trust the cache for this table at all -> MISS (the table
+    // loses acceleration; instant DDL is rare). Conservative but correct: a post-DDL reader always
+    // MISSes; a pre-DDL reader (era 0, the common case) is unaffected. ~0 is a test-only sentinel
+    // (negative control) that disables the gate. The image was captured at the version's own era, but
+    // since a reader reconstructs against the CURRENT layout, the reader's era is the safe signal.
+    if (live_schema_epoch != ~uint64_t(0) && live_schema_epoch != 0)
+        return ConsultOutcome::MISS_INELIGIBLE;
     kuku::item_type item = kuku::make_item(table_id, pk_hash);
     kuku::QueryResult query = kuku_table->query(item);
     if (!query.found()) return ConsultOutcome::MISS_ABSENT;

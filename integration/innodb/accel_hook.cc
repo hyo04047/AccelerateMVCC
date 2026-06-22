@@ -53,6 +53,7 @@ std::atomic<uint64_t> g_c_vanilla_null{0};
 //     then serves a cross-row image -> the shadow MUST report mismatches).
 uint64_t g_pk_mask = 0;     // 0 = off; else (1<<bits)-1
 bool g_no_full_pk = false;
+bool g_no_schema_check = false;  // D-4 4c-2 negative control: consult ignores the schema_epoch tag
 
 // D-1b-3a: the real AccelerateMVCC index lives inside mysqld now. record_count=0 -> no ctor
 // pre-creation (keys are created dynamically). BG GC is intentionally NOT started (populate-only;
@@ -117,6 +118,9 @@ void accel_init() noexcept {
   }
   if (const char *nf = std::getenv("ACCEL_NO_FULL_PK")) {
     if (nf[0] == '1') g_no_full_pk = true;
+  }
+  if (const char *ns = std::getenv("ACCEL_NO_SCHEMA_CHECK")) {
+    if (ns[0] == '1') g_no_schema_check = true;
   }
   try {
     g_accel = new mvcc::Accelerate_mvcc(0, 16);  // dynamic keys, 64k-bin cuckoo, BG GC NOT started
@@ -195,7 +199,7 @@ void accel_consult_shadow(uint64_t table_id, uint64_t pk_hash,
                           const unsigned char *pk, uint64_t pk_len,
                           uint64_t up_limit_id, uint64_t low_limit_id, uint64_t creator_trx_id,
                           const uint64_t *m_ids, uint64_t m_ids_n,
-                          uint64_t live_top_writer,
+                          uint64_t live_top_writer, uint64_t live_schema_epoch,
                           const unsigned char *vanilla, uint64_t vanilla_len) noexcept {
   // D-4 4b-3b: SHADOW. Runs on InnoDB reader threads at the consistent-read version-build site,
   // AFTER vanilla rebuilt the visible version. We ask our cache what it would serve and byte-compare
@@ -204,6 +208,7 @@ void accel_consult_shadow(uint64_t table_id, uint64_t pk_hash,
   if (!g_ready.load(std::memory_order_acquire) || g_accel == nullptr) return;
   g_c_calls.fetch_add(1, std::memory_order_relaxed);
   if (g_pk_mask) pk_hash &= g_pk_mask;   // test-only: same mask as populate so collisions line up
+  const uint64_t sch = g_no_schema_check ? ~uint64_t(0) : live_schema_epoch;  // ~0 = skip schema gate
   using CO = mvcc::Accelerate_mvcc::ConsultOutcome;
   unsigned char buf[accel::ACCEL_IMG_MAX];
   uint32_t outlen = 0;
@@ -213,7 +218,7 @@ void accel_consult_shadow(uint64_t table_id, uint64_t pk_hash,
                          up_limit_id, low_limit_id, creator_trx_id,
                          m_ids, static_cast<std::size_t>(m_ids_n), live_top_writer,
                          (vanilla != nullptr) ? buf : nullptr, sizeof(buf), &outlen,
-                         /*require_full_pk=*/!g_no_full_pk);
+                         /*require_full_pk=*/!g_no_full_pk, sch);
   } catch (...) { return; }  // defensive: consult does not allocate/throw, but the facade is noexcept
 
   if (vanilla == nullptr) {

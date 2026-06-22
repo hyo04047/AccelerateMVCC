@@ -204,7 +204,8 @@ namespace mvcc
                                const uint64_t *m_ids, std::size_t m_ids_n,
                                uint64_t live_top_writer,
                                unsigned char *out_img = nullptr, uint32_t out_cap = 0,
-                               uint32_t *out_len = nullptr, bool require_full_pk = true);
+                               uint32_t *out_len = nullptr, bool require_full_pk = true,
+                               uint64_t live_schema_epoch = 0);
 
         static uint64_t get_epoch_num(uint64_t trx_id) {
             return trx_id / EPOCH_SIZE;

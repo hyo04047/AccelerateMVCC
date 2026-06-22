@@ -253,6 +253,11 @@ hit율 불변). coverage는 BP 크기와 무관(hit율은 "버전이 캐시에 c
    그 행들은 walk I/O 문제가 그대로 남는다(MISS=문제 회귀, +공유 BP pollution 외부효과). 최종 검증은
    **LOB 비중이 있는 워크로드에서 hit율·실제 I/O 감소를 측정**할 것. 필요하면 LOB 본문까지 캡처해 coverage
    확대(InnoDB 깊은 작업).
-2. **instant-DDL 테이블**: 거친 제외(가속 포기). 드물어 우선순위 낮음.
+2. **instant-DDL 테이블 (4c-2 ✅)**: consult-side 거친 게이트 — reader의 테이블 `current_row_version>0`이면
+   MISS(가속 포기). 진단: per-entry 캡처-epoch는 틀린 신호(consult는 reader-era 값을 봄: populate_max=1
+   but consult_live_max=0 — held-snapshot reader가 pre-ALTER 정의를 쥠) → reader-era 신호로 전환.
+   검증(ALTER 먼저→post-ALTER reader): gate ON t_alt 6500 ineligible-MISS·t_norm 6500 HIT·mismatch 0,
+   gate OFF t_alt도 HIT(E↔F 차=t_alt 6500=게이트 발화 직접 증거). 드물어 우선순위 낮음. real cross-era
+   byte-위험 negative control은 staging(미커밋 writer interleaving) 난이도로 best-effort.
 3. 위는 **coverage(hit율)** 측정 — **실제 I/O/지연 감소(성능)** 는 4d(walk skip)+⑥(작은 BP에서 D-0
    0.49s/75s 곡선 평탄화)에서 측정. coverage~100%는 "4d면 깊은 읽기 거의 다 skip"의 필요조건.

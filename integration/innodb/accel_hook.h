@@ -60,7 +60,7 @@ void accel_consult_shadow(uint64_t table_id, uint64_t pk_hash,
                           const unsigned char *pk, uint64_t pk_len,
                           uint64_t up_limit_id, uint64_t low_limit_id, uint64_t creator_trx_id,
                           const uint64_t *m_ids, uint64_t m_ids_n,
-                          uint64_t live_top_writer,
+                          uint64_t live_top_writer, uint64_t live_schema_epoch,
                           const unsigned char *vanilla, uint64_t vanilla_len) noexcept;
 
 #endif  // ACCEL_HOOK_H
