@@ -277,7 +277,8 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
                                uint64_t up_limit_id, uint64_t low_limit_id, uint64_t creator_trx_id,
                                const uint64_t *m_ids, std::size_t m_ids_n,
                                uint64_t live_top_writer,
-                               unsigned char *out_img, uint32_t out_cap, uint32_t *out_len) {
+                               unsigned char *out_img, uint32_t out_cap, uint32_t *out_len,
+                               bool require_full_pk) {
     kuku::item_type item = kuku::make_item(table_id, pk_hash);
     kuku::QueryResult query = kuku_table->query(item);
     if (!query.found()) return ConsultOutcome::MISS_ABSENT;
@@ -305,13 +306,16 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
         if (!MarkedPtr<epoch_node>::mark_of(w)) {   // skip logically-deleted epochs (read-only, no help-splice)
             for (undo_entry_node *u = epoch->first_entry; u != nullptr; u = u->next_entry.load()) {
                 // Full-PK identity check (pk_hash is only a bucket hint). pk_len==0 = locator-only
-                // entry whose identity we cannot prove -> skip.
-                if (u->pk_len == 0 || u->pk_len != pk_len) continue;
-                bool pk_eq = true;
-                for (uint32_t i = 0; i < pk_len; ++i) {
-                    if (u->pk[i] != pk[i]) { pk_eq = false; break; }
+                // entry whose identity we cannot prove -> skip. (require_full_pk=false = test-only
+                // negative control: accept any entry so a forced collision yields a cross-row hit.)
+                if (require_full_pk) {
+                    if (u->pk_len == 0 || u->pk_len != pk_len) continue;
+                    bool pk_eq = true;
+                    for (uint32_t i = 0; i < pk_len; ++i) {
+                        if (u->pk[i] != pk[i]) { pk_eq = false; break; }
+                    }
+                    if (!pk_eq) continue;
                 }
-                if (!pk_eq) continue;
                 any_pk_match = true;
                 if (changes_visible(u->version_trx_id, up_limit_id, low_limit_id, creator_trx_id,
                                     m_ids, m_ids_n)) {

@@ -158,6 +158,64 @@ TEST(Consult, MissIneligibleWhenImageRequestedButAbsent) {
     EXPECT_EQ(o, CO::HIT);
 }
 
+// NEGATIVE CONTROL (review M6: a control is only meaningful if it actually reaches the byte-compare).
+// Bucket H holds ONLY row A's contiguous versions; a query for a DIFFERENT row B that collides on the
+// hash bucket must MISS with the full-PK guard ON. With the guard OFF, the SAME query reaches a HIT
+// and is served row A's image -- proving (a) full-PK identity is what prevents the cross-row wrong
+// result, and (b) this test can actually catch such a bug. (The mysqld hash-mask scenario can't show
+// this: there the per-bucket contiguity gate MISSes first, so the control is vacuous -- done here.)
+TEST(Consult, NegControlFullPkOffServesCrossRow) {
+    Accelerate_mvcc m(0, 10);
+    const uint64_t H = 3; std::vector<unsigned char> pkA{1}, pkB{2};
+    ins_ver(m, H, 10, 20, pkA, {0xAA}); ins_ver(m, H, 20, 30, pkA, {0xAB}); ins_ver(m, H, 30, 40, pkA, {0xAC});
+    unsigned char buf[8]; uint32_t bl = 0;
+    // guard ON: pkB is absent in the bucket -> safe MISS (never serves row A's bytes).
+    CO on = m.consult(1, H, pkB.data(), 1, 5, 35, 0, nullptr, 0, 40, buf, sizeof(buf), &bl, /*require_full_pk=*/true);
+    EXPECT_EQ(on, CO::MISS_ABSENT);
+    // guard OFF: identity ignored -> matches row A's entries -> wrong cross-row HIT serving A's v30.
+    CO off = m.consult(1, H, pkB.data(), 1, 5, 35, 0, nullptr, 0, 40, buf, sizeof(buf), &bl, /*require_full_pk=*/false);
+    EXPECT_EQ(off, CO::HIT);
+    EXPECT_EQ(bl, 1u); EXPECT_EQ(buf[0], 0xAC);
+}
+
+// D-4 (4b-3c): consult (many reader threads) || insert (one drainer-like thread) on the SAME hot
+// key. The point is to exercise the concurrent surface the shadow adds -- the gate is ASan/TSan
+// clean + no crash + every HIT returns a non-empty image (no torn/garbage read). Mirrors how EBR /
+// ring concurrency was validated standalone before mysqld.
+TEST(Consult, ConcurrencyInserterVsConsultors) {
+    Accelerate_mvcc m(0, 12);
+    const uint64_t H = 42; std::vector<unsigned char> pk{7, 7, 7, 7};
+    std::atomic<uint64_t> head_writer{0};
+    std::atomic<bool> stop{false};
+    std::atomic<bool> bad{false};
+    const int NV = 4000;
+    std::thread ins([&] {
+        for (int v = 1; v <= NV; ++v) {
+            std::vector<unsigned char> img(8, (unsigned char)(v & 0xFF));
+            m.insert(1, H, (uint64_t)v, v * 10ull, v * 100ull, v * 1000ull,
+                     img.data(), (uint32_t)img.size(), (uint64_t)(v + 1),
+                     pk.data(), (uint32_t)pk.size(), 0);
+            head_writer.store((uint64_t)(v + 1), std::memory_order_release);  // publish AFTER insert
+        }
+        stop.store(true, std::memory_order_release);
+    });
+    auto consultor = [&] {
+        unsigned char buf[64]; uint32_t bl = 0;
+        while (!stop.load(std::memory_order_acquire)) {
+            uint64_t lw = head_writer.load(std::memory_order_acquire);
+            // read view that sees every committed version (m_ids empty) -> candidate = newest
+            CO o = m.consult(1, H, pk.data(), (uint32_t)pk.size(), 0, ~0ull, 0,
+                             nullptr, 0, lw, buf, sizeof(buf), &bl);
+            if (o == CO::HIT && bl == 0) bad.store(true);  // a HIT must carry a real image
+        }
+    };
+    std::vector<std::thread> cs;
+    for (int i = 0; i < 4; ++i) cs.emplace_back(consultor);
+    ins.join();
+    for (auto& t : cs) t.join();
+    EXPECT_FALSE(bad.load());
+}
+
 // ---------------------------------------------------------------------------
 // (a) MVCC visibility: search must return the LATEST committed version that is
 //     visible to the read view (trx_id < snapshot AND not in active list).

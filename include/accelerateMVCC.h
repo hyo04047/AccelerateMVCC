@@ -194,13 +194,17 @@ namespace mvcc
             MISS_NONCONTIG,  // cache cannot prove contiguity to the live row (drainer lag / ring drop)
             MISS_INELIGIBLE  // candidate has no usable image (locator-only / over-cap)
         };
+        // require_full_pk=false is a TEST-ONLY negative control: it skips the full-PK identity check
+        // so a forced pk_hash collision serves a cross-row image -> the shadow byte-compare must then
+        // report mismatches, proving the test can actually catch a wrong selection (and that full-PK
+        // is what prevents it). Production always passes true (the default).
         ConsultOutcome consult(uint64_t table_id, uint64_t pk_hash,
                                const unsigned char *pk, uint32_t pk_len,
                                uint64_t up_limit_id, uint64_t low_limit_id, uint64_t creator_trx_id,
                                const uint64_t *m_ids, std::size_t m_ids_n,
                                uint64_t live_top_writer,
                                unsigned char *out_img = nullptr, uint32_t out_cap = 0,
-                               uint32_t *out_len = nullptr);
+                               uint32_t *out_len = nullptr, bool require_full_pk = true);
 
         static uint64_t get_epoch_num(uint64_t trx_id) {
             return trx_id / EPOCH_SIZE;

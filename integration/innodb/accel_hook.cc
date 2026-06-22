@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -43,6 +44,15 @@ std::atomic<uint64_t> g_c_miss_novisible{0};
 std::atomic<uint64_t> g_c_miss_noncontig{0};
 std::atomic<uint64_t> g_c_miss_ineligible{0};
 std::atomic<uint64_t> g_c_vanilla_null{0};
+
+// D-4 4b-3c TEST-ONLY toggles, read once from the environment at accel_init (set before g_ready is
+// released, so the live hook/consult see them after their acquire of g_ready). Default off = prod.
+//   ACCEL_PK_MASK_BITS=N : mask pk_hash to N low bits at BOTH populate and consult -> forces hash
+//     collisions so the full-PK identity check is actually exercised.
+//   ACCEL_NO_FULL_PK=1   : consult skips the full-PK check (negative control: a forced collision
+//     then serves a cross-row image -> the shadow MUST report mismatches).
+uint64_t g_pk_mask = 0;     // 0 = off; else (1<<bits)-1
+bool g_no_full_pk = false;
 
 // D-1b-3a: the real AccelerateMVCC index lives inside mysqld now. record_count=0 -> no ctor
 // pre-creation (keys are created dynamically). BG GC is intentionally NOT started (populate-only;
@@ -100,6 +110,14 @@ void accel_init() noexcept {
   bool expected = false;
   if (!g_started.compare_exchange_strong(expected, true)) return;  // already inited
   g_stop.store(false, std::memory_order_relaxed);
+  // D-4 4b-3c test toggles (read before g_ready is released below).
+  if (const char *mb = std::getenv("ACCEL_PK_MASK_BITS")) {
+    unsigned long bits = std::strtoul(mb, nullptr, 10);
+    if (bits >= 1 && bits <= 30) g_pk_mask = (uint64_t(1) << bits) - 1;
+  }
+  if (const char *nf = std::getenv("ACCEL_NO_FULL_PK")) {
+    if (nf[0] == '1') g_no_full_pk = true;
+  }
   try {
     g_accel = new mvcc::Accelerate_mvcc(0, 16);  // dynamic keys, 64k-bin cuckoo, BG GC NOT started
     g_drainer = std::thread(drain_loop);
@@ -149,6 +167,7 @@ void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_
   //     InnoDB->accel edge stays one-way and cannot form a cross-domain latch cycle.
   if (op_type != TRX_UNDO_MODIFY) return;           // versions only (defensive; call site filters)
   if (!g_ready.load(std::memory_order_acquire)) return;  // outside live window
+  if (g_pk_mask) pk_hash &= g_pk_mask;               // test-only: force hash collisions
   accel::UndoRec r{table_id, pk_hash, trx_id, old_trx_id, space_id, page_no, offset, op_type};
   // D-4 4b-1: carry the delete-mark explicitly (the data-payload image excludes the record header
   // where REC_INFO_DELETED_FLAG lives) and copy the full-PK identity bytes (alloc-free prefix
@@ -184,6 +203,7 @@ void accel_consult_shadow(uint64_t table_id, uint64_t pk_hash,
   // read-only and copies the image into our stack buffer UNDER its EBR Guard (M2), so nothing escapes.
   if (!g_ready.load(std::memory_order_acquire) || g_accel == nullptr) return;
   g_c_calls.fetch_add(1, std::memory_order_relaxed);
+  if (g_pk_mask) pk_hash &= g_pk_mask;   // test-only: same mask as populate so collisions line up
   using CO = mvcc::Accelerate_mvcc::ConsultOutcome;
   unsigned char buf[accel::ACCEL_IMG_MAX];
   uint32_t outlen = 0;
@@ -192,7 +212,8 @@ void accel_consult_shadow(uint64_t table_id, uint64_t pk_hash,
     o = g_accel->consult(table_id, pk_hash, pk, static_cast<uint32_t>(pk_len),
                          up_limit_id, low_limit_id, creator_trx_id,
                          m_ids, static_cast<std::size_t>(m_ids_n), live_top_writer,
-                         (vanilla != nullptr) ? buf : nullptr, sizeof(buf), &outlen);
+                         (vanilla != nullptr) ? buf : nullptr, sizeof(buf), &outlen,
+                         /*require_full_pk=*/!g_no_full_pk);
   } catch (...) { return; }  // defensive: consult does not allocate/throw, but the facade is noexcept
 
   if (vanilla == nullptr) {
