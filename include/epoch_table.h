@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstring>
 #include <algorithm>
+#include <cassert>
 #include "common.h"
 #include "interval_list.h"
 #include "trxManager.h"
@@ -146,8 +147,13 @@ namespace mvcc {
 
             uint64_t low_limit_id;
             uint64_t dead_up_limit_id;
-            /* 3. Update other deadzone */
-            for (uint64_t i = 1; i < vector.size(); ++i) {
+            /* 3. Update other deadzone.
+               D-5 5-0: clamp at NUM_DEADZONE so the fixed range[2*NUM_DEADZONE] cannot overflow when a
+               real mysqld carries >NUM_DEADZONE active read-views. Stopping early simply drops the
+               highest-id in-middle holes -> keeps more versions = UNDER-reclaim, which is memory-safe
+               by the superset property (never omits a live cut, so never over-prunes an interior
+               version). A tighter coalesce-excess-into-tail is a future memory optimization. */
+            for (uint64_t i = 1; i < vector.size() && zone->len < NUM_DEADZONE; ++i) {
                 low_limit_id = vector.at(i - 1).trx_id;
                 dead_up_limit_id = get_dead_up_limit_id(low_limit_id, vector.at(i).active_trx_ids,
                                                         vector.at(i).trx_id);
@@ -385,6 +391,13 @@ namespace mvcc {
         // reader already detached in 1c-4 falls through without re-counting), then retire via
         // the sole state-gated authority. Idempotent if the node is already marked/unlinked.
         void detach_and_retire_epoch(epoch_node *en) {
+            // D-5 5-0: a head epoch (still current, superseded_ts==UINT64_MAX) must NEVER be GC-retired.
+            // Head-prune (1c-5) is not enabled and head-prepend is a plain store, so retiring a head
+            // would open the two-writer race on header->next. wrapper_prunable already skips heads
+            // (epoch_table.h head check); this asserts that invariant at the single retire entry so a
+            // future change that re-enables head-prune trips here first.
+            assert(en->superseded_ts.load(std::memory_order_acquire) != ~uint64_t(0) &&
+                   "GC must never retire a head epoch (superseded_ts == UINT64_MAX)");
             epoch_node *succ = en->next.ptr();
             en->next.set_mark(succ);                        // no-op if already marked
             unlink_epoch_from_chain(en->header, en, succ);  // no-op if already unlinked
