@@ -16,7 +16,17 @@
 
 **4d ✅ authoritative serve**: **4d-1**(consult를 walk 앞으로 hoist + 캐시 키를 live top rec에서 추출, 여전히 shadow) — construct_BAD=0·construct_ok==hit(12993)로 consult 위치 이동이 정확성-중립임 입증. **4d-2** serve 스위치(env `ACCEL_AUTHORITATIVE`, 기본 0=off=shadow): hook에 2단계 토글+serve counter(`accel_authoritative_mode`/`accel_note_serve`). mode 2(verify-serve = walk+byte-compare 후 캐시 서빙): **served = construct_ok = hit = 12988 · construct_BAD = 0** = 서빙한 답 전부 vanilla와 byte-동일; mode 1(serve-only = walk skip): served = hit = 12985, held-snapshot reader 13 SUM 일관 + **mode 2와 동일 SUM(679715)** = walk-skip 답이 검증 경로와 일치. virtual col 행 serve 제외·mismatch면 vanilla 유지·MISS면 walk fallback·양 모드 enq==drained·dropped=0·snapshot 불변. 재현 `build_d4d1.sh`·`build_d4d2.sh`, 설계·결과 [design-D4b-shadow.md](design-D4b-shadow.md) §13.
 
-**불변식 유지**: 기본 OFF=shadow(평상 동작 불변), serve는 LOCATOR가 아니라 검증된 byte-동일 record, mismatch/MISS는 vanilla/walk fallback = 틀린 서빙 구조적 불가. lock-free·epoch·deadzone·disk-based HTAP 틀 유지. **다음 = ⑥**(작은/큰 BP에서 held-snapshot analytic read latency가 serve-only로 평탄해지는지 = 최종 payoff, D-0 0.7ms→1.35s 대상, `build_d0d.sh`·`d0_bpsweep.sh` 기반) → ⑤ purge-view GC(메모리 bound, 1c-5 선행).
+**불변식 유지**: 기본 OFF=shadow(평상 동작 불변), serve는 LOCATOR가 아니라 검증된 byte-동일 record, mismatch/MISS는 vanilla/walk fallback = 틀린 서빙 구조적 불가. lock-free·epoch·deadzone·disk-based HTAP 틀 유지.
+
+**⑥ 성능 payoff ✅ (최종 증명, `build_d6.sh`)**: held-snapshot deep read latency를 vanilla walk(mode 0) vs serve-only(mode 1)로 buffer pool 3종에서 측정(churn으로 chain을 깊게 한 뒤 held snapshot이 purge를 막아 깊이 유지, deep scan latency는 MySQL profiling, undo page read는 `Innodb_buffer_pool_reads` 델타):
+
+| BP | vanilla walk (mode 0) | serve-only (mode 1) | 개선 | deep-scan 물리 read |
+|---|---|---|---|---|
+| 4 GB | 0.80 s | 0.17 s | ~4.7× | 0 → 0 |
+| 256 MB | 76.2 s | 0.16 s | ~490× | 796,259 → 0 |
+| 64 MB | 123.4 s | 0.16 s | ~775× | 1,385,670 → 8 |
+
+→ serve-only latency가 **BP 크기와 무관하게 ~0.16s로 평탄**(D-0의 "작아질수록 폭증" 절벽이 소멸). 메커니즘 직접 증거 = deep-scan 물리 read: vanilla는 작은 BP에서 evict된 undo page를 80만~140만 재읽기, serve-only는 0~8(undo walk skip → undo I/O 제거). 큰 BP는 version 재구성 CPU 절약(~4.7×), 작은 BP는 undo I/O 제거(~775×). correctness=모든 scan SUM 동일(679715, snapshot 불변)·served=2000·construct_BAD=0. **사용자 가설(작은 BP에서 HTAP read I/O 폭발) 데이터로 입증 + 캐시가 정확히 그 지점 해결 = D-4 목적(InnoDB HTAP/LLT 성능 향상) 달성, 1차(A+B+C)+최종(D) 목표 완료.** **다음 = ⑤ purge-view GC**(현재 GC off라 캐시 무한 성장 → InnoDB read-view 기준 메모리 회수로 "deadzone 제외 working-set" bound 완성, 1c-5 선행) / 최종검증(LOB·FTS·spatial·큰 테이블·mysqld ASan/TSan). **최종 산출물 = 논문(한글본 + 영문본).**
 
 ---
 
