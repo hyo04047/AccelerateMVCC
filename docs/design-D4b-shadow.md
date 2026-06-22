@@ -234,3 +234,25 @@ consult가 고른 버전이 InnoDB 재구성 visible 버전과 byte-동일; 안 
   writer 분리)✅·M6(동시 consult TSan·결정적 negative control)✅.
 - **재현**: `build_test_4b3.sh`(standalone 32)·`build_d4b3b.sh`(shadow)·`build_d4b3c.sh`(매트릭스). row0vers/
   read0types/trx0rec 패치는 build script가 멱등 적용(MySQL 소스라 repo에 vendor 안 함).
+
+## 11. Coverage 측정 (세션 6, shadow) + 알려진 한계
+shadow 카운터로 측정한 **coverage = hit_match/calls**(4d 없이 측정 가능; 4d는 성능 이득용). 표준 HTAP
+analytic-pain 워크로드(보유-스냅샷 깊은 reader ‖ churn, `build_cov.sh`):
+| 조건 | hit율 | hit_MISMATCH | noncontig | ring dropped |
+|---|---|---|---|---|
+| 4G BP / 8 writer   | 13000/13000 = **100%**   | 0 | 0 | 0 |
+| 4G BP / 32 writer  | 12996/12998 = **99.98%** | 0 | 2 | 0 |
+| 256M BP / 8 writer | 12998/13000 = **99.98%** | 0 | 2 | 0 |
+→ 표준 벤치(sbtest, 일반 컬럼)에서 깊은 읽기 coverage ≈ 100%, **쓰기 폭주·작은 BP에도 견고**(dropped=0,
+hit율 불변). coverage는 BP 크기와 무관(hit율은 "버전이 캐시에 contiguous하냐"지 BP가 아님). MISS는
+0.02%(순간 drainer-lag)뿐 → 그 워크로드에선 walk I/O·pollution 악순환을 사실상 다 끊음(필요조건 확인).
+
+**⚠️ 알려진 한계 — 최종 테스트/검증 시 반드시 점검**:
+1. **LOB/text-heavy 워크로드 coverage**: 위 측정은 sbtest(일반 컬럼)라 100%. off-page LOB·virtual 컬럼
+   행은 4c-1에서 캐싱 제외(→ MISS) — 현장 HTAP analytic이 wide TEXT/BLOB 위주면 coverage가 떨어지고,
+   그 행들은 walk I/O 문제가 그대로 남는다(MISS=문제 회귀, +공유 BP pollution 외부효과). 최종 검증은
+   **LOB 비중이 있는 워크로드에서 hit율·실제 I/O 감소를 측정**할 것. 필요하면 LOB 본문까지 캡처해 coverage
+   확대(InnoDB 깊은 작업).
+2. **instant-DDL 테이블**: 거친 제외(가속 포기). 드물어 우선순위 낮음.
+3. 위는 **coverage(hit율)** 측정 — **실제 I/O/지연 감소(성능)** 는 4d(walk skip)+⑥(작은 BP에서 D-0
+   0.49s/75s 곡선 평탄화)에서 측정. coverage~100%는 "4d면 깊은 읽기 거의 다 skip"의 필요조건.
