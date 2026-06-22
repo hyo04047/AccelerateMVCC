@@ -31,6 +31,19 @@ std::atomic<uint64_t> g_drained{0};
 std::atomic<uint32_t> g_pk_seen[1024];   // pk breadth proxy (drainer-only writer)
 std::thread g_drainer;
 
+// D-4 4b-3b SHADOW consult counters (read by many InnoDB reader threads -> atomic). The headline
+// gate is g_c_hit_mismatch == 0: every time the cache claims a HIT, its image equals what InnoDB's
+// consistent read actually rebuilt. The MISS buckets are expected (drainer lag, no-visible, etc.);
+// they just mean "fall back to the full walk" and never a wrong result.
+std::atomic<uint64_t> g_c_calls{0};
+std::atomic<uint64_t> g_c_hit_match{0};
+std::atomic<uint64_t> g_c_hit_mismatch{0};
+std::atomic<uint64_t> g_c_miss_absent{0};
+std::atomic<uint64_t> g_c_miss_novisible{0};
+std::atomic<uint64_t> g_c_miss_noncontig{0};
+std::atomic<uint64_t> g_c_miss_ineligible{0};
+std::atomic<uint64_t> g_c_vanilla_null{0};
+
 // D-1b-3a: the real AccelerateMVCC index lives inside mysqld now. record_count=0 -> no ctor
 // pre-creation (keys are created dynamically). BG GC is intentionally NOT started (populate-only;
 // the deadzone GC must be re-driven from InnoDB's read views before it can run -- D-3). The
@@ -110,6 +123,15 @@ void accel_shutdown() noexcept {
                (unsigned long long)g_enq.load(), (unsigned long long)g_drained.load(),
                (unsigned long long)g_dropped.load(), pk_buckets(),
                g_accel ? g_accel->long_live_size() : 0);
+  // D-4 4b-3b SHADOW result. The gate is hit_MISMATCH=0 with hit_match>0 (cache verified against
+  // vanilla on real consistent reads). MISS buckets = safe full-walk fallbacks.
+  std::fprintf(stderr,
+               "[accel] consult(shadow): calls=%llu hit_match=%llu hit_MISMATCH=%llu "
+               "miss{absent=%llu novisible=%llu noncontig=%llu ineligible=%llu} vanilla_null=%llu\n",
+               (unsigned long long)g_c_calls.load(), (unsigned long long)g_c_hit_match.load(),
+               (unsigned long long)g_c_hit_mismatch.load(), (unsigned long long)g_c_miss_absent.load(),
+               (unsigned long long)g_c_miss_novisible.load(), (unsigned long long)g_c_miss_noncontig.load(),
+               (unsigned long long)g_c_miss_ineligible.load(), (unsigned long long)g_c_vanilla_null.load());
   delete g_accel;  // drainer joined -> sole owner; dtor is a no-op for BG GC (never started)
   g_accel = nullptr;
 }
@@ -148,4 +170,50 @@ void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_
     g_enq.fetch_add(1, std::memory_order_relaxed);
   else
     g_dropped.fetch_add(1, std::memory_order_relaxed);  // full -> drop, never block the latch
+}
+
+void accel_consult_shadow(uint64_t table_id, uint64_t pk_hash,
+                          const unsigned char *pk, uint64_t pk_len,
+                          uint64_t up_limit_id, uint64_t low_limit_id, uint64_t creator_trx_id,
+                          const uint64_t *m_ids, uint64_t m_ids_n,
+                          uint64_t live_top_writer,
+                          const unsigned char *vanilla, uint64_t vanilla_len) noexcept {
+  // D-4 4b-3b: SHADOW. Runs on InnoDB reader threads at the consistent-read version-build site,
+  // AFTER vanilla rebuilt the visible version. We ask our cache what it would serve and byte-compare
+  // it against vanilla's bytes -- but never use our answer (InnoDB returns its own). The consult is
+  // read-only and copies the image into our stack buffer UNDER its EBR Guard (M2), so nothing escapes.
+  if (!g_ready.load(std::memory_order_acquire) || g_accel == nullptr) return;
+  g_c_calls.fetch_add(1, std::memory_order_relaxed);
+  using CO = mvcc::Accelerate_mvcc::ConsultOutcome;
+  unsigned char buf[accel::ACCEL_IMG_MAX];
+  uint32_t outlen = 0;
+  CO o;
+  try {
+    o = g_accel->consult(table_id, pk_hash, pk, static_cast<uint32_t>(pk_len),
+                         up_limit_id, low_limit_id, creator_trx_id,
+                         m_ids, static_cast<std::size_t>(m_ids_n), live_top_writer,
+                         (vanilla != nullptr) ? buf : nullptr, sizeof(buf), &outlen);
+  } catch (...) { return; }  // defensive: consult does not allocate/throw, but the facade is noexcept
+
+  if (vanilla == nullptr) {
+    // vanilla found NO visible version (fresh insert / no history). The cache must not claim a HIT.
+    if (o == CO::HIT) g_c_hit_mismatch.fetch_add(1, std::memory_order_relaxed);
+    else              g_c_vanilla_null.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  switch (o) {
+    case CO::HIT: {
+      bool eq = (static_cast<uint64_t>(outlen) == vanilla_len);
+      if (eq) {
+        for (uint32_t i = 0; i < outlen; ++i)
+          if (buf[i] != vanilla[i]) { eq = false; break; }
+      }
+      (eq ? g_c_hit_match : g_c_hit_mismatch).fetch_add(1, std::memory_order_relaxed);
+      break;
+    }
+    case CO::MISS_ABSENT:     g_c_miss_absent.fetch_add(1, std::memory_order_relaxed); break;
+    case CO::MISS_NOVISIBLE:  g_c_miss_novisible.fetch_add(1, std::memory_order_relaxed); break;
+    case CO::MISS_NONCONTIG:  g_c_miss_noncontig.fetch_add(1, std::memory_order_relaxed); break;
+    case CO::MISS_INELIGIBLE: g_c_miss_ineligible.fetch_add(1, std::memory_order_relaxed); break;
+  }
 }
