@@ -278,3 +278,53 @@ hit율 불변). coverage는 BP 크기와 무관(hit율은 "버전이 캐시에 c
   캐시 full-rec)` 후 walk loop skip + `return DB_SUCCESS`. correctness는 4d-prep로 증명됐으니 순수 perf.
   debug 빌드엔 walk+compare assert 유지. heap_no 등 page-relative 헤더 필드는 소비 경로가 안 읽음(version
   rec는 standalone) — 4d 켜기 전 그 invariant만 코드로 재확인. → ⑥ D-0 곡선 평탄화 측정.
+
+## 13. 4d authoritative 스위치 — 설계 + 결과 (세션 7, 완료)
+처음으로 캐시 결과를 **실제 서빙**한다(=walk skip = 성능 이득). 4d-prep가 "캐시-합성 record가 vanilla와 byte-동일
+대체물"임을 증명했으므로, 남은 위험은 (a) 소비 경로가 그 record의 page-relative 헤더를 읽는가, (b) 서빙 record의
+lifetime/구성이 vanilla와 같은가 두 가지뿐. 켜기 전 (a)를 적대적 audit으로 닫고, (b)를 조건으로 박았다.
+
+### 13.1 serve-safety 적대적 audit (켜기 전 invariant 확인)
+워크플로(12에이전트, 5 mapper + 6 적대적 각도)로 "소비 경로가 서빙 version rec의 page-relative 헤더
+(heap_no / n_owned / next-record pointer)나 page-context(page_align/buf_block/page navigation)를 읽는가"를
+검증 — **safety_refuted 0/6 (전 각도 안전)**. load-bearing 논거(소스 검증):
+- vanilla의 `*old_vers`도 standalone version을 만들 때 헤더(extra) 영역을 **opaque하게 복사**하며, 그 헤더의
+  heap_no/n_owned/next 바이트는 실제로는 **uninitialized heap 바이트**(version 합성기가 data/null-bitmap/
+  length/status/info-bits만 쓰고 그 필드는 안 씀). vanilla가 정확한 이상 그 필드는 이 consistent-read 경로에서
+  **구조적으로 비소비**다. 우리 캐시 record도 동일 class(standalone)라 byte-안전.
+- InnoDB 자체 주석이 명시: "old version은 buffer pool page에 있다고 가정 못 한다 — page_rec_is_comp() 등 사용
+  금지." = 4d가 기대는 계약 그대로.
+- 소비 경로가 실제 읽는 것: offsets 통한 data 필드 + delete-mark/info-bits + offsets-parsing 메타(status·
+  null bitmap·length array) — 전부 record-origin 기준 산술, page base 없음. 전부 4d-prep에서 byte-동일 증명됨.
+- 유일한 page-context 후보(spatial non-leaf debug 체크)는 debug 전용이고 prev_rec 가드로 서빙 rec에 도달
+  불가(cursor는 여전히 on-page rec를 가리킴). 판정 = **CONDITIONAL**(아래 조건 충족 시 SAFE).
+
+### 13.2 서빙 코드 (조건 반영)
+consult를 walk loop **앞**으로 올린다(4d-1). 캐시 키(table_id + full PK + live-top writer)는 입력 top rec에서
+뽑는다 — clustered 행의 모든 version은 같은 PK(non-key update)라 top rec에서 추출해도 walk가 찾을 버전과 동일.
+HIT면 캐시 full-rec를 **`in_heap`에 복사**(vanilla의 rec_copy와 동일 lifetime — 생포인터 서빙 금지)하고
+`*old_vers = buf + extra`, `*offsets = rec_get_offsets(*old_vers,...)` + `rec_offs_make_valid`로 재파싱한다.
+게이트: **virtual column 행 제외**(`n_v_cols==0`; 4c-1과 일관, 서빙은 vrow를 못 채우므로) + MISS면 기존 walk로
+fall-through(부분 상태 안 남김). cursor record/spatial 가드는 건드리지 않는다.
+
+토글 `ACCEL_AUTHORITATIVE`(accel_init에서 1회 read, 기본 0=off):
+- **0 = off(shadow)**: walk가 vanilla 답을 서빙, 캐시는 비교만(평상 동작 불변).
+- **2 = verify-serve**: walk로 vanilla를 재구성→byte-compare→일치할 때만 캐시 record로 교체 서빙. 매 HIT마다
+  "서빙한 답 == vanilla"를 직접 보증(틀리면 vanilla 유지). walk skip 없음 = perf 이득 없음, correctness 게이트.
+- **1 = serve-only**: HIT면 캐시 record를 만들고 walk를 **건너뛰고** 즉시 return(perf 경로 = ⑥에서 측정).
+
+### 13.3 결과 (4G BP, held-snapshot reader ‖ 30s churn)
+- **4d-1(shadow, hoisted)**: calls=13000 hit=12993 noncontig=7 | construct_ok=12993 **construct_BAD=0** →
+  top rec 키 추출이 정확(consult 위치 이동이 정확성-중립).
+- **4d-2 mode 2(verify-serve)**: calls=13000 hit=12988 noncontig=12 | construct_ok=12988 **construct_BAD=0**
+  | **served=12988**(=hit=construct_ok) → 서빙한 record 전부 vanilla와 byte-동일. reader 13 SUM 일관(679715).
+- **4d-2 mode 1(serve-only, walk skip)**: calls=13000 hit=12985 noncontig=15 | construct_ok=0(walk 안 돎)
+  | **served=12985**(=hit). reader 13 SUM 일관 + **mode 2와 동일 SUM(679715)** = walk-skip 답이 검증 경로와
+  일치(추가 oracle). 양 모드 enq==drained·dropped=0. noncontig는 안전 MISS(순간 drainer-lag→walk fallback).
+
+### 13.4 불변식 / 한계
+서빙 record는 LOCATOR가 아니라 **검증된 byte-동일 record**다. mismatch(mode 2)·MISS는 vanilla/walk로 떨어져
+틀린 서빙이 구조적으로 불가능하다. 기본 OFF라 평상 동작은 불변. **단 4d-2는 correctness(서빙=vanilla)만 입증했고
+실제 성능 이득(latency 감소)은 측정 안 함** — 4G BP라 walk가 CPU만 쓰는 빠른 경우. 실 payoff는 **⑥**(작은/큰
+BP에서 mode0↔mode1 held-snapshot analytic read latency 비교로 D-0 0.7ms→1.35s 곡선 평탄화 측정; 작은 BP는
+undo I/O-bound라 walk-skip 효과 극대 예상). 그 뒤 ⑤ purge-view GC(메모리 회수, 1c-5 선행).

@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-06-22 — 세션 7: D-4 ④ 읽기연결 4c·4d-prep·4d(authoritative serve) 완료 — 캐시 결과 실제 서빙·정확성 증명
+
+> 세션 6에서 4c/4d-prep까지 진행(아래 세션 6 엔트리는 4b까지 기록). 이 세션: 재개검증(HEAD `f62c127` clean·origin 동기화, standalone 32 green Release/ASan/TSan, 통합 mysqld 4d-prep 게이트 통과) → serve-safety 적대적 audit → **4d authoritative serve 완성**.
+
+**4c ✅ 캐싱 제외 게이트 (`8ec44bb`·`7dcccaa`·`48fe24b`)**: off-page LOB(`rec_offs_any_extern`)·virtual column(`n_v_cols>0`) 행은 populate 제외(img_len=0→consult MISS, 4c-1); instant-DDL은 consult-side 거친 게이트(reader 테이블 row-version>0이면 MISS, 4c-2 — per-entry 태그는 reader-era 값이라 틀린 신호로 진단됨). coverage(`build_cov.sh`, shadow): 표준 HTAP 깊은 읽기 hit≈100%(4G/256M BP, 8/32 writer, dropped=0). ⚠️LOB-heavy 한계는 최종검증 점검.
+
+**4d-prep ✅ (`f62c127`)**: 캡처를 전체 물리 record+extra로 확장 → 캐시로부터 합성한 record가 vanilla `*old_vers`와 byte-동일(construct_ok=12998·construct_BAD=0) 임을 shadow 증명(서빙 X = 리스크 0).
+
+**serve-safety 적대적 audit ✅ (워크플로 12에이전트, 5 mapper + 6 적대적 각도)**: 4d가 캐시-합성 rec를 서빙할 때 소비 경로가 version rec의 page-relative 헤더(heap_no/n_owned/next-ptr)를 읽는지 검증 — **safety_refuted 0/6**. 근거: vanilla도 standalone version을 만들 때 그 헤더 영역을 opaque 복사(실은 uninitialized heap 바이트)하므로 vanilla가 맞는 이상 그 필드는 비소비; InnoDB 자체 주석도 "old version은 page에 없다고 가정 못 함"을 명시. 유일한 page-context 후보(spatial debug 경로)는 가드로 unreachable. 판정 CONDITIONAL = 조건부 SAFE(조건: in_heap 복사·offsets 재파싱+make_valid·virtual col 제외·mismatch면 vanilla·MISS면 walk fallback).
+
+**4d ✅ authoritative serve**: **4d-1**(consult를 walk 앞으로 hoist + 캐시 키를 live top rec에서 추출, 여전히 shadow) — construct_BAD=0·construct_ok==hit(12993)로 consult 위치 이동이 정확성-중립임 입증. **4d-2** serve 스위치(env `ACCEL_AUTHORITATIVE`, 기본 0=off=shadow): hook에 2단계 토글+serve counter(`accel_authoritative_mode`/`accel_note_serve`). mode 2(verify-serve = walk+byte-compare 후 캐시 서빙): **served = construct_ok = hit = 12988 · construct_BAD = 0** = 서빙한 답 전부 vanilla와 byte-동일; mode 1(serve-only = walk skip): served = hit = 12985, held-snapshot reader 13 SUM 일관 + **mode 2와 동일 SUM(679715)** = walk-skip 답이 검증 경로와 일치. virtual col 행 serve 제외·mismatch면 vanilla 유지·MISS면 walk fallback·양 모드 enq==drained·dropped=0·snapshot 불변. 재현 `build_d4d1.sh`·`build_d4d2.sh`, 설계·결과 [design-D4b-shadow.md](design-D4b-shadow.md) §13.
+
+**불변식 유지**: 기본 OFF=shadow(평상 동작 불변), serve는 LOCATOR가 아니라 검증된 byte-동일 record, mismatch/MISS는 vanilla/walk fallback = 틀린 서빙 구조적 불가. lock-free·epoch·deadzone·disk-based HTAP 틀 유지. **다음 = ⑥**(작은/큰 BP에서 held-snapshot analytic read latency가 serve-only로 평탄해지는지 = 최종 payoff, D-0 0.7ms→1.35s 대상, `build_d0d.sh`·`d0_bpsweep.sh` 기반) → ⑤ purge-view GC(메모리 bound, 1c-5 선행).
+
+---
+
 ## 2026-06-22 — 세션 6: D-4 ④ 읽기연결 4a+4b(SHADOW consult) 완료 — wrong-result 관문 통과(hit_MISMATCH=0)
 
 > 핸드오프대로 맥락 복원 + 3게이트 검증(HEAD 189c172, 20→24 correctness green, build_d2img enq==drained) 후 **④ 읽기연결** 진행. "우리 in-memory cache가 디스크 MVCC를 consistent하게 반영하나"를 shadow byte 비교로 실측 입증.
