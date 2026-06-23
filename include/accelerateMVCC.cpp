@@ -310,6 +310,7 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
     bool any_pk_match = false;
     bool found = false;
     uint64_t best_ver = 0;
+    uint64_t best_writer = 0;
     undo_entry_node *best = nullptr;
     for (epoch_node *epoch = header->next.ptr(); epoch != nullptr; ) {
         uintptr_t w = epoch->next.load();
@@ -330,8 +331,18 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
                 any_pk_match = true;
                 if (changes_visible(u->version_trx_id, up_limit_id, low_limit_id, creator_trx_id,
                                     m_ids, m_ids_n)) {
-                    if (!found || u->version_trx_id > best_ver) {
-                        found = true; best_ver = u->version_trx_id; best = u;
+                    // Pick the newest visible version. TIE-BREAK (D-5 fix): a transaction that modifies
+                    // this row MULTIPLE times leaves several entries with the SAME version_trx_id (its
+                    // own creator) -- an INTERMEDIATE state (overwritten within the txn, writer ==
+                    // version_trx_id) and the FINAL state (overwritten by an external trx, larger
+                    // writer_trx_id). The reader must see the FINAL state, so among equal
+                    // version_trx_id prefer the LARGER writer_trx_id. A version-only `>` kept whichever
+                    // the entry list yielded first (the intermediate) -> right version, WRONG bytes
+                    // (construct_BAD under multi-write transactions, e.g. oltp_read_write).
+                    if (!found || u->version_trx_id > best_ver ||
+                        (u->version_trx_id == best_ver && u->writer_trx_id > best_writer)) {
+                        found = true; best_ver = u->version_trx_id; best_writer = u->writer_trx_id;
+                        best = u;
                     }
                 }
             }

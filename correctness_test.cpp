@@ -105,6 +105,27 @@ TEST(Consult, HitNewestVisibleAndImage) {
     EXPECT_EQ(o, CO::HIT); ASSERT_EQ(blen, 2u); EXPECT_EQ(buf[0], 0xB0);
 }
 
+// D-5 fix: tie-break among same-version_trx_id entries. A transaction that modifies a row MULTIPLE
+// times leaves several entries with the SAME creator (version_trx_id): an INTERMEDIATE state
+// (overwritten within the txn -> writer == version_trx_id) and the FINAL state (overwritten by an
+// external trx -> larger writer_trx_id). The reader must see the FINAL state. A version-only `>`
+// tie-break kept whichever the entry list yielded first (the intermediate) -> right version_trx_id,
+// WRONG bytes (the oltp_read_write construct_BAD). consult must prefer the larger writer_trx_id.
+TEST(Consult, TieBreakSameVersionPicksFinalByWriter) {
+    Accelerate_mvcc m(0, 10);
+    const uint64_t H = 88; std::vector<unsigned char> pk{7, 7};
+    ins_ver(m, H, 10, 20, pk, {0x10});   // v10, overwritten by trx 20
+    ins_ver(m, H, 20, 20, pk, {0xAA});   // v20 INTERMEDIATE: trx 20 overwrote its OWN version
+    ins_ver(m, H, 20, 30, pk, {0xBB});   // v20 FINAL: external trx 30 overwrote trx 20's final state
+    unsigned char buf[64]; uint32_t blen = 0;
+    // reader sees < 25 (version 20 visible, 30 not); live row last written by 30 -> boundary = v20.
+    CO o = m.consult(1, H, pk.data(), (uint32_t)pk.size(), /*up*/5, /*low*/25, /*creator*/0,
+                     nullptr, 0, /*live*/30, buf, sizeof(buf), &blen);
+    EXPECT_EQ(o, CO::HIT);
+    ASSERT_EQ(blen, 1u);
+    EXPECT_EQ(buf[0], 0xBB) << "must serve the FINAL same-trx version (writer 30), not the intermediate (writer 20)";
+}
+
 TEST(Consult, MissDrainerLagHeadNotLive) {
     Accelerate_mvcc m(0, 10);
     const uint64_t H = 1; std::vector<unsigned char> pk{9};
