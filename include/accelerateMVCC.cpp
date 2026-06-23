@@ -302,9 +302,12 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
 
     // Pin reclamation for this whole probe (the image copy below must happen under it -- M2).
     EpochReclaimer::Guard guard(epoch_table->reclaimer());
-    // Contiguity markers maintained by the drainer (acquire so we see a consistent published pair).
+    // Contiguity marker maintained by the drainer (acquire). We require it to equal the live row's last
+    // writer (the cache reaches the head); the suffix_min watermark is intentionally NOT used as a gate
+    // -- under trx-id/commit-order inversion a legitimate boundary version can have an id below the run's
+    // first-inserted version, so an id-comparison watermark would wrongly MISS. The lineage walk itself
+    // proves the boundary is on the live chain.
     const uint64_t head_writer = header->contiguous_head_writer.load(std::memory_order_acquire);
-    const uint64_t suffix_min  = header->contiguous_suffix_min_version.load(std::memory_order_acquire);
 
     // D-5 (newer-fix): LINEAGE WALK. Mirror InnoDB's roll_ptr walk on the cache via the writer-linkage
     // instead of picking the newest visible version across ALL cached entries. The cache is keyed by
@@ -314,18 +317,27 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
     // (diag6: 100% of the residual, with the live view itself agreeing the picked version is visible).
     // Following writer links from the live top writer downward reproduces vanilla's chain EXACTLY, so a
     // cross-generation entry (whose writer is not a link in this lineage) is structurally never chosen.
-    // Reviewed must-fix conditions (d5-newer-fix-review, 18 agents):
-    //   * STRICT version_trx_id < target excludes a trx's own within-txn intermediate (version==writer)
-    //     states and guarantees termination (target strictly decreases each hop);
+    // Reviewed must-fix conditions (d5-newer-fix-review, 18 agents) + the trx-id-inversion correction:
+    //   * exclude a trx's own within-txn intermediate (version==writer) from the links; follow id-EQUALITY
+    //     links (writer -> the version it overwrote), NOT an id comparison -- version may exceed writer
+    //     under commit-order inversion, and those links are real;
     //   * the predecessor at each hop must be UNIQUE -- an absent link, or >=2 distinct predecessor
     //     versions for one writer (a lineage anomaly), -> MISS (full walk), never a guess;
-    //   * the image guard and the contiguity precondition are retained (complementary suppressors).
+    //   * the image guard and the head==live_top contiguity precondition are retained.
 
     // Pass 1 (O(chain), one acquire-load traversal): build the writer -> predecessor link table for the
     // FULL-PK-matching entries. link[w] = the version trx w overwrote (w's predecessor on this lineage).
     // version==writer entries are a trx's own within-txn intermediate states (not lineage predecessors)
     // and are excluded by the strict version<writer test below. A writer that maps to >=2 DISTINCT
     // predecessor versions is an ambiguous link -> any chase through it MISSes.
+    // The link table maps each writer -> the version it overwrote (its roll_ptr predecessor on this
+    // row's lineage), over the FULL-PK-matching entries. A trx's own within-txn intermediate state has
+    // version_trx_id == writer_trx_id and is NOT a lineage predecessor, so it is excluded by the
+    // version!=writer test. NOTE: version may be GREATER than writer -- trx ids are assigned at start
+    // but commit order can differ under concurrency, so an overwriter with a smaller id can overwrite a
+    // value committed by a larger-id trx. Those inverted links are LEGITIMATE (the earlier < comparison
+    // wrongly dropped them, breaking the chase on deep concurrent chains). A writer mapping to >=2
+    // DISTINCT predecessor versions is an ambiguous link -> any chase through it MISSes.
     struct Link { uint64_t version; undo_entry_node *node; bool ambiguous; };
     std::unordered_map<uint64_t, Link> link;
     bool any_pk_match = false;
@@ -350,7 +362,7 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
                 if (changes_visible(u->version_trx_id, up_limit_id, low_limit_id, creator_trx_id,
                                     m_ids, m_ids_n))
                     any_visible = true;
-                if (u->version_trx_id < u->writer_trx_id) {   // a real overwrite link (skip intermediates)
+                if (u->version_trx_id != u->writer_trx_id) {   // a real overwrite link (skip own intermediates)
                     auto it = link.find(u->writer_trx_id);
                     if (it == link.end()) {
                         link.emplace(u->writer_trx_id, Link{u->version_trx_id, u, false});
@@ -367,20 +379,21 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
     // gap-free run must reach the live row's last writer, else we cannot trust it -> MISS.
     if (head_writer != live_top_writer) return ConsultOutcome::MISS_NONCONTIG;
 
-    // Pass 2: chase the lineage from the live top, exactly as vanilla follows roll_ptr -- return the
-    // first version that is changes_visible. An absent or ambiguous link -> MISS (full walk). Bounded by
-    // the link count (target strictly decreases each hop, so it cannot exceed the number of links).
+    // Pass 2: chase the lineage from the live top, exactly as vanilla follows roll_ptr -- step to each
+    // writer's predecessor version and return the first that is changes_visible. We follow id-EQUALITY
+    // links (writer -> the version it overwrote), never an id comparison, so trx-id/commit-order
+    // inversions are handled. An absent or ambiguous link -> MISS (full walk). The roll_ptr chain is
+    // acyclic and finite; the hop cap (= link count) is a defensive bound against a corrupt cycle.
     undo_entry_node *best = nullptr;
     uint64_t target = live_top_writer;
     for (size_t hop = 0; hop <= link.size(); ++hop) {
         auto it = link.find(target);
         if (it == link.end() || it->second.ambiguous) break;     // gap / anomaly -> classified below
         undo_entry_node *e = it->second.node;
-        if (e->version_trx_id >= target) break;                  // strict-decrease invariant (defensive)
         if (changes_visible(e->version_trx_id, up_limit_id, low_limit_id, creator_trx_id, m_ids, m_ids_n)) {
             best = e; break;                                     // first visible on the true lineage
         }
-        target = e->version_trx_id;                              // step one version older
+        target = e->version_trx_id;                              // step to this version's own predecessor
     }
 
     // best==nullptr: the lineage walk could not prove a visible boundary. If NO cached version was
@@ -388,7 +401,6 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
     // boundary -> NONCONTIG. Either way a safe MISS (full walk), never a guess.
     if (best == nullptr)
         return any_visible ? ConsultOutcome::MISS_NONCONTIG : ConsultOutcome::MISS_NOVISIBLE;
-    if (best->version_trx_id < suffix_min) return ConsultOutcome::MISS_NONCONTIG;
 
     if (out_img != nullptr) {
         if (best->img_len == 0 || best->img_len > out_cap) return ConsultOutcome::MISS_INELIGIBLE;
