@@ -93,4 +93,8 @@ void accel_note_serve() noexcept;
 void accel_publish_view_open(uint64_t begin, uint64_t up) noexcept;
 void accel_publish_view_close() noexcept;
 
+// D-5 5-1c: counted at the very top of MVCC::view_open (before the reuse/mutex branch). Comparing the
+// tally to the publish count proves every open path publishes (no live view silently omitted).
+void accel_note_view_open() noexcept;
+
 #endif  // ACCEL_HOOK_H

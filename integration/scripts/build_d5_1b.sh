@@ -17,7 +17,9 @@ C="--db-driver=mysql --mysql-host=127.0.0.1 --mysql-port=$PORT --mysql-user=sb -
 cp "$SRCREPO/accel_hook.h" "$INNO/include/accel_hook.h"
 cp "$SRCREPO/accel_ring.h" "$INNO/include/accel_ring.h"
 cp "$SRCREPO/accel_hook.cc" "$INNO/accel/accel_hook.cc"
-cp "$REPOINC/active_view_registry.h" "$INNO/include/active_view_registry.h"   # D-5: header accel_hook.cc includes
+# active_view_registry.h is resolved via -I repo/include (NOT vendored into the tree include), so it is
+# the same physical file epoch_table.h includes (else #pragma once -> mvcc::ViewCut redefinition).
+rm -f "$INNO/include/active_view_registry.h"
 
 echo "=== read0read.cc: push view_open/view_close to the registry (idempotent) ==="
 python3 - "$READ" <<'PYEOF'

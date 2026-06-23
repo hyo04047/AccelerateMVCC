@@ -72,6 +72,12 @@ mvcc::ActiveViewRegistry<> g_view_reg;
 bool g_publish_views = true;
 std::atomic<uint64_t> g_view_published{0};
 std::atomic<uint64_t> g_view_unpublished{0};
+// D-5 5-1c: every MVCC::view_open entry is counted (g_view_open_calls, before the reuse/mutex branch)
+// so we can confirm EVERY open path publishes (no view path is missed = the superset's ADD-reliability:
+// g_view_open_calls ~= g_view_published). g_clock is a monotonic InnoDB clock (max view begin id) that
+// the BG GC (5-2) will drive its boundary off (M4: the standalone clock never advances in-integration).
+std::atomic<uint64_t> g_view_open_calls{0};
+std::atomic<uint64_t> g_clock{0};
 
 // D-1b-3a: the real AccelerateMVCC index lives inside mysqld now. record_count=0 -> no ctor
 // pre-creation (keys are created dynamically). BG GC is intentionally NOT started (populate-only;
@@ -186,10 +192,13 @@ void accel_shutdown() noexcept {
   // counts (not per row); live_snapshot is what the GC would see now (~0 at shutdown, all closed).
   std::vector<mvcc::ViewCut> vcut; uint64_t vfloor;
   g_view_reg.snapshot(vcut, vfloor);
-  std::fprintf(stderr, "[accel] view-registry: published=%llu unpublished=%llu publish_on=%d live_snapshot=%zu floor=%s\n",
+  std::fprintf(stderr, "[accel] view-registry: open_calls=%llu published=%llu unpublished=%llu publish_on=%d "
+               "live_snapshot=%zu floor=%s clock=%llu\n",
+               (unsigned long long)g_view_open_calls.load(),
                (unsigned long long)g_view_published.load(), (unsigned long long)g_view_unpublished.load(),
                g_publish_views ? 1 : 0, vcut.size(),
-               vfloor == mvcc::ActiveViewRegistry<>::NO_FLOOR ? "none" : "set");
+               vfloor == mvcc::ActiveViewRegistry<>::NO_FLOOR ? "none" : "set",
+               (unsigned long long)g_clock.load());
   delete g_accel;  // drainer joined -> sole owner; dtor is a no-op for BG GC (never started)
   g_accel = nullptr;
 }
@@ -292,6 +301,18 @@ void accel_publish_view_open(uint64_t begin, uint64_t up) noexcept {
   if (!g_ready.load(std::memory_order_acquire) || !g_publish_views || begin == 0) return;
   g_view_reg.publish(begin, up);
   g_view_published.fetch_add(1, std::memory_order_relaxed);
+  // monotonic clock = max view begin id (next-trx-id proxy); drives the BG GC boundary in 5-2.
+  uint64_t c = g_clock.load(std::memory_order_relaxed);
+  while (begin > c && !g_clock.compare_exchange_weak(c, begin, std::memory_order_relaxed)) {
+  }
+}
+
+// D-5 5-1c: counted at the very top of MVCC::view_open (before the reuse/mutex branch), so every open
+// path is tallied -- comparing this to g_view_published proves no open path is missed (no live view
+// silently omitted from the registry). Leaf-domain, no toggle gate (cheap counter).
+void accel_note_view_open() noexcept {
+  if (!g_ready.load(std::memory_order_acquire)) return;
+  g_view_open_calls.fetch_add(1, std::memory_order_relaxed);
 }
 void accel_publish_view_close() noexcept {
   if (!g_ready.load(std::memory_order_acquire) || !g_publish_views) return;
