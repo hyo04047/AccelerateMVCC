@@ -2,6 +2,7 @@
 
 #include "accelerateMVCC.h"
 #include "read_view_mirror.h"  // D-4 (4a): exact InnoDB ReadView::changes_visible mirror
+#include <unordered_map>       // D-5 (5-2 prep): GC-safe live-chain lineage walk builds a writer->pred table
 
 mvcc::Accelerate_mvcc::Accelerate_mvcc(uint64_t record_count, uint32_t kuku_log2) {
     constexpr uint64_t max_value = ~0ULL;
@@ -311,52 +312,88 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
         : kuku::get_value(kuku_table->table(query.location()));
     auto *header = reinterpret_cast<interval_list_header *>(value);
 
-    // Pin reclamation for this whole probe -- the chase + image copy below must happen under it (M2).
-    // The chase reads only published, immutable older nodes via roll_pred (the drainer only appends
-    // newer nodes and never rewrites an existing node's roll_pred), so one Guard covers the whole walk.
+    // Pin reclamation for this whole probe (the image copy below must happen under it -- M2).
     EpochReclaimer::Guard guard(epoch_table->reclaimer());
 
-    // D-5 (O(C) lineage walk): chase the row's roll_ptr lineage via the per-node roll_pred pointers the
-    // drainer wired at insert -- no per-call link-table build. Start at the newest cached version and
-    // step to each version's predecessor, returning the FIRST that is changes_visible (exactly InnoDB's
-    // undo walk). Cross-generation / other-lineage versions are not on this pointer chain, so they are
-    // structurally never chosen (closes the diag6 "newer" wrong-HIT). Links are followed by id-EQUALITY
-    // (a node's version == its predecessor's writer), never an id comparison, so trx-id/commit-order
-    // inversions (version may exceed writer) are handled. Any broken link / identity mismatch / unmet
-    // precondition -> MISS, and the caller does the full undo walk -- never a guessed version.
-    undo_entry_node *n = header->newest_node.load(std::memory_order_acquire);
-    if (n == nullptr) return ConsultOutcome::MISS_ABSENT;
-    auto pk_matches = [&](undo_entry_node *e) -> bool {
-        if (!require_full_pk) return true;             // test-only negative control (accept any row)
-        if (e->pk_len == 0 || e->pk_len != pk_len) return false;
-        for (uint32_t i = 0; i < pk_len; ++i) if (e->pk[i] != pk[i]) return false;
-        return true;
-    };
-    // Identity: pk_hash is only a bucket hint; on a hash collision the newest node could be another row.
-    if (!pk_matches(n)) return ConsultOutcome::MISS_ABSENT;
-    // Head: the cache must reach the live row -- its newest cached version was overwritten by the live
-    // writer. Otherwise an uncached newer version sits between the cache and the row -> MISS.
-    if (n->writer_trx_id != live_top_writer) return ConsultOutcome::MISS_NONCONTIG;
+    // D-5 (5-2 prep): GC-SAFE LINEAGE WALK via the LIVE chain. consult builds a writer->predecessor
+    // link table by traversing ONLY the live links (header->next epochs + first_entry/next_entry) under
+    // the Guard, then chases that table. This is the version that is SAFE once GC turns on: a node is
+    // UNLINKED from the live chain before it is retired, and retire stamps a fresh epoch, so a Guard-
+    // protected live traversal never reaches an unlinked/freed node. (The faster O(depth) chase over the
+    // per-node roll_pred back-pointers -- commit f07a2f7, ~0.16s -- is NOT GC-safe: roll_pred keeps
+    // pointing at a predecessor after GC frees it, so the chase can deref freed memory; a 16-agent
+    // review confirmed the UAF. roll_pred / newest_node / node_count are still maintained by insert()
+    // for the planned GC-safe fast consult, ⑤b, but MUST NOT be chased here while GC reclaims nodes.
+    // See docs/open-items.md ⓠ1.) Cost: O(chain) per call (~0.4s on the deep held-snapshot reader vs
+    // ~0.16s for the back-pointer chase); the BP-independent flatness / cliff removal is unchanged.
+    const uint64_t head_writer = header->contiguous_head_writer.load(std::memory_order_acquire);
 
-    undo_entry_node *best = nullptr;
-    bool reached_bottom = false;
-    const uint64_t cap = header->node_count.load(std::memory_order_acquire) + 1;  // defensive hop bound
-    uint64_t hops = 0;
-    for (; n != nullptr; n = n->roll_pred) {
-        if (++hops > cap) break;                                  // corrupt cycle (must not happen) -> MISS
-        if (!pk_matches(n)) break;                                // crossed into another row (collision) -> MISS
-        if (changes_visible(n->version_trx_id, up_limit_id, low_limit_id, creator_trx_id, m_ids, m_ids_n)) {
-            best = n; break;                                      // first visible on the lineage = boundary
+    // Pass 1: build the writer -> predecessor link table for the FULL-PK-matching entries reached on the
+    // live chain. link[w] = the version trx w overwrote (w's predecessor). A trx's own within-txn
+    // intermediate has version==writer (not a predecessor) and is excluded. version MAY exceed writer
+    // (trx ids assigned at start, commit order differs under concurrency) -- those inverted links are
+    // real, so we test version!=writer, never version<writer. A writer mapping to >=2 distinct
+    // predecessor versions is an ambiguous link -> any chase through it MISSes.
+    struct Link { uint64_t version; undo_entry_node *node; bool ambiguous; };
+    std::unordered_map<uint64_t, Link> link;
+    bool any_pk_match = false;
+    bool any_visible = false;
+    for (epoch_node *epoch = header->next.ptr(); epoch != nullptr; ) {
+        uintptr_t w = epoch->next.load();
+        epoch_node *succ = MarkedPtr<epoch_node>::ptr_of(w);
+        if (!MarkedPtr<epoch_node>::mark_of(w)) {   // skip logically-deleted epochs (read-only, no help-splice)
+            for (undo_entry_node *u = epoch->first_entry; u != nullptr; u = u->next_entry.load()) {
+                // Full-PK identity check (pk_hash is only a bucket hint). pk_len==0 = locator-only
+                // entry whose identity we cannot prove -> skip. (require_full_pk=false = test-only
+                // negative control: accept any entry so a forced collision yields a cross-row hit.)
+                if (require_full_pk) {
+                    if (u->pk_len == 0 || u->pk_len != pk_len) continue;
+                    bool pk_eq = true;
+                    for (uint32_t i = 0; i < pk_len; ++i) {
+                        if (u->pk[i] != pk[i]) { pk_eq = false; break; }
+                    }
+                    if (!pk_eq) continue;
+                }
+                any_pk_match = true;
+                if (changes_visible(u->version_trx_id, up_limit_id, low_limit_id, creator_trx_id,
+                                    m_ids, m_ids_n))
+                    any_visible = true;
+                if (u->version_trx_id != u->writer_trx_id) {   // a real overwrite link (skip own intermediates)
+                    auto it = link.find(u->writer_trx_id);
+                    if (it == link.end()) {
+                        link.emplace(u->writer_trx_id, Link{u->version_trx_id, u, false});
+                    } else if (it->second.version != u->version_trx_id) {
+                        it->second.ambiguous = true;          // two distinct predecessors for one writer
+                    }
+                }
+            }
         }
-        undo_entry_node *p = n->roll_pred;                        // verify the link before stepping older
-        if (p == nullptr) { reached_bottom = true; break; }       // bottom: no older cached version
-        if (p->writer_trx_id != n->version_trx_id) break;         // linkage broken (e.g. a ring drop) -> MISS
+        epoch = succ;
+    }
+    if (!any_pk_match) return ConsultOutcome::MISS_ABSENT;
+    // Contiguity precondition (retained as a complementary cross-generation suppressor): the cache's
+    // gap-free run must reach the live row's last writer, else we cannot trust it -> MISS.
+    if (head_writer != live_top_writer) return ConsultOutcome::MISS_NONCONTIG;
+
+    // Pass 2: chase the link table from the live top, exactly as vanilla follows roll_ptr -- step to each
+    // writer's predecessor version and return the first that is changes_visible. id-EQUALITY links, so
+    // inversions are handled. Absent/ambiguous link -> MISS. Bounded by the link count (acyclic chain).
+    undo_entry_node *best = nullptr;
+    uint64_t target = live_top_writer;
+    for (size_t hop = 0; hop <= link.size(); ++hop) {
+        auto it = link.find(target);
+        if (it == link.end() || it->second.ambiguous) break;     // gap / anomaly -> classified below
+        undo_entry_node *e = it->second.node;
+        if (changes_visible(e->version_trx_id, up_limit_id, low_limit_id, creator_trx_id, m_ids, m_ids_n)) {
+            best = e; break;                                     // first visible on the true lineage
+        }
+        target = e->version_trx_id;                              // step to this version's own predecessor
     }
 
-    // best==nullptr: no visible boundary proven. reached_bottom == the cache is intact down to its oldest
-    // cached version and none is visible -> NOVISIBLE; otherwise a gap/anomaly hid it -> NONCONTIG. Safe MISS.
+    // best==nullptr: no visible boundary proven. NO cached version visible -> NOVISIBLE; otherwise a
+    // gap/anomaly hid the boundary -> NONCONTIG. Either way a safe MISS (full walk), never a guess.
     if (best == nullptr)
-        return reached_bottom ? ConsultOutcome::MISS_NOVISIBLE : ConsultOutcome::MISS_NONCONTIG;
+        return any_visible ? ConsultOutcome::MISS_NONCONTIG : ConsultOutcome::MISS_NOVISIBLE;
 
     if (out_img != nullptr) {
         if (best->img_len == 0 || best->img_len > out_cap) return ConsultOutcome::MISS_INELIGIBLE;
