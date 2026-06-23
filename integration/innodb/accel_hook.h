@@ -97,4 +97,8 @@ void accel_publish_view_close() noexcept;
 // tally to the publish count proves every open path publishes (no live view silently omitted).
 void accel_note_view_open() noexcept;
 
+// D-5 diag: classify a construct_BAD -- same=1 if the cache rec's DB_TRX_ID equals vanilla's *old_vers
+// (right version, wrong bytes), same=0 if it differs (consult picked the wrong version).
+void accel_note_bad_trx(int same) noexcept;
+
 #endif  // ACCEL_HOOK_H

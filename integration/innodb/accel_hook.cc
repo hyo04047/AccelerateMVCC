@@ -49,6 +49,11 @@ std::atomic<uint64_t> g_c_construct_ok{0};
 std::atomic<uint64_t> g_c_construct_bad{0};
 // D-4 4d-2: cache-built records actually SERVED (returned to InnoDB in place of the walked version).
 std::atomic<uint64_t> g_c_serve{0};
+// D-5 diag: of the construct_BAD cases, did the cache rec's DB_TRX_ID equal vanilla's *old_vers
+// (right version selected, bytes differ) or differ (consult picked the WRONG version)? Classifies the
+// near-head/short-read construct_BAD found under oltp_read_write.
+std::atomic<uint64_t> g_c_bad_trxsame{0};
+std::atomic<uint64_t> g_c_bad_trxdiff{0};
 
 // D-4 4b-3c TEST-ONLY toggles, read once from the environment at accel_init (set before g_ready is
 // released, so the live hook/consult see them after their acquire of g_ready). Default off = prod.
@@ -199,6 +204,9 @@ void accel_shutdown() noexcept {
                g_publish_views ? 1 : 0, vcut.size(),
                vfloor == mvcc::ActiveViewRegistry<>::NO_FLOOR ? "none" : "set",
                (unsigned long long)g_clock.load());
+  std::fprintf(stderr, "[accel] construct_BAD detail: trx_same=%llu (right version, bytes differ) "
+               "trx_diff=%llu (WRONG version picked)\n",
+               (unsigned long long)g_c_bad_trxsame.load(), (unsigned long long)g_c_bad_trxdiff.load());
   delete g_accel;  // drainer joined -> sole owner; dtor is a no-op for BG GC (never started)
   g_accel = nullptr;
 }
@@ -313,6 +321,11 @@ void accel_publish_view_open(uint64_t begin, uint64_t up) noexcept {
 void accel_note_view_open() noexcept {
   if (!g_ready.load(std::memory_order_acquire)) return;
   g_view_open_calls.fetch_add(1, std::memory_order_relaxed);
+}
+
+// D-5 diag: classify a construct_BAD by whether the served version's trx_id matched vanilla's.
+void accel_note_bad_trx(int same) noexcept {
+  (same ? g_c_bad_trxsame : g_c_bad_trxdiff).fetch_add(1, std::memory_order_relaxed);
 }
 void accel_publish_view_close() noexcept {
   if (!g_ready.load(std::memory_order_acquire) || !g_publish_views) return;
