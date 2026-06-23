@@ -422,10 +422,28 @@ chain 위임을 증명하고 `head_writer==live_top_writer` 전제는 유지).
 deep-reader 모두 HIT 2000/2000·noncontig 0·물리 read 0~10(64M I/O cliff 소멸)·deep-scan latency ~0.36/0.40s
 평탄**(D-0 0.8s/123s 대비 큰 승리, 64M ~307×). SUM 679715 일관.
 
-### 15.6 잔여 (다음 세션) — O(C) latency 재설계
-절대 latency가 ~0.4s로 구 consult(max-visible) ~0.16s보다 높다(원인 = per-call writer→predecessor link-map
-빌드, 리뷰 A1). cliff는 소멸했고 정확성·coverage는 완성이므로 **perf-only 최적화**. 계획 = **O(C) pred-pointer**:
-각 노드에 roll_ptr predecessor 포인터를 insert 시점에 세팅한다(드레이너가 per-PK를 commit=roll_ptr 순서로 넣으므로
-"직전 삽입 노드 = predecessor"; id-equality로 링크 검증). consult는 포인터만 따라가 O(depth)·맵/alloc 없음 →
-~0.16s 회복. ⚠️ bucket-sharing(pk_hash 충돌) 시 per-PK head/링크 처리 주의(충돌 시 보수적 MISS 허용). 그 후
-⑤ purge-view GC 5-2.
+위 `!=` 수정의 latency는 ~0.36/0.40s였다(per-call writer→predecessor link-map 빌드 비용, 리뷰 A1). cliff는
+소멸했으나 구 consult ~0.16s보다 높아 아래 O(C) 재설계로 회복했다.
+
+### 15.6 O(C) pred-pointer 재설계 (완료) — payoff ~0.16s 회복
+매-호출 link-map 빌드를 없앴다. **각 노드에 roll_ptr predecessor 포인터(`roll_pred`)를 insert 시점에 세팅**한다 —
+단일 드레이너가 한 행의 버전을 commit(=roll_ptr) 순서로 넣으므로 "직전에 그 행에 넣은 노드 = 이 버전의 predecessor".
+헤더에 `newest_node`(가장 최근 노드)와 `node_count`(hop cap)를 둔다. consult는 `newest_node`(acquire)에서 시작해
+`roll_pred` 포인터만 따라가며 첫 changes_visible를 반환 — **O(depth), 맵/alloc 0**. 안전장치: ① head 노드가 이 행
+(full-PK)이고 그 writer==live_top_writer (캐시가 live 도달); ② 각 hop의 **id-equality 링크 검증**(`p->writer ==
+n->version`)으로 ring-drop 갭 검출 → MISS; ③ full-PK 불일치(pk_hash 충돌로 다른 행 노드)면 MISS; ④ bottom(roll_pred
+==nullptr)까지 visible 없으면 NOVISIBLE, 갭이면 NONCONTIG. 드레이너는 새 노드만 append하고 기존 노드의 roll_pred는
+불변이라, consult는 published·immutable 노드만 읽어 EBR Guard 하 안전(동시성 race 0). 종료: roll_pred는 삽입 역순
+(strictly backward)이라 acyclic → nullptr 종료, node_count는 방어용 cap.
+
+**검증**: standalone Release 33 green(Consult 9 — TieBreak/MissInteriorDrop[link-absent]/MissNoVisible[bottom]
+모두 통과)·ASan/TSan 각 22 green(roll_pred publication race 0). 통합 `oltp_read_write` construct_BAD=0 유지(O(C)
+chase도 정확; HIT율 78%로 다소 보수적 — delete+reinsert 세대의 head/linkage가 더 자주 MISS, 전부 safe walk fallback).
+**⑥ 재측(`build_d5_d6_walk.sh`): 4G/64M deep-reader 모두 HIT 2000/2000·noncontig 0·물리 read 0·deep-scan latency
+4G 0.155~0.172s · 64M 0.154~0.161s = BP 무관 ~0.16s 평탄** — 맵 버전 ~0.4s에서 원래 payoff ~0.16s 회복, 정확성
+유지(cross-gen+inversion). 즉 **vanilla walk(4G 0.80s/64M 123s) 대비 ~5×/~770×, 절벽 소멸**. SUM 679715 일관.
+
+**잔여**: ① `oltp_read_write` HIT율 78%(coverage) — delete+reinsert 세대서 보수적 MISS, correctness 무해이나
+coverage 확대 원하면 reinsert INSERT_OP pre-image 캡처가 후보(future work). ② **⑤ GC와의 상호작용**: GC가 노드를
+free하면 `roll_pred`가 dangling — 현재 GC off라 무해하나, ⑤(GC on)서 EBR Guard span이 chase 전체를 덮는지·retire가
+chase 중 노드를 안 free하는지 재검증 필요. **다음 = ⑤ purge-view GC 5-2.**

@@ -55,6 +55,13 @@ namespace mvcc {
         uint64_t page_id;
         uint64_t offset;
         std::atomic<undo_entry_node *> next_entry;
+        // D-5 (O(C) lineage walk): roll_ptr PREDECESSOR = the node this version's value overwrote
+        // (the next-older version on the row's lineage). The single drainer receives a row's versions
+        // in commit (= roll_ptr) order, so the node inserted immediately before this one FOR THIS KEY
+        // is exactly that predecessor; insert() sets this once, before the node is published. consult
+        // chases roll_pred from the newest cached node instead of rebuilding a per-call link table, so
+        // the walk is O(depth) with no allocation. nullptr = oldest cached version (chain bottom).
+        undo_entry_node *roll_pred = nullptr;
         // D-4: cached full-row image of the version this entry locates. Set ONCE at insert (the
         // single drainer is the sole mutator), heap-owned, and freed in the dtor -- which runs
         // when the owning epoch_node is EBR-retired (delete e in epoch_table.h::retire_epoch_once),
@@ -145,6 +152,13 @@ namespace mvcc {
         // note_newest below.
         std::atomic<uint64_t> contiguous_head_writer{0};
         std::atomic<uint64_t> contiguous_suffix_min_version{0};
+
+        // D-5 (O(C) lineage walk): the most-recently-inserted node for this key (the newest cached
+        // version) and the per-key node count. insert() release-stores newest_node after wiring the
+        // node's roll_pred to the prior newest; consult acquire-loads it as the chase start and uses
+        // node_count as a defensive hop cap. Single drainer = sole writer.
+        std::atomic<undo_entry_node *> newest_node{nullptr};
+        std::atomic<uint64_t> node_count{0};
 
         // Called by the drainer right after it links the NEWEST version for this key (version =
         // that version's creator, writer = the trx that overwrote it). If this version is the one the
