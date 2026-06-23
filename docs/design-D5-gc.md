@@ -77,6 +77,21 @@ regresses exactly the high-concurrency OLTP that needs the bound. We avoid it wi
   the id axis into buckets and set a flag per `view_open`; holes open across runs of empty buckets
   (DIVA-style interval coarsening). Looser bound, cheaper bookkeeping.
 
+### 3.1 Signal B payload — each view contributes a PAIR, not just a begin-cut (5-1b finding)
+A registry that mirrors only each view's begin-cut (its `low_limit_id`) is **not safe**: building a hole as
+`[view_i.begin, view_{i+1}.begin]` over-prunes. A version whose superseding transaction is still **active in
+the next view** (in that view's `m_ids`) is one the next view must still see; the standalone GC avoids this by
+tightening the hole's right edge with the next view's active id-set (`get_dead_up_limit_id`). Reproducing that
+safely does **not** require pushing the full id-set per view — it is enough to push two scalars per view:
+`{begin = low_limit_id, up_limit_id}`. Using the next view's `up_limit_id` (its smallest active id) as the
+hole's right edge is always **≤** the exact tightened edge, so the hole is a subset of the standalone hole →
+conservative (under-reclaim) → safe, and equal to exact in the common case (`begin < up_limit`). The two
+scalars must be read as a **consistent pair** (a torn {new begin, stale larger up} would widen a hole →
+over-prune), so each registry slot publishes the pair under a tiny per-slot seqlock (single writer = the
+leasing thread; the GC is the sole reader). The overflow floor stays a single scalar (it over-protects
+`[floor, ∞)` wholesale, no right edge needed). **Revises 5-1a**: the registry slot carries `{begin, up}` via a
+seqlock, not a single id.
+
 **Recommendation: A + B**, C optional, D only if 5-1 shows B is too costly. **Do NOT** implement the periodic
 view-list walk under `trx_sys->mutex` — the superset theorem is the license to skip it.
 

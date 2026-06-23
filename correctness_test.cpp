@@ -838,15 +838,16 @@ TEST(GcScale, LongLivedReaderConsistentUnderHeavyGc) {
 // Single producer: publish makes the id visible to a snapshot; unpublish removes it.
 TEST(ActiveViewRegistry, PublishThenSnapshotThenUnpublish) {
     ActiveViewRegistry<256> reg;
-    std::vector<uint64_t> out; uint64_t floor;
+    std::vector<ViewCut> out; uint64_t floor;
     reg.snapshot(out, floor);
     EXPECT_TRUE(out.empty());
     EXPECT_EQ(floor, ActiveViewRegistry<256>::NO_FLOOR);
 
-    reg.publish(42);
+    reg.publish(42, 40);                         // begin=42, up=40
     reg.snapshot(out, floor);
     ASSERT_EQ(out.size(), 1u);
-    EXPECT_EQ(out[0], 42u);
+    EXPECT_EQ(out[0].begin, 42u);
+    EXPECT_EQ(out[0].up, 40u);
     EXPECT_EQ(floor, ActiveViewRegistry<256>::NO_FLOOR);
 
     reg.unpublish();
@@ -864,19 +865,19 @@ TEST(ActiveViewRegistry, AllConcurrentViewsObserved) {
     std::vector<std::thread> ts;
     for (int i = 0; i < K; ++i) {
         ts.emplace_back([&, i] {
-            reg.publish(uint64_t(i) + 1);                    // ids 1..K (nonzero)
+            reg.publish(uint64_t(i) + 1, uint64_t(i));       // begin 1..K (nonzero), up = begin-1
             published.fetch_add(1);
             while (!release.load()) std::this_thread::yield();
             reg.unpublish();
         });
     }
     while (published.load() < K) std::this_thread::yield();   // all K views open
-    std::vector<uint64_t> out; uint64_t floor;
+    std::vector<ViewCut> out; uint64_t floor;
     reg.snapshot(out, floor);
     release.store(true);
     for (auto &t : ts) t.join();
     ASSERT_EQ(out.size(), size_t(K));                         // no live view omitted
-    for (int i = 0; i < K; ++i) EXPECT_EQ(out[i], uint64_t(i) + 1);
+    for (int i = 0; i < K; ++i) { EXPECT_EQ(out[i].begin, uint64_t(i) + 1); EXPECT_EQ(out[i].up, uint64_t(i)); }
     EXPECT_EQ(floor, ActiveViewRegistry<256>::NO_FLOOR);
 }
 
@@ -895,7 +896,7 @@ TEST(ActiveViewRegistry, SupersetUnderChurn) {
         ws.emplace_back([&, w] {
             uint64_t id = uint64_t(w) * 1000000 + 1;
             while (!stop.load(std::memory_order_relaxed)) {
-                reg.publish(id);
+                reg.publish(id, id - 1);                     // begin=id, up=id-1
                 live[w].store(id, std::memory_order_release);
                 std::this_thread::yield();
                 live[w].store(0, std::memory_order_release);
@@ -907,13 +908,14 @@ TEST(ActiveViewRegistry, SupersetUnderChurn) {
     for (int iter = 0; iter < 20000; ++iter) {
         std::array<uint64_t, W> before{};
         for (int w = 0; w < W; ++w) before[w] = live[w].load(std::memory_order_acquire);
-        std::vector<uint64_t> out; uint64_t floor;
+        std::vector<ViewCut> out; uint64_t floor;
         reg.snapshot(out, floor);
         std::array<uint64_t, W> after{};
         for (int w = 0; w < W; ++w) after[w] = live[w].load(std::memory_order_acquire);
         for (int w = 0; w < W; ++w) {
             if (before[w] != 0 && before[w] == after[w]) {   // live across the whole snapshot
-                if (std::find(out.begin(), out.end(), before[w]) == out.end())
+                if (std::find_if(out.begin(), out.end(),
+                                 [&](const ViewCut &c) { return c.begin == before[w]; }) == out.end())
                     mismatches.fetch_add(1);
             }
         }
@@ -935,20 +937,21 @@ TEST(ActiveViewRegistry, OverflowLowersConservativeFloor) {
     std::vector<std::thread> ts;
     for (int i = 0; i < K; ++i) {
         ts.emplace_back([&, i] {
-            reg.publish(uint64_t(i) + 10);                   // ids 10..21
+            reg.publish(uint64_t(i) + 10, uint64_t(i) + 9);  // begin 10..21
             published.fetch_add(1);
             while (!release.load()) std::this_thread::yield();
             reg.unpublish();
         });
     }
     while (published.load() < K) std::this_thread::yield();
-    std::vector<uint64_t> out; uint64_t floor;
+    std::vector<ViewCut> out; uint64_t floor;
     reg.snapshot(out, floor);
     release.store(true);
     for (auto &t : ts) t.join();
     for (int i = 0; i < K; ++i) {
         uint64_t id = uint64_t(i) + 10;
-        bool in_slots = std::find(out.begin(), out.end(), id) != out.end();
+        bool in_slots = std::find_if(out.begin(), out.end(),
+                                     [&](const ViewCut &c) { return c.begin == id; }) != out.end();
         bool covered = (floor != ActiveViewRegistry<N>::NO_FLOOR && floor <= id);
         EXPECT_TRUE(in_slots || covered) << "view " << id << " neither slotted nor floor-covered";
     }
