@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-06-24 — 세션 8 이어서: 전수 감사 + GC-on/0.16s UAF pivot + ⑤a-1(consult를 GC-safe로 복원)
+
+> 세션 8 후반: serve 재확인·⑥ 재측·O(C) pred-pointer까지 한 뒤(아래 2026-06-23 엔트리) ⑤(purge-view GC)로 진입하려다, pred-pointer chase가 GC와 양립 불가임을 적대적 리뷰로 발견 → 안전 복원 + 전수 감사로 재계획.
+
+**① GC-on/0.16s UAF 발견 (적대적 리뷰 16에이전트)**: f07a2f7의 O(depth) pred-pointer chase는 **GC-on에서 UAF** — roll_pred(영구 back-pointer)가 GC-free된 노드를 계속 가리켜 chase가 freed 메모리 deref. EBR Guard는 현재 epoch만 pin(비-소급)이라 이전 사이클에 retire된 노드 못 막음(F1); chase가 boundary 식별 전 거치는 above-boundary 버전이 다른 view들 사이 interior hole에 들 수 있음(F2); no-visible면 bottom(=회수 1순위)까지 내려감(F4). **설계 탐색(12에이전트)** 으로 fast+interior+safe 후보 6개 비교 → deadzone-gated/image-only 등은 탈락(논리적 deadzone≠물리적 liveness), 맵 라이브체인만 안전(증명), tail-only는 interior 포기. **사용자 아이디어(GC가 회수 시 화살표 끊기)의 정교형 = GC-nulls-back-edge + forward successor 포인터**가 유일한 best 방향(fast+interior+safe), 단 새 machinery라 별도 correctness-critical 증분 = **⑤b**.
+
+**② 전수 감사 (`docs/open-items.md`, 커밋 `4e82ee0`, 9-에이전트)**: 모든 docs/코드의 deferred/optional/glossed 항목을 끌어내 분류(ⓠ5/ⓝ15/ⓣ18/ⓞ13 + 놓친 곳 6). **핵심**: ⑥ payoff=GC-off 전제, ⑤ bounded-memory=통합 미실증(GC 미기동), FG +30%가 재분류로 사라짐, 무한성장 구멍 2개 방치, perf/coverage가 쉬운 1워크로드서만, 논문 draft·multi-run 데이터 전무. **재계획**: Phase1=⑤ 메모리절반(GC-on→무한성장구멍 fix→⑤b 0.16s→5-2b serve+M2, +통합 ASan/TSan) → Phase2=워크로드 폭(oltp_read_write·동시 HTAP·LOB·LLT 생존·FG 결정) → Phase3=정직·산출물(패치 vendor·Limitations·multi-run·논문).
+
+**③ ⑤a-1 done (커밋 `c064e1c`)**: consult를 **GC-safe 라이브체인 맵 버전**(607e1bc)으로 복원 — 살아있는 링크(header→next/next_entry)만 Guard 하 순회해 writer→predecessor 맵 빌드 후 chase. unlink-before-retire라 freed 노드 미도달=GC-safe. roll_pred/newest_node는 ⑤b용으로 insert가 유지하되 consult는 미사용. 검증: **standalone Release 33 green, 통합 oltp_read_write construct_BAD=0·HIT 91%**(pred-pointer chase의 78%서 개선 — 맵 스캔이 delete+reinsert를 더 잡음). 대가=deep-reader ~0.4s(vs 0.16s); cliff 소멸·BP-무관 평탄 불변. **다음 = ⑤a-2(GC 실제 ON)**: pushed `g_clock` + registry deadzone로 GC 구동 + 스레드 시작 + 무한성장 구멍 fix, shadow consult, GC sweep(nonzero retire)·construct_BAD=0·메모리 bound·통합 ASan/TSan 검증.
+
+---
+
 ## 2026-06-23 — 세션 8: 잔여 newer correctness 해결 — consult를 lineage 워크로 교체(construct_BAD=0)
 
 > 세션 7이 남긴 최우선 미해결(일반 OLTP `oltp_read_write`에서 4d consult HIT의 잔여 오판정, 서빙 OFF라 무피해이나 serve mode-1 일반 correctness 미확립)을 진단·수정. 맥락 복원(메모리+docs) → 환경 검증(git `d0b6999` clean, WSL 빌드 온전, standalone 33 green) 후 진행.
