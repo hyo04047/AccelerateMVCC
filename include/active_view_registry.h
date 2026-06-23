@@ -99,7 +99,11 @@ public:
 
 private:
     // Per-slot seqlock-protected {begin, up}. seq even = stable, odd = a write in progress.
-    struct Slot {
+    // alignas(64): one slot per cache line so different threads' single-writer publishes never
+    // false-share (the publish is then an uncontended L1 store; the seqlock has no writer-writer
+    // contention since each slot has exactly one writer). The GC reader scans all lines once per
+    // (infrequent) cycle.
+    struct alignas(64) Slot {
         std::atomic<uint64_t> seq{0};
         std::atomic<uint64_t> begin{EMPTY};
         std::atomic<uint64_t> up{0};
