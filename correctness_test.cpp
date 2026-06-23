@@ -7,8 +7,11 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <array>
+#include <algorithm>
 #include "include/accelerateMVCC.h"
 #include "include/read_view_mirror.h"
+#include "include/active_view_registry.h"
 
 using namespace mvcc;
 
@@ -821,4 +824,134 @@ TEST(GcScale, LongLivedReaderConsistentUnderHeavyGc) {
     EXPECT_TRUE(f0);
     EXPECT_TRUE(consistent);                 // LLT's visible version survived all GC (tight bounds)
     EXPECT_GT(mvcc.epochs_retired(), 0u);    // reclaim made progress (not starved by the LLT)
+}
+
+// ---------------------------------------------------------------------------
+// D-5 (5-1a): ActiveViewRegistry -- the leaf-domain lock-free mirror of InnoDB's active
+//   read-views (collection signal B), tested in isolation before any mysqld wiring. The
+//   load-bearing property is SUPERSET: a published (open, not-yet-closed) view is ALWAYS
+//   observed by a later snapshot, and slot-pool exhaustion lowers a conservative floor
+//   rather than dropping a view. Never omitting a live view is the one safe direction
+//   (design-D5-gc.md §2.1: omission -> interior over-prune -> wrong authoritative serve).
+// ---------------------------------------------------------------------------
+
+// Single producer: publish makes the id visible to a snapshot; unpublish removes it.
+TEST(ActiveViewRegistry, PublishThenSnapshotThenUnpublish) {
+    ActiveViewRegistry<256> reg;
+    std::vector<uint64_t> out; uint64_t floor;
+    reg.snapshot(out, floor);
+    EXPECT_TRUE(out.empty());
+    EXPECT_EQ(floor, ActiveViewRegistry<256>::NO_FLOOR);
+
+    reg.publish(42);
+    reg.snapshot(out, floor);
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0], 42u);
+    EXPECT_EQ(floor, ActiveViewRegistry<256>::NO_FLOOR);
+
+    reg.unpublish();
+    reg.snapshot(out, floor);
+    EXPECT_TRUE(out.empty());
+}
+
+// Many concurrent producers, each holding a distinct view at a barrier: a snapshot taken
+// while all are published must contain EVERY one (superset, sorted), with no overflow at K<pool.
+TEST(ActiveViewRegistry, AllConcurrentViewsObserved) {
+    constexpr int K = 64;
+    ActiveViewRegistry<256> reg;
+    std::atomic<int> published{0};
+    std::atomic<bool> release{false};
+    std::vector<std::thread> ts;
+    for (int i = 0; i < K; ++i) {
+        ts.emplace_back([&, i] {
+            reg.publish(uint64_t(i) + 1);                    // ids 1..K (nonzero)
+            published.fetch_add(1);
+            while (!release.load()) std::this_thread::yield();
+            reg.unpublish();
+        });
+    }
+    while (published.load() < K) std::this_thread::yield();   // all K views open
+    std::vector<uint64_t> out; uint64_t floor;
+    reg.snapshot(out, floor);
+    release.store(true);
+    for (auto &t : ts) t.join();
+    ASSERT_EQ(out.size(), size_t(K));                         // no live view omitted
+    for (int i = 0; i < K; ++i) EXPECT_EQ(out[i], uint64_t(i) + 1);
+    EXPECT_EQ(floor, ActiveViewRegistry<256>::NO_FLOOR);
+}
+
+// Superset invariant under churn (run under ASAN/TSAN): an id that is live for the whole
+// duration of a snapshot MUST appear in it. Writers use strictly-increasing per-writer ids,
+// so "same live id before and after the snapshot" means it stayed published throughout.
+TEST(ActiveViewRegistry, SupersetUnderChurn) {
+    ActiveViewRegistry<256> reg;
+    std::atomic<bool> stop{false};
+    std::atomic<int> mismatches{0};
+    constexpr int W = 8;
+    std::array<std::atomic<uint64_t>, W> live{};             // each writer's published id (0=none)
+    for (int w = 0; w < W; ++w) live[w].store(0);
+    std::vector<std::thread> ws;
+    for (int w = 0; w < W; ++w) {
+        ws.emplace_back([&, w] {
+            uint64_t id = uint64_t(w) * 1000000 + 1;
+            while (!stop.load(std::memory_order_relaxed)) {
+                reg.publish(id);
+                live[w].store(id, std::memory_order_release);
+                std::this_thread::yield();
+                live[w].store(0, std::memory_order_release);
+                reg.unpublish();
+                id += W;                                     // distinct, monotonically increasing
+            }
+        });
+    }
+    for (int iter = 0; iter < 20000; ++iter) {
+        std::array<uint64_t, W> before{};
+        for (int w = 0; w < W; ++w) before[w] = live[w].load(std::memory_order_acquire);
+        std::vector<uint64_t> out; uint64_t floor;
+        reg.snapshot(out, floor);
+        std::array<uint64_t, W> after{};
+        for (int w = 0; w < W; ++w) after[w] = live[w].load(std::memory_order_acquire);
+        for (int w = 0; w < W; ++w) {
+            if (before[w] != 0 && before[w] == after[w]) {   // live across the whole snapshot
+                if (std::find(out.begin(), out.end(), before[w]) == out.end())
+                    mismatches.fetch_add(1);
+            }
+        }
+    }
+    stop.store(true);
+    for (auto &t : ws) t.join();
+    EXPECT_EQ(mismatches.load(), 0);                         // no live view ever missed
+}
+
+// Slot-pool exhaustion must NOT drop a view: more concurrent views than slots -> the rest go
+// to the conservative floor. SUPERSET: every view id is either in the slot snapshot OR covered
+// by the floor (floor <= it). Tiny pool (4) with 12 concurrent views forces the overflow path.
+TEST(ActiveViewRegistry, OverflowLowersConservativeFloor) {
+    constexpr unsigned N = 4;
+    ActiveViewRegistry<N> reg;
+    constexpr int K = 12;
+    std::atomic<int> published{0};
+    std::atomic<bool> release{false};
+    std::vector<std::thread> ts;
+    for (int i = 0; i < K; ++i) {
+        ts.emplace_back([&, i] {
+            reg.publish(uint64_t(i) + 10);                   // ids 10..21
+            published.fetch_add(1);
+            while (!release.load()) std::this_thread::yield();
+            reg.unpublish();
+        });
+    }
+    while (published.load() < K) std::this_thread::yield();
+    std::vector<uint64_t> out; uint64_t floor;
+    reg.snapshot(out, floor);
+    release.store(true);
+    for (auto &t : ts) t.join();
+    for (int i = 0; i < K; ++i) {
+        uint64_t id = uint64_t(i) + 10;
+        bool in_slots = std::find(out.begin(), out.end(), id) != out.end();
+        bool covered = (floor != ActiveViewRegistry<N>::NO_FLOOR && floor <= id);
+        EXPECT_TRUE(in_slots || covered) << "view " << id << " neither slotted nor floor-covered";
+    }
+    EXPECT_LE(out.size(), size_t(N));                        // no more than the pool fit in slots
+    EXPECT_NE(floor, ActiveViewRegistry<N>::NO_FLOOR);       // overflow happened (K > N)
 }
