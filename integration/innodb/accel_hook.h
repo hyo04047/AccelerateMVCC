@@ -101,4 +101,8 @@ void accel_note_view_open() noexcept;
 // (right version, wrong bytes), same=0 if it differs (consult picked the wrong version).
 void accel_note_bad_trx(int same) noexcept;
 
+// D-5 diag: for a wrong-version construct_BAD, older=1 if consult served an OLDER version than vanilla
+// (cache behind), older=0 if NEWER (visibility-mirror disagreement).
+void accel_note_bad_dir(int older) noexcept;
+
 #endif  // ACCEL_HOOK_H

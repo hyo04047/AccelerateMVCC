@@ -54,6 +54,10 @@ std::atomic<uint64_t> g_c_serve{0};
 // near-head/short-read construct_BAD found under oltp_read_write.
 std::atomic<uint64_t> g_c_bad_trxsame{0};
 std::atomic<uint64_t> g_c_bad_trxdiff{0};
+// D-5 diag: of the trx_diff (wrong version) cases, did consult serve an OLDER version than vanilla
+// (cache behind = drainer-lag / contiguity-gate leak) or a NEWER one (visibility-mirror disagreement)?
+std::atomic<uint64_t> g_c_bad_older{0};
+std::atomic<uint64_t> g_c_bad_newer{0};
 
 // D-4 4b-3c TEST-ONLY toggles, read once from the environment at accel_init (set before g_ready is
 // released, so the live hook/consult see them after their acquire of g_ready). Default off = prod.
@@ -205,8 +209,9 @@ void accel_shutdown() noexcept {
                vfloor == mvcc::ActiveViewRegistry<>::NO_FLOOR ? "none" : "set",
                (unsigned long long)g_clock.load());
   std::fprintf(stderr, "[accel] construct_BAD detail: trx_same=%llu (right version, bytes differ) "
-               "trx_diff=%llu (WRONG version picked)\n",
-               (unsigned long long)g_c_bad_trxsame.load(), (unsigned long long)g_c_bad_trxdiff.load());
+               "trx_diff=%llu (WRONG version: older=%llu [cache behind] newer=%llu [visibility])\n",
+               (unsigned long long)g_c_bad_trxsame.load(), (unsigned long long)g_c_bad_trxdiff.load(),
+               (unsigned long long)g_c_bad_older.load(), (unsigned long long)g_c_bad_newer.load());
   delete g_accel;  // drainer joined -> sole owner; dtor is a no-op for BG GC (never started)
   g_accel = nullptr;
 }
@@ -326,6 +331,10 @@ void accel_note_view_open() noexcept {
 // D-5 diag: classify a construct_BAD by whether the served version's trx_id matched vanilla's.
 void accel_note_bad_trx(int same) noexcept {
   (same ? g_c_bad_trxsame : g_c_bad_trxdiff).fetch_add(1, std::memory_order_relaxed);
+}
+// D-5 diag: for a wrong-version case, was the served version OLDER (older=1) or NEWER (older=0)?
+void accel_note_bad_dir(int older) noexcept {
+  (older ? g_c_bad_older : g_c_bad_newer).fetch_add(1, std::memory_order_relaxed);
 }
 void accel_publish_view_close() noexcept {
   if (!g_ready.load(std::memory_order_acquire) || !g_publish_views) return;
