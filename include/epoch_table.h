@@ -12,6 +12,7 @@
 #include "interval_list.h"
 #include "trxManager.h"
 #include "epoch_reclaimer.h"
+#include "active_view_registry.h"   // D-5 5-1c: ViewCut {begin, up} from the active-view registry
 
 #define NUM_DEADZONE (50)
 
@@ -161,6 +162,39 @@ namespace mvcc {
                 zone->range[2 * zone->len] = low_limit_id;
                 zone->range[2 * zone->len + 1] = dead_up_limit_id;
                 zone->len++;
+            }
+            return zone;
+        }
+
+        /* D-5 5-1c: build the dead zone from the active-view registry's {begin, up} cuts (collection
+           signal B) plus a conservative floor (signal B overflow and/or signal A purge floor). `cuts`
+           MUST be sorted ascending by begin (the registry snapshot already is). Each hole's right edge
+           uses the NEXT view's up_limit -- always <= the exact active-id-set edge of generate_dead_zone
+           above, so the prunable set is a SUBSET of the standalone's (conservative; safe by inheritance).
+           zone 0 (tail) is [0, oldest.up], matching the standalone's oldest_low_limit_id = up. A floor
+           < NO_FLOOR clamps every right edge so nothing >= floor is pruned (an unobserved view could sit
+           there). Clamped at NUM_DEADZONE like generate_dead_zone (excess holes dropped = under-reclaim).
+           See docs/design-D5-gc.md §3.1. */
+        deadzone* generate_dead_zone_from_cuts(const std::vector<ViewCut>& cuts, uint64_t floor) {
+            if (cuts.empty()) {
+                return new deadzone(std::vector<uint64_t>{}, 0);   // no active view -> prune nothing here
+            }
+            auto* zone = new deadzone(std::vector<uint64_t>{}, cuts.at(0).up);
+            zone->range[0] = 0;
+            zone->range[1] = cuts.at(0).up;     // tail [0, oldest up_limit)
+            zone->len = 1;
+            for (std::size_t i = 1; i < cuts.size() && zone->len < NUM_DEADZONE; ++i) {
+                uint64_t left = cuts.at(i - 1).begin;
+                uint64_t right = cuts.at(i).up;     // conservative right edge (<= exact dead_up)
+                if (right > left) {                 // non-empty hole only
+                    zone->range[2 * zone->len] = left;
+                    zone->range[2 * zone->len + 1] = right;
+                    zone->len++;
+                }
+            }
+            if (floor != ~uint64_t(0)) {            // conservative floor: keep everything >= floor
+                for (uint64_t i = 0; i < zone->len; ++i)
+                    if (zone->range[2 * i + 1] > floor) zone->range[2 * i + 1] = floor;
             }
             return zone;
         }

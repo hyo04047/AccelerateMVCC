@@ -958,3 +958,63 @@ TEST(ActiveViewRegistry, OverflowLowersConservativeFloor) {
     EXPECT_LE(out.size(), size_t(N));                        // no more than the pool fit in slots
     EXPECT_NE(floor, ActiveViewRegistry<N>::NO_FLOOR);       // overflow happened (K > N)
 }
+
+// ---------------------------------------------------------------------------
+// D-5 (5-1c): generate_dead_zone_from_cuts -- build the dead zone from the registry's {begin, up}
+//   cuts + a conservative floor. The hole right edge uses the next view's up_limit (a conservative
+//   subset of the standalone generate_dead_zone). The load-bearing checks: the SUPERSET theorem
+//   (adding views never newly prunes a kept version; omitting a live view over-prunes -- the M2
+//   interior-over-prune negative control) and the overflow/purge floor (nothing >= floor is pruned).
+// ---------------------------------------------------------------------------
+
+TEST(GcDeadzoneFromCuts, TailAndConservativeHoles) {
+    Epoch_table et;
+    std::vector<ViewCut> cuts = { {100, 100}, {200, 150}, {300, 250} };   // sorted by begin
+    auto* z = et.generate_dead_zone_from_cuts(cuts, ~uint64_t(0));
+    ASSERT_EQ(z->len, 3u);
+    EXPECT_EQ(z->range[0], 0u);   EXPECT_EQ(z->range[1], 100u);   // tail [0, oldest up=100)
+    EXPECT_EQ(z->range[2], 100u); EXPECT_EQ(z->range[3], 150u);   // hole [A.begin=100, B.up=150)
+    EXPECT_EQ(z->range[4], 200u); EXPECT_EQ(z->range[5], 250u);   // hole [B.begin=200, C.up=250)
+    EXPECT_TRUE(et.can_pruning(10, 90, z));     // fully in the tail
+    EXPECT_TRUE(et.can_pruning(110, 140, z));   // fully in hole [100,150)
+    EXPECT_FALSE(et.can_pruning(160, 240, z));  // straddles -> kept (needed by view B)
+    delete z;
+}
+
+// The M2 interior-over-prune negative control + the superset safety, on one version.
+// Version V = [created 160, superseded 240]. View B (begin 200, up 150) must still see V (it sees
+// V's creator 160 < 200 but not the superseder 240 > 200).
+TEST(GcDeadzoneFromCuts, SupersetExcludesInteriorOverPrune) {
+    Epoch_table et;
+    const uint64_t NO_FLOOR = ~uint64_t(0);
+
+    // FULL set {A,B,C}: V is correctly KEPT.
+    std::vector<ViewCut> full = { {100, 100}, {200, 150}, {300, 250} };
+    auto* zf = et.generate_dead_zone_from_cuts(full, NO_FLOOR);
+    EXPECT_FALSE(et.can_pruning(160, 240, zf)) << "V is needed by view B; must not be pruned";
+    delete zf;
+
+    // UNDER-approximation: omit the live view B. The hole widens to [A.begin=100, C.up=250] and V
+    // falls strictly inside -> WRONGLY pruned. This is exactly what omitting a live view does.
+    std::vector<ViewCut> missing_b = { {100, 100}, {300, 250} };
+    auto* zm = et.generate_dead_zone_from_cuts(missing_b, NO_FLOOR);
+    EXPECT_TRUE(et.can_pruning(160, 240, zm)) << "omitting a live view over-prunes (the unsafe direction)";
+    delete zm;
+
+    // SUPERSET: adding extra views only subdivides holes -> never newly prunes V. V stays kept.
+    std::vector<ViewCut> superset = { {100, 100}, {200, 150}, {250, 170}, {300, 250} };
+    auto* zs = et.generate_dead_zone_from_cuts(superset, NO_FLOOR);
+    EXPECT_FALSE(et.can_pruning(160, 240, zs)) << "a superset never newly prunes a kept version";
+    delete zs;
+}
+
+TEST(GcDeadzoneFromCuts, OverflowFloorKeepsEverythingAbove) {
+    Epoch_table et;
+    std::vector<ViewCut> cuts = { {100, 100}, {500, 400} };   // hole [100, 400)
+    // floor = 300: an unobserved (overflow) view might sit at 300 -> keep everything >= 300.
+    auto* z = et.generate_dead_zone_from_cuts(cuts, 300);
+    EXPECT_TRUE(et.can_pruning(150, 250, z));    // fully below the floor -> prunable
+    EXPECT_FALSE(et.can_pruning(150, 350, z));   // reaches into [300, ..) -> kept
+    EXPECT_FALSE(et.can_pruning(320, 380, z));   // entirely above the floor -> kept
+    delete z;
+}
