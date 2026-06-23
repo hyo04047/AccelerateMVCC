@@ -11,6 +11,7 @@
 #include "accel_hook.h"
 #include "accel_ring.h"
 #include "accelerateMVCC.h"  // D-1b-3a: pull the real accelerator into the mysqld/innobase build
+#include "active_view_registry.h"  // D-5 5-1b: leaf-domain mirror of InnoDB's active read-views
 
 #include <atomic>
 #include <chrono>
@@ -62,6 +63,15 @@ bool g_no_schema_check = false;  // D-4 4c-2 negative control: consult ignores t
 // at accel_init before g_ready is released; the live consult path acquires g_ready first, so a reader
 // thread sees this write before it ever acts on the mode. Default 0 = shadow (safe).
 int g_authoritative_mode = 0;
+
+// D-5 5-1b: leaf-domain ACTIVE READ-VIEW REGISTRY (collection signal B). InnoDB pushes each view's
+// {low_limit_id, up_limit_id} here on view_open (piggybacking the trx_sys mutex it already holds) and
+// clears it on view_close; the BG GC (D-5, still OFF) will read a wait-free snapshot to build the dead
+// zone. ACCEL_PUBLISH=0 disables the push so 5-1b can measure its OLTP cost against a baseline.
+mvcc::ActiveViewRegistry<> g_view_reg;
+bool g_publish_views = true;
+std::atomic<uint64_t> g_view_published{0};
+std::atomic<uint64_t> g_view_unpublished{0};
 
 // D-1b-3a: the real AccelerateMVCC index lives inside mysqld now. record_count=0 -> no ctor
 // pre-creation (keys are created dynamically). BG GC is intentionally NOT started (populate-only;
@@ -135,6 +145,9 @@ void accel_init() noexcept {
     if (au[0] == '1') g_authoritative_mode = 1;        // serve-only (skip the walk)
     else if (au[0] == '2') g_authoritative_mode = 2;   // verify-serve (walk + compare, then serve)
   }
+  if (const char *pv = std::getenv("ACCEL_PUBLISH")) {
+    if (pv[0] == '0') g_publish_views = false;         // baseline: OLTP without the view-registry push
+  }
   try {
     g_accel = new mvcc::Accelerate_mvcc(0, 16);  // dynamic keys, 64k-bin cuckoo, BG GC NOT started
     g_drainer = std::thread(drain_loop);
@@ -169,6 +182,14 @@ void accel_shutdown() noexcept {
                (unsigned long long)g_c_miss_noncontig.load(), (unsigned long long)g_c_miss_ineligible.load(),
                (unsigned long long)g_c_construct_ok.load(), (unsigned long long)g_c_construct_bad.load(),
                g_authoritative_mode, (unsigned long long)g_c_serve.load());
+  // D-5 5-1b: view-registry push evidence. published/unpublished are the per-view_open/close push
+  // counts (not per row); live_snapshot is what the GC would see now (~0 at shutdown, all closed).
+  std::vector<mvcc::ViewCut> vcut; uint64_t vfloor;
+  g_view_reg.snapshot(vcut, vfloor);
+  std::fprintf(stderr, "[accel] view-registry: published=%llu unpublished=%llu publish_on=%d live_snapshot=%zu floor=%s\n",
+               (unsigned long long)g_view_published.load(), (unsigned long long)g_view_unpublished.load(),
+               g_publish_views ? 1 : 0, vcut.size(),
+               vfloor == mvcc::ActiveViewRegistry<>::NO_FLOOR ? "none" : "set");
   delete g_accel;  // drainer joined -> sole owner; dtor is a no-op for BG GC (never started)
   g_accel = nullptr;
 }
@@ -260,3 +281,20 @@ void accel_note_construct(int matched) noexcept {
 // happens-before this read on the same reader thread, so no separate atomic is needed.
 int accel_authoritative_mode() noexcept { return g_authoritative_mode; }
 void accel_note_serve() noexcept { g_c_serve.fetch_add(1, std::memory_order_relaxed); }
+
+// D-5 5-1b: push facade for InnoDB's read-view lifecycle (collection signal B). Called from
+// MVCC::view_open (both the reuse fast-path and the mutex path) and MVCC::view_close. begin =
+// view->low_limit_id() (the view's begin / high-water = dead-zone sort key), up = view->up_limit_id()
+// (its low-water = the conservative right edge for the next hole). Leaf-domain: a lock-free publish
+// into g_view_reg, no InnoDB call-back. Gated on g_ready (the live window) and the ACCEL_PUBLISH
+// toggle. begin==0 is skipped (the registry treats 0 as an empty slot).
+void accel_publish_view_open(uint64_t begin, uint64_t up) noexcept {
+  if (!g_ready.load(std::memory_order_acquire) || !g_publish_views || begin == 0) return;
+  g_view_reg.publish(begin, up);
+  g_view_published.fetch_add(1, std::memory_order_relaxed);
+}
+void accel_publish_view_close() noexcept {
+  if (!g_ready.load(std::memory_order_acquire) || !g_publish_views) return;
+  g_view_reg.unpublish();
+  g_view_unpublished.fetch_add(1, std::memory_order_relaxed);
+}

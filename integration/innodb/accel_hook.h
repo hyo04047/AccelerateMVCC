@@ -85,4 +85,12 @@ int accel_authoritative_mode() noexcept;
 // for a serve run is served == HIT count (every HIT served), with construct_bad==0 in mode 2.
 void accel_note_serve() noexcept;
 
+// D-5 5-1b: push facade for InnoDB's read-view lifecycle (collection signal B). accel_publish_view_open
+// is called from MVCC::view_open with the view's {low_limit_id (begin), up_limit_id (up)};
+// accel_publish_view_close from MVCC::view_close. Both are leaf-domain lock-free pushes into the
+// active-view registry the background GC will snapshot to build the dead zone (D-5). No-ops outside the
+// live window or when ACCEL_PUBLISH=0 (the baseline for measuring the push's OLTP cost).
+void accel_publish_view_open(uint64_t begin, uint64_t up) noexcept;
+void accel_publish_view_close() noexcept;
+
 #endif  // ACCEL_HOOK_H
