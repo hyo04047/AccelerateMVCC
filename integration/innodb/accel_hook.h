@@ -105,4 +105,13 @@ void accel_note_bad_trx(int same) noexcept;
 // (cache behind), older=0 if NEWER (visibility-mirror disagreement).
 void accel_note_bad_dir(int older) noexcept;
 
+// D-5 diag6: for the systematic "newer" wrong-version set, the caller (InnoDB domain) asks the LIVE
+// view directly whether consult's chosen version (ct) is visible (vanilla_sees) and whether ct is in
+// the view's active id-set (ct_in_mids), passing the view limits too. This splits the root cause in one
+// bit: vanilla_sees==0 => consult got DIFFERENT view inputs than vanilla (extraction bug); vanilla_sees
+// ==1 => ct is genuinely visible but NOT on vanilla's undo chain for this row (a cross-generation cache
+// version, e.g. delete+reinsert of the same PK). Bounded stderr dump of the first cases for the pattern.
+void accel_note_newer_detail(uint64_t ct, uint64_t vt, uint64_t up, uint64_t low,
+                             uint64_t creator, int ct_in_mids, int vanilla_sees) noexcept;
+
 #endif  // ACCEL_HOOK_H

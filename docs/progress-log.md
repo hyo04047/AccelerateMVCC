@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-06-23 — 세션 8: 잔여 newer correctness 해결 — consult를 lineage 워크로 교체(construct_BAD=0)
+
+> 세션 7이 남긴 최우선 미해결(일반 OLTP `oltp_read_write`에서 4d consult HIT의 잔여 오판정, 서빙 OFF라 무피해이나 serve mode-1 일반 correctness 미확립)을 진단·수정. 맥락 복원(메모리+docs) → 환경 검증(git `d0b6999` clean, WSL 빌드 온전, standalone 33 green) 후 진행.
+
+**진단(diag6, 결정적) — cross-generation 캐시 오염**: 잔여 "newer" construct_BAD의 root-cause를 한 비트로 가르는 계측 추가 — 불일치 지점에서 라이브 ReadView에게 "consult가 고른 버전(ct)이 너에게 보이냐"를 직접 질의. 결과 **vanilla_sees=1366 / vanilla_hides=0** → 입력 추출 버그가 아니라(미러도 byte-exact 확인), consult가 고른 버전은 vanilla도 visible로 인정하지만 **vanilla의 현재 undo(roll_ptr) 체인엔 없는** 버전. 메커니즘: 캐시가 (table, full-PK)로 키 잡히고 GC-off라 같은 PK의 **delete+reinsert/key-update 과거 세대(lineage)** 버전까지 보유 → consult의 "PK별 전체 max-visible" 선택이 vanilla 현재 lineage에 없는 visible 버전을 집음. `oltp_read_write`(key-update+delete+insert=lineage 분기) 고유 — `oltp_update_non_index`(제자리 update만=단일 lineage)에선 무발생(⑥·4d 검증이 깨끗했던 이유). 4b 원 적대적 리뷰(design-D4b §7 #3)가 미리 경고했던 지점.
+
+**적대적 설계 리뷰(워크플로 18에이전트, 9각도 attack→finding별 verify)**: 제안 수정(lineage 워크)을 within-trx 다중수정·delete+reinsert 교차·secondary-index 진입·gap→MISS·링크 모호성·동시성/atomicity·vanilla 경계 동치·trx_same 잔여·성능 각도로 공격. must-fix 종합: ① strict `version_trx_id < target`(within-trx intermediate[version==writer] 배제 + target 단조감소=종료) — load-bearing, ② 한 writer의 predecessor가 비-unique(≥2 distinct)거나 링크 끊김 → **MISS**(절대 추측 안 함), ③ img guard·contiguity 전제(`head_writer==live_top_writer`)·EBR Guard span 유지, ④ reinsert false-link(A7)는 mode-2/shadow construct_BAD=0으로 검증, ⑤ trx_same(right-version/wrong-bytes)·perf(deep chain O(C) cursor)는 별개 추적.
+
+**수정(`include/accelerateMVCC.cpp` consult)**: 버전 선택을 "전체 max-visible"에서 **lineage 워크**로 교체 — (1) full-PK 일치 엔트리로 writer→predecessor 링크 테이블 1패스 구성(`version<writer`만, ≥2 distinct=ambiguous), (2) live top writer에서 링크를 따라 내려가며 첫 changes_visible 반환(absent/ambiguous→MISS). vanilla roll_ptr 워크를 캐시 writer-linkage 위에서 그대로 미러 → 다른 세대 엔트리 구조적 배제. 기존 contiguity 전제·img guard·MISS 분류(absent/novisible/noncontig/ineligible) 유지.
+
+**검증**: 통합 shadow `oltp_read_write` 16thr/20s — **construct_BAD 1897→0**(trx_diff newer 0·trx_same 0=보너스, 워크가 final 상태 정확 선택), HIT 752507 전부 construct_ok(=캐시 합성 rec가 vanilla와 byte-동일), 나머지 noncontig=안전 MISS. standalone Release 33 green(Consult 9=tie-break 자연 흡수+drainer-lag/interior-drop/no-visible/ineligible/collision/negative-control/concurrency, ReadViewMirror 4), ASan/TSan 각 22 green(UAF·leak·race 0 — per-call link table+워크가 EBR Guard 하 안전). serve 기본 OFF.
+
+**불변식 유지**: consult=LOCATOR/HINT — HIT(=vanilla byte-동일) 또는 MISS(full walk), silent wrong result 구조적 불가. 재현 `build_d5_diag6.sh`(통합 shadow)·`build_d5_walk_std.sh`(standalone)·`build_d5_walk_san.sh`(ASan/TSan, 레포 밖). **다음 = serve 재확인(mode-2/mode-1 oltp_read_write construct_BAD=0·served==hit) + ⑥ 재측(lineage 워크가 deep chain서 0.16s 유지하는지, 필요시 O(C) cursor 최적화) → ⑤ purge-view GC 5-2.**
+
+---
+
 ## 2026-06-22 — 세션 7: D-4 ④ 읽기연결 4c·4d-prep·4d(authoritative serve) 완료 — 캐시 결과 실제 서빙·정확성 증명
 
 > 세션 6에서 4c/4d-prep까지 진행(아래 세션 6 엔트리는 4b까지 기록). 이 세션: 재개검증(HEAD `f62c127` clean·origin 동기화, standalone 32 green Release/ASan/TSan, 통합 mysqld 4d-prep 게이트 통과) → serve-safety 적대적 audit → **4d authoritative serve 완성**.

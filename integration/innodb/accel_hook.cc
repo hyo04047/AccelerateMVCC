@@ -58,6 +58,12 @@ std::atomic<uint64_t> g_c_bad_trxdiff{0};
 // (cache behind = drainer-lag / contiguity-gate leak) or a NEWER one (visibility-mirror disagreement)?
 std::atomic<uint64_t> g_c_bad_older{0};
 std::atomic<uint64_t> g_c_bad_newer{0};
+// D-5 diag6: of the NEWER cases, did the LIVE view itself consider consult's chosen version visible?
+// vsees = vanilla agrees ct is visible (=> ct is just not on vanilla's chain = cross-generation cache);
+// vhides = vanilla says ct is NOT visible (=> consult was fed different view inputs = extraction bug).
+std::atomic<uint64_t> g_c_newer_vsees{0};
+std::atomic<uint64_t> g_c_newer_vhides{0};
+std::atomic<int> g_c_newer_printed{0};   // bound the per-case stderr dump
 
 // D-4 4b-3c TEST-ONLY toggles, read once from the environment at accel_init (set before g_ready is
 // released, so the live hook/consult see them after their acquire of g_ready). Default off = prod.
@@ -212,6 +218,11 @@ void accel_shutdown() noexcept {
                "trx_diff=%llu (WRONG version: older=%llu [cache behind] newer=%llu [visibility])\n",
                (unsigned long long)g_c_bad_trxsame.load(), (unsigned long long)g_c_bad_trxdiff.load(),
                (unsigned long long)g_c_bad_older.load(), (unsigned long long)g_c_bad_newer.load());
+  // D-5 diag6: NEWER root-cause split. vsees>0 dominant => cross-generation cache (ct visible but not on
+  // vanilla's chain); vhides>0 dominant => view-input extraction mismatch (consult fed different limits).
+  std::fprintf(stderr, "[accel] newer split: vanilla_sees=%llu (cross-generation: ct visible, off vanilla's chain) "
+               "vanilla_hides=%llu (input mismatch: consult got different view limits)\n",
+               (unsigned long long)g_c_newer_vsees.load(), (unsigned long long)g_c_newer_vhides.load());
   delete g_accel;  // drainer joined -> sole owner; dtor is a no-op for BG GC (never started)
   g_accel = nullptr;
 }
@@ -335,6 +346,18 @@ void accel_note_bad_trx(int same) noexcept {
 // D-5 diag: for a wrong-version case, was the served version OLDER (older=1) or NEWER (older=0)?
 void accel_note_bad_dir(int older) noexcept {
   (older ? g_c_bad_older : g_c_bad_newer).fetch_add(1, std::memory_order_relaxed);
+}
+// D-5 diag6: split the NEWER set by whether the LIVE view sees ct, and dump the first cases.
+void accel_note_newer_detail(uint64_t ct, uint64_t vt, uint64_t up, uint64_t low,
+                             uint64_t creator, int ct_in_mids, int vanilla_sees) noexcept {
+  (vanilla_sees ? g_c_newer_vsees : g_c_newer_vhides).fetch_add(1, std::memory_order_relaxed);
+  int n = g_c_newer_printed.fetch_add(1, std::memory_order_relaxed);
+  if (n < 40) {
+    std::fprintf(stderr,
+                 "[accel] newer#%d ct=%llu vt=%llu up=%llu low=%llu creator=%llu ct_in_mids=%d vanilla_sees=%d\n",
+                 n, (unsigned long long)ct, (unsigned long long)vt, (unsigned long long)up,
+                 (unsigned long long)low, (unsigned long long)creator, ct_in_mids, vanilla_sees);
+  }
 }
 void accel_publish_view_close() noexcept {
   if (!g_ready.load(std::memory_order_acquire) || !g_publish_views) return;

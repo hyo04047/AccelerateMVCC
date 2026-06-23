@@ -356,3 +356,45 @@ scan × 1000 row 전부 서빙)·construct_BAD=0. 즉 평탄화는 정확성을 
 (InnoDB HTAP/LLT 성능 향상) 목적 달성, 프로젝트 1차(A+B+C) + 최종(D) 목표 완료.** 남은 것은 ⑤ purge-view GC
 (메모리 회수로 working-set bound 완성)와 최종검증(LOB/FTS/spatial/큰 테이블/mysqld ASan·TSan), 그리고 최종
 산출물 = 논문(한글본 + 영문본) 작성.
+
+## 15. consult version-selection — lineage walk (세션 8, 일반 OLTP correctness 수정)
+세션 7의 4d serve correctness는 `oltp_update_non_index`(제자리 update만)에서만 검증됐다. 5-1c-2에서 처음
+`oltp_read_write`(point/range read + index update + delete+insert)로 돌리자 consult HIT의 일부가 vanilla와
+달라졌다(construct_BAD). 서빙 OFF라 무피해이나 serve mode-1(순수 perf 경로) 일반 correctness가 미확립이었다.
+
+### 15.1 진단 (diag6) — cross-generation 캐시 오염
+지배적 원인(같은 trx 다중수정 tie)은 세션 7에서 writer_trx_id tie-break로 고쳐 28%→0.26%로 줄었다. 잔여
+0.26%는 전부 "newer"(consult가 vanilla보다 더 새 버전을 visible로 판정)였다. `changes_visible` 미러는 InnoDB와
+byte-exact라 입력값 불일치 아니면 다른 원인이다. **diag6**: 불일치 지점에서 라이브 ReadView에게 직접
+`view->changes_visible(consult가 고른 trx)`를 물어 한 비트로 갈랐다 — **vanilla_sees=1366 / vanilla_hides=0**.
+즉 입력 추출 버그가 아니라(vanilla도 그 버전을 visible로 인정), consult가 고른 버전이 **vanilla의 현재
+undo(roll_ptr) 체인엔 없는** 버전이다. 메커니즘: 캐시는 (table, full-PK)로 키 잡히고 GC-off라 같은 PK의
+**delete+reinsert / key-update 과거 세대(lineage)** 버전까지 보유한다. consult가 "PK별 전체 캐시에서 visible한
+가장 새 버전"을 고르면, 그 PK의 다른 세대(이미 vanilla의 현재 lineage에서 벗어난) 버전이 trx_id상 visible하면
+그걸 집는다. vanilla는 단일 lineage를 roll_ptr로 따라 내려가 그 오염 버전을 만나지 않는다. `oltp_read_write`
+고유(lineage 분기)이고 `oltp_update_non_index`엔 없다(⑥·4d가 깨끗했던 이유). 4b 적대적 리뷰 §7 #3이 예고한 지점.
+
+### 15.2 수정 — vanilla roll_ptr 워크를 캐시 위에서 미러
+consult 버전 선택을 **lineage 워크**로 교체한다. 캐시 entry E=(version=V, writer=W)는 "버전 V를 W가 덮어씀"을
+뜻하므로 W의 lineage상 직전(더 오래된) 버전은 V다. live top writer L에서 시작해:
+1. 링크 테이블에서 `writer==target`이고 `version<target`인 PK-일치 entry E를 찾는다(없거나 둘 이상의 distinct
+   version이면 MISS — 추측 금지).
+2. `changes_visible(E.version)`이면 그 E가 경계 = HIT. 아니면 `target := E.version`로 한 버전 더 내려가 반복.
+target이 매 스텝 strictly 감소해 종료한다. 이는 vanilla의 roll_ptr 워크와 동일 경로를 밟으므로, 다른 세대
+entry(그 writer가 이 lineage의 링크가 아님)는 절대 선택되지 않는다(구조적 배제, GC 상태와 무관). `version<writer`
+strict 비교가 한 trx의 within-trx intermediate(version==writer) 상태를 배제하고 종료를 보장한다. 구현은 1패스로
+writer→predecessor 링크 테이블을 만들고(ambiguous=≥2 distinct predecessor 표시) 그 위를 chase한다.
+
+### 15.3 적대적 설계 리뷰(18에이전트) + 검증
+구현 전 워크플로 리뷰(9각도 attack→finding별 verify)로 must-fix를 박았다: strict `<`(load-bearing),
+predecessor uniqueness→MISS, img guard·contiguity 전제·EBR Guard span 유지, reinsert false-link는
+construct_BAD=0으로 검증, trx_same·perf는 별개 추적. **결과**: 통합 shadow `oltp_read_write`
+**construct_BAD 1897→0**(newer 0, trx_same도 0 — 워크가 final 상태를 정확히 골라 보너스로 해소), HIT 752507
+전부 construct_ok(캐시 합성 rec가 vanilla와 byte-동일). standalone Release 33 green(Consult 9=tie-break 자연
+흡수), ASan/TSan 각 22 green. serve 기본 OFF. 재현 `build_d5_diag6.sh`·`build_d5_walk_std.sh`·`build_d5_walk_san.sh`.
+
+### 15.4 불변식 / 잔여
+HIT-or-MISS 불변식 유지(HIT=vanilla byte-동일, 아니면 MISS=full walk). **잔여(다음 세션)**: ⑥ payoff 0.16s는 구
+consult(max-visible)로 측정했으므로 lineage 워크가 deep ~1800 chain에서 그 latency를 유지하는지 재측 필요(per-call
+링크 테이블 alloc이 deep에서 비용이면 리뷰 A1대로 O(C) ordered-cursor 최적화 — perf-only, correctness 무관).
+serve mode-2/mode-1 실제 서빙도 `oltp_read_write`에서 재확인(construct_BAD=0·served==hit).
