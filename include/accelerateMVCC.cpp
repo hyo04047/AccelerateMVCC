@@ -65,7 +65,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
     }
     undo_entry->delete_mark = delete_mark;
     undo_entry->extra_len = extra_len;   // D-4 4d: header size within img (full physical rec)
-    uint64_t epoch_num = get_epoch_num(version_trx_id);
+    uint64_t epoch_num = epoch_of(version_trx_id);  // D-5 ⑤a-2 step 3: base-relative (standalone base=0 == get_epoch_num)
 
     kuku::QueryResult query = kuku_table->query(item);
     if (query.found()) {

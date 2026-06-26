@@ -121,6 +121,10 @@ int pk_buckets() {
 
 void consume(const accel::UndoRec &r) {
   g_pk_seen[r.pk_hash & 1023u].fetch_or(1u, std::memory_order_relaxed);
+  // D-5 ⑤a-2 step 3: capture the epoch base from the first version's trx id (idempotent set-once; the
+  // drainer is the only caller). Numbers epochs relative to the InnoDB id space so versions land in the
+  // bucket ring and the amortized windowed sweep engages instead of everything overflowing to the drain.
+  if (g_accel) g_accel->set_epoch_base(r.old_trx_id);
   // D-1b-3b: real single-consumer insert into the AccelerateMVCC index. Only the drainer touches
   // g_accel, so the index has exactly one mutator (no contention). Low-level insert() bypasses
   // Trx_manager/get_mutex. BG GC is OFF -> memory grows by design for this populate-only stage.
@@ -157,19 +161,21 @@ void drain_loop() {
   while (g_ring.dequeue(r)) consume(r);  // final drain after stop
 }
 
-// D-5 ⑤a-2 step 2: integration deadzone-GC driver loop. Drives the GC off the pushed InnoDB clock
+// D-5 ⑤a-2 step 3: integration deadzone-GC driver loop. Drives the GC off the pushed InnoDB clock
 // (g_clock = max view begin id) + the active-view registry (g_view_reg) -- NOT the standalone trx
-// manager, which the off-latch drainer never advances (M4). PERIOD mirrors the standalone cadence
-// (advance the epoch window by EPOCH_TABLE_SIZE/4 per cycle so the bucket-swap math stays in step);
-// in id units that is EPOCH_SIZE*EPOCH_TABLE_SIZE/4 = 2500. last_boundary is SEEDED to the first
-// observed boundary so the catch-up never runs 0..g_clock (the boot allocation storm -- review
-// must-fix 2); we then advance one PERIOD at a time. This thread is the SINGLE GC actor (the
-// standalone BG GC stays off). Gated on ACCEL_GC (g_gc_enabled): when off, a no-op sleeper (step-1
-// behavior). It re-checks g_gc_stop inside the catch-up loop so accel_shutdown's join never hangs.
+// manager, which the off-latch drainer never advances (M4). The clock is NORMALIZED to the first
+// inserted version's trx id (g_accel->epoch_base()): subtracting the base gives "ids since we started",
+// so the catch-up from 0 is bounded by run length, NOT by InnoDB's absolute id history -- that kills
+// the boot allocation storm (must-fix 2) WITHOUT a seed-skip, so epochs start near 0, land in the
+// bucket ring, and the amortized windowed sweep actually engages (step 3). PERIOD mirrors the standalone
+// cadence (advance the epoch window by EPOCH_TABLE_SIZE/4 per cycle) = EPOCH_SIZE*EPOCH_TABLE_SIZE/4.
+// We pass the ABSOLUTE boundary (nb + base) to the cycle; run_gc_cycle_from_cuts re-normalizes via the
+// same epoch_of that insert uses, so GC's swap window and the inserts' buckets line up. This thread is
+// the SINGLE GC actor (the standalone BG GC stays off). Gated on ACCEL_GC (g_gc_enabled): off = no-op
+// sleeper (step-1 behavior). It re-checks g_gc_stop inside the catch-up loop so the join never hangs.
 void gc_loop() {
   constexpr uint64_t PERIOD = 2500;   // EPOCH_SIZE(100) * EPOCH_TABLE_SIZE(100) / 4
-  uint64_t last_boundary = 0;
-  bool seeded = false;
+  uint64_t last_norm_boundary = 0;
   uint64_t cycles = 0;
   std::vector<mvcc::ViewCut> cuts;
   uint64_t floor = mvcc::ActiveViewRegistry<>::NO_FLOOR;
@@ -178,28 +184,29 @@ void gc_loop() {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       continue;
     }
-    uint64_t cur = g_clock.load(std::memory_order_relaxed);  // pushed InnoDB clock (0 until first view)
-    if (cur < PERIOD) {                                      // no meaningful boundary yet
+    uint64_t base = g_accel->epoch_base();                   // 0 until the drainer's first insert
+    uint64_t clk = g_clock.load(std::memory_order_relaxed);  // absolute pushed InnoDB clock
+    if (base == 0 || clk <= base + PERIOD) {                 // no insert yet, or < one period past base
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       continue;
     }
-    uint64_t boundary = (cur / PERIOD) * PERIOD;
-    if (!seeded) { last_boundary = boundary; seeded = true; }  // baseline: skip the 0->cur boot storm
-    if (boundary > last_boundary) {
-      for (uint64_t b = last_boundary + PERIOD; b <= boundary; b += PERIOD) {
+    uint64_t norm = clk - base;                              // ids since we started (bounded by run length)
+    uint64_t norm_boundary = (norm / PERIOD) * PERIOD;
+    if (norm_boundary > last_norm_boundary) {
+      for (uint64_t nb = last_norm_boundary + PERIOD; nb <= norm_boundary; nb += PERIOD) {
         if (g_gc_stop.load(std::memory_order_acquire)) break;   // prompt stop -> join never hangs
         g_view_reg.snapshot(cuts, floor);                       // fresh superset snapshot per cycle
-        g_accel->run_gc_cycle_from_cuts(b, cuts, floor);
+        g_accel->run_gc_cycle_from_cuts(nb + base, cuts, floor);  // absolute boundary; epoch_of re-normalizes
         ++cycles;
       }
-      last_boundary = boundary;
+      last_norm_boundary = norm_boundary;
       if (cycles && (cycles % 5 == 0)) {
         std::fprintf(stderr,
-            "[accel] gc: cycles=%llu retired{windowed=%llu dummy=%llu} live_buckets=%zu views=%zu clock=%llu\n",
+            "[accel] gc: cycles=%llu retired{windowed=%llu dummy=%llu} live_buckets=%zu views=%zu norm_clock=%llu\n",
             (unsigned long long)cycles,
             (unsigned long long)g_accel->epochs_retired_windowed(),
             (unsigned long long)g_accel->epochs_retired_dummy(),
-            g_accel->long_live_size(), cuts.size(), (unsigned long long)cur);
+            g_accel->long_live_size(), cuts.size(), (unsigned long long)norm);
       }
     } else {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));

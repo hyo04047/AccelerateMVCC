@@ -58,7 +58,7 @@ namespace mvcc
         // (start_background_gc) stays off, so there is exactly one mutator of the non-atomic GC state.
         bool run_gc_cycle_from_cuts(uint64_t boundary_clock,
                                     const std::vector<ViewCut>& cuts, uint64_t floor) {
-            return epoch_table->garbage_collect_from_cuts(get_epoch_num(boundary_clock), cuts, floor);
+            return epoch_table->garbage_collect_from_cuts(epoch_of(boundary_clock), cuts, floor);
         }
 
         // Dedicated background GC actor (single unlinker). Replaces the old inline
@@ -222,6 +222,23 @@ namespace mvcc
             return trx_id / EPOCH_SIZE;
         }
 
+        // D-5 ⑤a-2 step 3: epoch numbering RELATIVE to a base id. In integration the InnoDB trx-id space
+        // starts at a large absolute value, so raw trx_id/EPOCH_SIZE lands every version OUTSIDE the
+        // fixed bucket ring -> all reclaim falls to the O(working-set) dummy drain instead of the amortized
+        // windowed sweep. Subtracting a base captured at the first insert puts epochs near 0 so they land
+        // in the ring and the windowed path engages. STANDALONE leaves the base at 0, so epoch_of is then
+        // exactly get_epoch_num (trx_id / EPOCH_SIZE) -- behavior-neutral. Base is set once (integration).
+        void set_epoch_base(uint64_t b) {
+            if (b == 0) return;
+            uint64_t z = 0;
+            id_base_.compare_exchange_strong(z, b, std::memory_order_relaxed);
+        }
+        uint64_t epoch_base() const { return id_base_.load(std::memory_order_relaxed); }
+        uint64_t epoch_of(uint64_t trx_id) const {
+            uint64_t b = id_base_.load(std::memory_order_relaxed);
+            return (trx_id > b ? trx_id - b : 0) / EPOCH_SIZE;
+        }
+
         // Stage 1c metric: count of dead epochs (per the shared published deadzone) that
         // readers TRAVERSED during search -- a proxy for the chain bloat that cooperative
         // unlink (1c-4) will shrink. In 1c-1 readers judge-only and just increment this.
@@ -320,6 +337,11 @@ namespace mvcc
         functions) and holds the items inserted into the table.
         */
         kuku::KukuTable* kuku_table;
+
+        // D-5 ⑤a-2 step 3: base trx-id for relative epoch numbering. 0 = standalone/raw (epoch_of ==
+        // get_epoch_num, behavior-neutral); integration sets it once to the first inserted version's trx
+        // so epochs land in the bucket ring and the amortized windowed sweep engages.
+        std::atomic<uint64_t> id_base_{0};
 
         /**
         The trxManager represents mimic version of transaction manager in DBMS
