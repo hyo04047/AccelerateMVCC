@@ -27,10 +27,10 @@
 - ⓝ13 view-reuse ADD-on-open 완결성 → GC-on shadow서 open_calls==published·construct_BAD=0 확인. 잔여: serve(5-2b).
 
 **여전히 열림(STILL OPEN — 다음 작업):**
-- ⓠ1 ~0.16s fast consult → **⑤b**(GC-safe back-edge). 현재 GC-safe map walk ~0.4s. **(2026-06-27 결정: ⑤b는 FG+BG cooperative-reclaim 트랙과 함께 — reader‖GC chain-pointer가 같은 hot 표면이라 hardening/적대적 리뷰를 1회로 묶음. ⓠ2 FG +30% 결정과 동반. ⑤b는 FG를 strictly 요구하진 않으나[BG-only도 가능] 묶는 이득이 큼. payoff는 5-2b serve만으로 ~0.4s 평탄으로 입증 가능, ⑤b는 0.16s로 조이는 마무리.)**
+- ⓠ1 ~0.16s fast consult → **⑤b**(GC-safe back-edge). 현재 GC-safe map walk ~0.4s. **(2026-06-27 결정: ⑤b는 FG+BG cooperative-reclaim 트랙과 함께 — reader‖GC chain-pointer가 같은 hot 표면이라 hardening/적대적 리뷰를 1회로 묶음. ⓠ2 FG +30%와 동반(roadmap, perf 후퇴 아니면 채택 — '결정' 아님). ⑤b는 FG를 strictly 요구하진 않으나[BG-only도 가능] 묶는 이득이 큼. payoff는 5-2b serve만으로 ~0.4s 평탄으로 입증 가능, ⑤b는 0.16s로 조이는 마무리.)**
 - ⓝ2 / ⓝ3 / ⓝ15 serve+GC correctness, M2 interior-over-prune wrong-serve oracle → **5-2b**. serve 여전히 OFF.
 - ⓝ9 cold-key 미회수(진짜 unbounded) → 구현 or 문서화.
-- ⓠ4 ⑥를 GC-on(+serve)·넓은 워크로드서 재측 / ⓠ3 write-heavy+LLT로 in-middle 이득 생존 / ⓠ5 22% MISS effective speedup / ⓠ2 FG +30% 결정 / ⓝ6 LOB / ⓝ11 signal-B sweep → **Phase 2**.
+- ⓠ4 ⑥를 GC-on(+serve)·넓은 워크로드서 재측 / ⓠ3 write-heavy+LLT로 in-middle 이득 생존 / ⓠ5 22% MISS effective speedup / ⓠ2 FG +30%(roadmap: perf 후퇴 아니면 채택, ⑤b/FG+BG 트랙) / ⓝ6 LOB / ⓝ11 signal-B sweep → **Phase 2**.
 - ⓝ14 REPORT Limitations / ⓣ10 패치 vendor / multi-run·error-bar / 논문 한글+영문 → **Phase 3**.
 
 ---
@@ -45,7 +45,7 @@
 2. **FG cooperative reclaim(signal C) — 측정된 +30% read를 "optional"로 강등, 5-x 계획에 없음** —
    `design-D5-gc.md §3 C / §7`(증분 없음); Stage-C 결과 `REPORT.md §4.4`(read tput +30%, p50 15 vs 41).
    in-middle 체인 단축의 유일한 O(1) 경로. → **명시 결정**: signal C를 통합에 스케줄해 +30% 재현, **또는** 논문이
-   "통합은 BG-only로 출하, Stage-C FG 이득 미포함"을 명시. 침묵으로 버리지 말 것.
+   "통합은 BG-only로 출하, Stage-C FG 이득 미포함"을 명시. 침묵으로 버리지 말 것. **(2026-06-27 사용자: 이건 '결정' 항목이 아니라 ROADMAP 항목 — perf 후퇴가 아닌 한 FG를 통합에 넣는다. ⑤b/FG+BG 트랙과 함께 진행; 유일한 gate는 "perf 후퇴 없음".)**
 3. **5-3의 사전 인가된 후퇴: "in-middle hole 밀도 부족하면 tail-only로 축소하고 LLT-claim 포기"** —
    `design-D5-gc.md §7 5-3`. 프로젝트 **중심 헤드라인**(deadzone 155 vs tail-only 846k ≈ 5500×)이 여기서 붕괴 가능.
    → **실제 write-heavy OLTP+LLT 프로파일을 지금 돌려** in-middle 이득이 실 InnoDB에서 살아남는지 확인. 논문 쓰기 전에.
