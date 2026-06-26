@@ -27,7 +27,7 @@
 - ⓝ13 view-reuse ADD-on-open 완결성 → GC-on shadow서 open_calls==published·construct_BAD=0 확인. 잔여: serve(5-2b).
 
 **여전히 열림(STILL OPEN — 다음 작업):**
-- ⓠ1 ~0.16s fast consult → **⑤b**(GC-safe back-edge). 현재 GC-safe map walk ~0.4s.
+- ⓠ1 ~0.16s fast consult → **⑤b**(GC-safe back-edge). 현재 GC-safe map walk ~0.4s. **(2026-06-27 결정: ⑤b는 FG+BG cooperative-reclaim 트랙과 함께 — reader‖GC chain-pointer가 같은 hot 표면이라 hardening/적대적 리뷰를 1회로 묶음. ⓠ2 FG +30% 결정과 동반. ⑤b는 FG를 strictly 요구하진 않으나[BG-only도 가능] 묶는 이득이 큼. payoff는 5-2b serve만으로 ~0.4s 평탄으로 입증 가능, ⑤b는 0.16s로 조이는 마무리.)**
 - ⓝ2 / ⓝ3 / ⓝ15 serve+GC correctness, M2 interior-over-prune wrong-serve oracle → **5-2b**. serve 여전히 OFF.
 - ⓝ9 cold-key 미회수(진짜 unbounded) → 구현 or 문서화.
 - ⓠ4 ⑥를 GC-on(+serve)·넓은 워크로드서 재측 / ⓠ3 write-heavy+LLT로 in-middle 이득 생존 / ⓠ5 22% MISS effective speedup / ⓠ2 FG +30% 결정 / ⓝ6 LOB / ⓝ11 signal-B sweep → **Phase 2**.
