@@ -94,7 +94,17 @@ int g_authoritative_mode = 0;
 // {low_limit_id, up_limit_id} here on view_open (piggybacking the trx_sys mutex it already holds) and
 // clears it on view_close; the BG GC (D-5, still OFF) will read a wait-free snapshot to build the dead
 // zone. ACCEL_PUBLISH=0 disables the push so 5-1b can measure its OLTP cost against a baseline.
-mvcc::ActiveViewRegistry<> g_view_reg;
+// D-5 ⑤a-2 step 5 (review must-fix 3): size the registry pool well above realistic server concurrency so
+// the overflow path is essentially never taken. The overflow floor is monotone-down and (by design)
+// never raised while any overflow view is live -- over-protect is memory-safe, under-protect is the only
+// danger and monotone-down never does it -- but a fully-drained burst leaves a stale-low floor that a
+// later burst would inherit (memory-loose, not wrong). design-D5-gc §6 sanctions sizing the pool as the
+// fix (vs a racy single-scalar reset). Slots are leased per thread and released at thread exit, so live
+// slots track CONCURRENT leasing threads (connections + bg workers), not distinct-threads-ever; 4096
+// covers typical max_connections + headroom. (If a deployment sets max_connections > 4096, overflow
+// safely engages = over-protect.) Pool cost is ~256KB (64B/slot), negligible.
+using ViewReg = mvcc::ActiveViewRegistry<4096>;
+ViewReg g_view_reg;
 bool g_publish_views = true;
 std::atomic<uint64_t> g_view_published{0};
 std::atomic<uint64_t> g_view_unpublished{0};
@@ -178,7 +188,7 @@ void gc_loop() {
   uint64_t last_norm_boundary = 0;
   uint64_t cycles = 0;
   std::vector<mvcc::ViewCut> cuts;
-  uint64_t floor = mvcc::ActiveViewRegistry<>::NO_FLOOR;
+  uint64_t floor = ViewReg::NO_FLOOR;
   while (!g_gc_stop.load(std::memory_order_acquire)) {
     if (!g_gc_enabled || g_accel == nullptr) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -296,7 +306,7 @@ void accel_shutdown() noexcept {
                (unsigned long long)g_view_open_calls.load(),
                (unsigned long long)g_view_published.load(), (unsigned long long)g_view_unpublished.load(),
                g_publish_views ? 1 : 0, vcut.size(),
-               vfloor == mvcc::ActiveViewRegistry<>::NO_FLOOR ? "none" : "set",
+               vfloor == ViewReg::NO_FLOOR ? "none" : "set",
                (unsigned long long)g_clock.load());
   std::fprintf(stderr, "[accel] construct_BAD detail: trx_same=%llu (right version, bytes differ) "
                "trx_diff=%llu (WRONG version: older=%llu [cache behind] newer=%llu [visibility])\n",
