@@ -239,3 +239,49 @@ landmine (inert now -- nothing derefs it); ADD-on-open happens-before-usable is 
 4. Drainer||GC TSan test on a hot key (the teeth) -> zero TSan reports + construct_BAD=0 with proven overlap.
 5. Overflow-floor reset + slot-lease lifetime -> RSS plateau under > pool-size distinct threads.
 6. Head-prune OFF, serve OFF; final gate (nonzero windowed retire, bounded memory, clean shutdown, ASan+TSan).
+
+## 10. 5-2b (serve under GC) adversarial review outcome — GO_WITH_CONDITIONS (44 agents, 2026-06-27)
+Before turning authoritative serve ON over GC-on, a 7-dimension adversarial review (find -> refute ->
+completeness critic) attacked it. **Verdict: GO with conditions — more cautious than ⑤a-2, because a wrong
+consult HIT under serve is a SERVED WRONG ROW, not a counted shadow mismatch.**
+
+**Core finding (good):** the GC-safe lineage-walk consult **structurally converts the common interior over-prune
+into MISS->walk** — an over-prune at/above the visible boundary breaks the writer->predecessor link, the chase
+breaks, consult MISSes, InnoDB walks = correct. Confirmed against the chase code. EBR Guard spans the served
+image copy (no UAF on served bytes). The build/chase TOCTOU is pinned-stale-but-CORRECT (GC removes links, never
+forges them; a just-unlinked pinned node is still a version no active view needed).
+
+**Key fragility:** the contiguity scalar gate (head_writer) is **vacuous under GC** (drainer-only; GC never
+updates it), so the real M2 firewall is the **lineage-link gap ALONE** — the firewall count drops 2->1 once GC
+runs. Restore a cheap 2nd firewall (below).
+
+**Residual wrong-serve paths to close before serve:**
+- **superseded_ts under-estimation on inverted links (most-likely real wrong-serve, critic surface C):** the
+  drainer's supersede-point conservatism argument predates the inverted-link discovery (trx-id order != commit
+  order). If set too low under inversion, GC over-prunes a still-needed version EVEN WITH a correct active-view
+  set (the superset theorem bounds active VIEWS, not the per-epoch [min,superseded] interval), and the chase may
+  resolve to an older surviving version on the same lineage -> wrong serve, invisible to construct_BAD=0 in
+  mode-1. Needs a directed inversion check.
+- **same-writer cross-generation re-supplied link:** delete+reinsert same PK by one trx; GC removing a competitor
+  flips the ambiguity guard off -> chase completes with an older version. Closed only empirically; GC-on re-confirm open.
+- **single firewall:** restore a 2nd — a per-header gc_generation counter bumped on GC retire, that consult
+  snapshots at Guard-open and re-checks before HIT (mismatch -> MISS).
+
+**Gate blind spots the oracle must cover:** mode-2 (verify-serve) only validates surviving HITs — a GC-induced
+HIT->MISS silently shifts a row to the walk population, so the gate must ALSO assert a min HIT-rate on probed keys
+(coverage collapse); the oracle must drive BOTH retire paths (windowed sweep AND orphan drain); mode-1 has NO
+in-run self-check.
+
+**Shipping posture:** mode-2 (verify-serve) is the DEFAULT; mode-1 (serve-only, perf) is a separately-gated mode
+after the oracle + a mode-2 soak + a 1-in-N walk-audit tripwire.
+
+**Staged plan (these stages ARE 5-2b, not prerequisites):**
+- **C0** serve OFF — baseline construct_BAD=0 across workloads.  ✅ (⑤a-2)
+- **C1** build the directed interior-over-prune oracle + the 2 must-fix guards (gc_generation 2nd firewall;
+  inversion/superseded_ts check), serve still OFF — oracle red-then-green, ASan/TSan clean.  **← NEXT**
+- **C2** mode-2 verify-serve ON, integration — construct_BAD HARD 0 + windowed&drain retire>0 + HIT-rate floor on
+  probed keys, across workloads incl. delete+reinsert/savepoint.
+- **C3** mode-1 serve-only, gated — after a mode-2 soak; add a 1-in-N walk-audit tripwire.
+
+**Caveat:** the mode-1/mode-2 walk-skip + MISS->walk fallback live in repo-external row0vers.cc (built via
+integration/scripts) — read it before C3 to confirm mode-1 has no hidden compare and NONCONTIG routes to walk.

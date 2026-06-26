@@ -335,6 +335,55 @@ TEST(Consult, CutsGcConcurrencyDrainerConsultGc) {
     EXPECT_GT(m.epochs_retired(), 0u) << "GC reclaimed nothing -> the reclaim || insert || consult edge was vacuous";
 }
 
+// 5-2b C1 -- directed interior-over-prune wrong-serve ORACLE (the gate serve is built behind). Force GC to
+// over-prune a strictly-INTERIOR version V_K that a reader needs, via an in-middle hole built from an
+// active-view set that OMITS the reader's view (under-approximation), while the LOWER V_{K-1} survives.
+// The catastrophic failure (M2) would be: consult serves the surviving older V_{K-1}. The safe behavior the
+// lineage-walk should guarantee: the writer->predecessor link to V_K is gone -> chase breaks -> MISS -> walk.
+// NEGATIVE CONTROL (reader's view IS in the cut set) proves the test actually bites: V_K then survives -> HIT.
+// Single-threaded + deterministic (this is a correctness oracle; concurrency is covered by the test above).
+TEST(Consult, M2InteriorOverPruneOracleStrict) {
+    const uint64_t BASE = 1000000, SP = 200;     // SP > EPOCH_SIZE so each version lands in a distinct epoch
+    const int n = 8, K = 4;                       // 8-version lineage; the reader needs the interior V_K
+    const uint64_t H = 7001;
+    std::vector<unsigned char> pk{7, 7};
+    auto vid = [&](int i){ return BASE + (uint64_t)i * SP; };   // version id of V_i; writer(V_i) = V_{i+1}
+
+    auto probe = [&](const std::vector<ViewCut>& cuts) -> std::pair<CO, int> {
+        Accelerate_mvcc m(0, 12);
+        m.set_epoch_base(BASE);
+        for (int i = 1; i <= n; ++i) {
+            uint64_t ver = vid(i), wr = vid(i + 1);
+            unsigned char img[10]; img[0] = (unsigned char)i;     // tag = version index
+            for (int b = 0; b < 8; ++b) img[1 + b] = (unsigned char)((ver >> (8 * b)) & 0xFF);
+            img[9] = 0xED;
+            m.insert(1, H, ver, ver * 10, ver * 100, ver * 1000, img, 10u, wr, pk.data(), (uint32_t)pk.size(), 0);
+        }
+        const uint64_t PERIOD = 2500;
+        for (int c = 1; c <= 80; ++c)             // drive GC to completion so the hole's epoch is swept
+            m.run_gc_cycle_from_cuts(BASE + (uint64_t)c * PERIOD, cuts, ActiveViewRegistry<>::NO_FLOOR);
+        unsigned char buf[64]; uint32_t bl = 0;
+        // reader sees < V_{K+1} (needs V_K); live top writer = V_{n+1}.
+        CO o = m.consult(1, H, pk.data(), (uint32_t)pk.size(), 0, vid(K + 1), 0,
+                         nullptr, 0, vid(n + 1), buf, sizeof(buf), &bl);
+        int idx = (o == CO::HIT && bl == 10) ? (int)buf[0] : -1;
+        return {o, idx};
+    };
+
+    // NEGATIVE CONTROL: reader's view present (correct superset) -> no hole over V_K -> V_K survives -> HIT V_K.
+    std::vector<ViewCut> with_reader = { {vid(K - 1), vid(K)}, {vid(K), vid(K + 1)}, {vid(K + 2), vid(K + 2)} };
+    auto neg = probe(with_reader);
+    EXPECT_EQ(neg.first, CO::HIT) << "neg control: with the reader's view in the superset, V_K must survive + HIT";
+    EXPECT_EQ(neg.second, K) << "neg control must serve exactly V_K (proves the oracle bites)";
+
+    // POSITIVE CONTROL: reader's view OMITTED -> hole [V_{K-1}, V_{K+2}) encloses V_K (V_{K-1} survives below
+    // it) -> GC over-prunes V_K. consult MUST NOT serve the older V_{K-1}: it must MISS (walk fallback).
+    std::vector<ViewCut> omit_reader = { {vid(K - 1), vid(K)}, {vid(K + 2), vid(K + 2)} };
+    auto pos = probe(omit_reader);
+    EXPECT_NE(pos.second, K - 1) << "CATASTROPHIC: served the wrong older version V_{K-1} after interior over-prune";
+    EXPECT_NE(pos.first, CO::HIT) << "pos control: V_K over-pruned -> consult must MISS->walk (got HIT idx " << pos.second << ")";
+}
+
 // ---------------------------------------------------------------------------
 // (a) MVCC visibility: search must return the LATEST committed version that is
 //     visible to the read view (trx_id < snapshot AND not in active list).
