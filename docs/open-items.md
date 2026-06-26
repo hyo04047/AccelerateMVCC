@@ -12,6 +12,27 @@
 방치. 정확성·커버리지는 **쉬운 단일-lineage 워크로드에서만** 측정. **논문 draft·분산(multi-run) 데이터는 어디에도
 없음**(모든 latency가 단일 수치).
 
+## 0b. ⑤a-2 완료 갱신 (2026-06-27 세션 9) — GC가 통합에서 실제로 돌기 시작
+> ⑤a-2(GC ON)를 적대적 리뷰(54 agents, GO_WITH_CONDITIONS; design-D5-gc §9) 후 5-step으로 완료.
+> 커밋 `b83adb2`~`beeefc8` (push). 아래 항목 상태가 바뀜.
+
+**닫힘(CLOSED):**
+- ⓝ1 [blocker] GC가 통합서 한 번도 안 돎 → **GC ON·실제 sweep**(retired 68만, windowed 우세). 캐시 더는 무한성장 X.
+- ⓝ10 EPOCH_SIZE blind 상수 / sparse id → **epoch를 InnoDB id space에 normalize**(base-relative)로 해소, 부팅 storm도 제거.
+- ⓣ12 deadzone clock·superset 미러가 wired-but-미소비 → **소비됨**(cuts-driven GC가 registry snapshot으로 구동).
+
+**대부분 닫힘(MOSTLY — 잔여 명시):**
+- ⓝ8 overflow-floor never-reset → **pool을 4096으로 sizing**(design §6 허용)해 realistic concurrency서 overflow 미발생(floor=none@64thr). 잔여: 지속 >4096 동시 view면 over-protect(메모리만, 안전); racy single-scalar reset은 의도적 미구현.
+- ⓝ5 통합 ASan/TSan 미실행 → **drainer‖consult‖cuts-GC를 ASan/TSan clean**(focused harness, 통합과 동일 race 표면). 잔여: full-mysqld ASan(gold-standard)·LOB/FTS/spatial.
+- ⓝ13 view-reuse ADD-on-open 완결성 → GC-on shadow서 open_calls==published·construct_BAD=0 확인. 잔여: serve(5-2b).
+
+**여전히 열림(STILL OPEN — 다음 작업):**
+- ⓠ1 ~0.16s fast consult → **⑤b**(GC-safe back-edge). 현재 GC-safe map walk ~0.4s.
+- ⓝ2 / ⓝ3 / ⓝ15 serve+GC correctness, M2 interior-over-prune wrong-serve oracle → **5-2b**. serve 여전히 OFF.
+- ⓝ9 cold-key 미회수(진짜 unbounded) → 구현 or 문서화.
+- ⓠ4 ⑥를 GC-on(+serve)·넓은 워크로드서 재측 / ⓠ3 write-heavy+LLT로 in-middle 이득 생존 / ⓠ5 22% MISS effective speedup / ⓠ2 FG +30% 결정 / ⓝ6 LOB / ⓝ11 signal-B sweep → **Phase 2**.
+- ⓝ14 REPORT Limitations / ⓣ10 패치 vendor / multi-run·error-bar / 논문 한글+영문 → **Phase 3**.
+
 ---
 
 ## ⓠ 조용히 버려질 위험이 있는 목표 (최우선 — 사용자 핵심 우려)

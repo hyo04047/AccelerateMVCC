@@ -226,8 +226,13 @@ landmine (inert now -- nothing derefs it); ADD-on-open happens-before-usable is 
 (needs reading the InnoDB view_open call site in ~/mysql-server).
 
 **Recommended ⑤a-2 implementation order (each step verified before the next):**
+> **STATUS (session 9, 2026-06-27): steps 1-5 ✅ DONE — ⑤a-2 complete. Commits `b83adb2`~`beeefc8` (push).
+> Standalone 34 green + ASan/TSan; integration construct_BAD=0 under GC across workloads incl. 64-thread
+> (1.37M consults); retire windowed-dominant; overflow floor=none @64thr; clean shutdown. serve stays OFF.
+> Remaining (open-items §0b): ⑤b (recover ~0.16s fast consult, GC-safe back-edge) + 5-2b (serve ON under
+> GC + M2 interior-over-prune oracle) + cold-key reclaim + ⑥ re-measure under GC. step 6 (serve gate) = 5-2b.**
 1. **Lifecycle scaffolding** (file-scope GC thread + stop flag; empty GC body; shutdown stop+join before delete)
-   -> clean start/stop, no hang.  **← THIS STEP**
+   -> clean start/stop, no hang.  **✅ (step 1)**
 2. Cuts-driven GC cycle (snapshot + pushed clock; not overloading garbage_collect) -> construct_BAD=0 + nonzero
    retire SPLIT by source.
 3. Epoch rescale off a clock baseline -> bounded boot, windowed-sweep retires nonzero.
