@@ -1,7 +1,9 @@
 # D-5 — purge-view GC: re-drive the deadzone GC from InnoDB read-views (design)
 
-> Status: **design locked, 5-0 (code prereq) done; next = 5-1**. Inputs: D-5 adversarial design review
-> (`GO_WITH_CONDITIONS`, 59 agents) + cheap-collection research (lineage + over-approximation theorem).
+> Status: **5-1 done (push hook + registry + cuts-deadzone, shadow-verified); ⑤a-1 done (consult restored to
+> the GC-safe live-chain lineage walk); ⑤a-2 (GC ON) adversarially reviewed = `GO_WITH_CONDITIONS` (54 agents)
+> -- see §9; next = ⑤a-2 step 1 (lifecycle scaffolding).** Inputs: D-5 design review (`GO_WITH_CONDITIONS`,
+> 59 agents) + the ⑤a-2 GC-on review (§9) + cheap-collection research (lineage + over-approximation theorem).
 > Background: [design-gc.md](design-gc.md) (standalone deadzone GC), [design-D.md](design-D.md) §9 (deferred
 > GC safety), [design-D4b-shadow.md](design-D4b-shadow.md) §13/§14 (serve + payoff).
 
@@ -179,3 +181,56 @@ licenses dropping the hot-mutex enumeration vDriver/DIVA never had to face.
 - Cooperative-only reclaim (C): cold-chain residual vs a BG sweeper backstop?
 - Floor-vs-mirror reconciliation: no window where a still-live entry is retired (only when its low limit is
   strictly below the observed floor); stress under ASan/TSan with concurrent purge cadence.
+
+## 9. ⑤a-2 (GC ON) adversarial review outcome — GO_WITH_CONDITIONS (54 agents, 2026-06-27)
+Before turning the GC on inside the integrated mysqld, an 8-dimension adversarial review (find -> independently
+refute -> completeness critic) attacked the plan against the real current code. **Verdict: GO with conditions.**
+No reachable wrong-consult-result and no consult UAF exist for ⑤a-2 as scoped (shadow consult, serve OFF): the
+two pillars (over-reclaim = perf-only MISS->walk; the EBR Guard spans the whole consult incl. the image copy),
+the superset theorem, and unlink-before-retire all hold against the code; the cuts-built deadzone is a verified
+subset of the standalone deadzone. The header-chain "drainer plain-store || GC CAS on the head pointer"
+lost-update was raised and **refuted** (structurally unreachable: GC never unlinks a head, so the
+header-predecessor CAS branch is never taken for a live chain).
+
+**Deepest insight (completeness critic):** turning GC on creates a NET-NEW concurrency edge -- the
+**drainer(insert) || GC** pair -- that the EBR proofs do NOT cover, because the drainer holds NO Guard. Its
+safety rests entirely on a chain of *structural* invariants (single drainer; the drainer only appends to the
+head; GC never touches the head), not on EBR. This must be confirmed empirically under the first integration
+TSan run with a hot-key workload -- that is the gate's teeth, and it is work the original recipe did not budget.
+
+**Must-fix conditions (none is a correctness blocker for the shadow path; all are implementation/memory-bound):**
+1. **(blocker, lifecycle)** The integration GC driver is a leaf-domain thread NOT owned by the accelerator's
+   dtor. accel_shutdown MUST stop+join it BEFORE deleting the accelerator, else the GC actor runs on freed
+   state -> UAF. Land the lifecycle (stop-GC -> join-GC -> stop-drainer -> join-drainer -> delete) FIRST.
+2. **(memory) startup storm / epoch rescale** -- the pushed clock is a large absolute InnoDB trx-id; fed raw
+   into the standalone boundary/table-swap math (PERIOD=2500, epoch=id/100) it allocates O(clock/100) at boot
+   AND real epochs never land in the buckets (so the windowed sweep never runs). Baseline the clock at boot and
+   rescale epoch-num off the pushed id space (the design's explicitly-deferred item, omitted from the recipe).
+3. **(memory) overflow-floor reset + slot-lease lifetime** -- reset the floor on overflow_count->0 (or size the
+   pool > max_connections). The critic adds: the registry slot lease is released only at *thread exit*, and
+   InnoDB pools threads, so the pool saturates at >256 *distinct threads ever* (not concurrent) -> a reset alone
+   won't help; size the pool or release on unpublish.
+4. **(perf) cuts entry point** -- add a cuts-driven GC cycle (registry snapshot + pushed clock) rather than
+   overloading the standalone garbage_collect. The gate MUST report retire counts split by source (windowed
+   sweep vs orphan drain): if all retires come from the orphan drain, the dangerous windowed/unlink path never
+   ran and the gate is hollow.
+
+**Gate traps (construct_BAD=0 can pass while hiding a bug):** (a) if GC and consult never overlap on the same
+key, 0 is free -> require evidence of overlap (nonzero retire of probed keys); (b) if all retires are orphan
+drains, the dangerous path is untested (= must-fix 4); (c) shadow != serve-safe -- a counted mismatch becomes a
+served wrong row once serve is on, so construct_BAD=0 is the serve firewall and must stay HARD zero.
+
+**Residuals (not ⑤a-2 blockers; document/defer):** cold-key headers + hash slots are never reclaimed -> true
+O(distinct-keys) growth (the "memory ∝ live-txn window" claim is incomplete without it); roll_pred is a ⑤b/serve
+landmine (inert now -- nothing derefs it); ADD-on-open happens-before-usable is not verifiable from this repo
+(needs reading the InnoDB view_open call site in ~/mysql-server).
+
+**Recommended ⑤a-2 implementation order (each step verified before the next):**
+1. **Lifecycle scaffolding** (file-scope GC thread + stop flag; empty GC body; shutdown stop+join before delete)
+   -> clean start/stop, no hang.  **← THIS STEP**
+2. Cuts-driven GC cycle (snapshot + pushed clock; not overloading garbage_collect) -> construct_BAD=0 + nonzero
+   retire SPLIT by source.
+3. Epoch rescale off a clock baseline -> bounded boot, windowed-sweep retires nonzero.
+4. Drainer||GC TSan test on a hot key (the teeth) -> zero TSan reports + construct_BAD=0 with proven overlap.
+5. Overflow-floor reset + slot-lease lifetime -> RSS plateau under > pool-size distinct threads.
+6. Head-prune OFF, serve OFF; final gate (nonzero windowed retire, bounded memory, clean shutdown, ASan+TSan).

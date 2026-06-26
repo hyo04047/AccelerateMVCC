@@ -32,6 +32,15 @@ std::atomic<uint64_t> g_dropped{0};
 std::atomic<uint64_t> g_drained{0};
 std::atomic<uint32_t> g_pk_seen[1024];   // pk breadth proxy (drainer-only writer)
 std::thread g_drainer;
+// D-5 ⑤a-2: the integration deadzone-GC driver. It is a SEPARATE leaf-domain thread, NOT the
+// object-owned standalone BG GC (Accelerate_mvcc::start_background_gc) -- that one drives off the
+// standalone trx manager, which the drainer's low-level insert never advances (M4). This driver
+// will instead read the pushed InnoDB clock (g_clock) + the active-view registry (g_view_reg) and
+// run a cuts-driven GC cycle. Because it is NOT owned by g_accel's dtor, accel_shutdown must stop
+// and join it BEFORE delete g_accel (review must-fix 1). Step 1 wires the lifecycle with an EMPTY
+// body (no sweeping) to prove start/stop ordering before any real reclamation is added (step 2).
+std::thread g_gc;
+std::atomic<bool> g_gc_stop{false};      // GC driver should exit
 
 // D-4 4b-3b SHADOW consult counters (read by many InnoDB reader threads -> atomic). The headline
 // gate is g_c_hit_mismatch == 0: every time the cache claims a HIT, its image equals what InnoDB's
@@ -145,12 +154,25 @@ void drain_loop() {
   }
   while (g_ring.dequeue(r)) consume(r);  // final drain after stop
 }
+
+// D-5 ⑤a-2 step 1: integration deadzone-GC driver loop. EMPTY body for now -- this step only proves
+// the thread's start/stop lifecycle and the shutdown ordering (stop+join GC before delete g_accel),
+// with no reclamation. Step 2 will read g_clock + g_view_reg.snapshot(cuts, floor) and call a
+// cuts-driven GC cycle on g_accel (the SINGLE GC actor; the standalone BG GC stays off). It exits
+// promptly on g_gc_stop so accel_shutdown's join cannot hang.
+void gc_loop() {
+  while (!g_gc_stop.load(std::memory_order_acquire)) {
+    // step 2: snapshot the active-view registry + pushed clock and run one cuts-driven GC cycle here.
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+}
 }  // namespace
 
 void accel_init() noexcept {
   bool expected = false;
   if (!g_started.compare_exchange_strong(expected, true)) return;  // already inited
   g_stop.store(false, std::memory_order_relaxed);
+  g_gc_stop.store(false, std::memory_order_relaxed);
   // D-4 4b-3c test toggles (read before g_ready is released below).
   if (const char *mb = std::getenv("ACCEL_PK_MASK_BITS")) {
     unsigned long bits = std::strtoul(mb, nullptr, 10);
@@ -172,7 +194,13 @@ void accel_init() noexcept {
   try {
     g_accel = new mvcc::Accelerate_mvcc(0, 16);  // dynamic keys, 64k-bin cuckoo, BG GC NOT started
     g_drainer = std::thread(drain_loop);
+    g_gc = std::thread(gc_loop);  // D-5 ⑤a-2: integration GC driver (empty body in step 1)
   } catch (...) {
+    // unwind in the same order accel_shutdown uses: stop+join GC, then the drainer, then drop accel.
+    g_gc_stop.store(true, std::memory_order_release);
+    if (g_gc.joinable()) g_gc.join();
+    g_stop.store(true, std::memory_order_release);
+    if (g_drainer.joinable()) g_drainer.join();
     delete g_accel;
     g_accel = nullptr;
     g_started.store(false, std::memory_order_relaxed);
@@ -184,7 +212,13 @@ void accel_init() noexcept {
 
 void accel_shutdown() noexcept {
   if (!g_started.load(std::memory_order_acquire)) return;
-  g_ready.store(false, std::memory_order_release);  // hook stops enqueuing
+  g_ready.store(false, std::memory_order_release);  // hook + consult stop entering the live window
+  // D-5 ⑤a-2 (review must-fix 1): stop the GC driver FIRST and join it, BEFORE the drainer and BEFORE
+  // delete g_accel. The GC actor mutates g_accel's epoch_table (reclaim/sweep) and is NOT reaped by
+  // g_accel's dtor (it is the integration driver, not the object-owned standalone BG GC), so it must
+  // be quiesced here or it would run on a partially-freed accelerator.
+  g_gc_stop.store(true, std::memory_order_release);
+  if (g_gc.joinable()) g_gc.join();
   g_stop.store(true, std::memory_order_release);
   if (g_drainer.joinable()) g_drainer.join();
   std::fprintf(stderr,
