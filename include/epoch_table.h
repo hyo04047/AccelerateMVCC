@@ -353,6 +353,69 @@ namespace mvcc {
             return true;
         }
 
+        // D-5 ⑤a-2: integration GC cycle. SAME orchestration + SAME shared sweep helpers
+        // (sweep_bucket / drain_dummy / try_reclaim_bucket) as garbage_collect above -- so the
+        // version-chain mutation path (the drainer||GC edge) is the identical code -- but the dead zone
+        // is built from the InnoDB active-view registry cuts + a conservative floor (a SUPERSET of the
+        // truly-active views, design-D5-gc §2.1/§3) instead of the standalone active list, which the
+        // off-latch drainer never advances (M4). Single GC actor (the accel_hook gc_loop thread).
+        bool garbage_collect_from_cuts(uint64_t epoch_num, const std::vector<ViewCut>& cuts, uint64_t floor) {
+            reclaimer_.reclaim();
+            if (epoch_num == EPOCH_TABLE_SIZE / 4) {
+                return false;
+            }
+            {
+                uint64_t start_index = (epoch_num - EPOCH_TABLE_SIZE / 2) % EPOCH_TABLE_SIZE;
+                uint64_t end_index = ((epoch_num - EPOCH_TABLE_SIZE / 4) - 1) % EPOCH_TABLE_SIZE;
+                int i_start = static_cast<int>(start_index);
+                int i_end = static_cast<int>(end_index);
+                for (int i = i_start; i <= i_end; i++) {
+                    epoch_table_node *prev_table_node = table.at(i).load();
+                    long_live_epochs.push_back(prev_table_node);
+                    auto *new_table_node = new epoch_table_node((prev_table_node->epoch_num) + EPOCH_TABLE_SIZE);
+                    table.at(i).store(new_table_node);
+                }
+            }
+            if (epoch_num == EPOCH_TABLE_SIZE / 2) {
+                return false;
+            }
+            deadzone* dz = generate_dead_zone_from_cuts(cuts, floor);
+            ++backstop_counter_;
+            {
+                uint64_t llt_size = long_live_epochs.size();
+                if (llt_size < (uint64_t)(EPOCH_TABLE_SIZE / 2)) {
+                    drain_dummy(dz);
+                    publish_deadzone(dz);
+                    return false;
+                }
+                int i_start = static_cast<int>(llt_size - (EPOCH_TABLE_SIZE / 2));
+                int i_end   = static_cast<int>(llt_size - (EPOCH_TABLE_SIZE / 4) - 1);
+                for (int i = i_start; i <= i_end; i++) {
+                    epoch_table_node *tn = long_live_epochs.at(i);
+                    if (tn == nullptr) continue;
+                    sweep_bucket(tn, dz);
+                    try_reclaim_bucket(static_cast<size_t>(i));
+                }
+                if (backstop_counter_ % BACKSTOP_PERIOD == 0) {
+                    for (size_t i = 0; i < long_live_epochs.size(); ++i) {
+                        epoch_table_node *tn = long_live_epochs.at(i);
+                        if (tn == nullptr) continue;
+                        sweep_bucket(tn, dz);
+                        try_reclaim_bucket(i);
+                    }
+                }
+                drain_dummy(dz);
+                if (backstop_counter_ % BACKSTOP_PERIOD == 0) {
+                    long_live_epochs.erase(
+                        std::remove(long_live_epochs.begin(), long_live_epochs.end(),
+                                    static_cast<epoch_table_node *>(nullptr)),
+                        long_live_epochs.end());
+                }
+            }
+            publish_deadzone(dz);
+            return true;
+        }
+
         // EBR used by GC (retire/reclaim) and search readers (Guard). Single
         // producer/reclaimer in stage 1a: only the GC actor retires/reclaims.
         EpochReclaimer& reclaimer() { return reclaimer_; }
@@ -368,6 +431,12 @@ namespace mvcc {
         // check to the full LIVE + CHAIN_DETACHED + RETIRED conservation.
         uint64_t epochs_detached() const { return epochs_detached_.load(std::memory_order_relaxed); }
         uint64_t epochs_retired()  const { return epochs_retired_.load(std::memory_order_relaxed); }
+        // D-5 ⑤a-2: split retire by source so the GC-on gate can tell the dangerous WINDOWED bucket
+        // sweep (sweep_bucket -> unlink_epoch_from_chain on aged buckets) from the orphan DUMMY drain.
+        // If all retires are dummy (real epoch_nums never matched their seeded buckets), the windowed
+        // path is unexercised and a green construct_BAD=0 gate is hollow (review critic M-D-ii).
+        uint64_t epochs_retired_windowed() const { return epochs_retired_windowed_.load(std::memory_order_relaxed); }
+        uint64_t epochs_retired_dummy()    const { return epochs_retired_dummy_.load(std::memory_order_relaxed); }
 
         // Stage 1c-3: orphan wrappers currently queued in the dummy-overflow stack (meaningful
         // only when quiescent -- for tests). Trends to a small bound (live un-demoted heads) as
@@ -462,6 +531,7 @@ namespace mvcc {
             epoch_node_wrapper *prev_node = tn->first_node.load();
             for (epoch_node_wrapper *node = prev_node->next.ptr(); node != nullptr; ) {
                 if (wrapper_prunable(node, dz)) {
+                    epochs_retired_windowed_.fetch_add(1, std::memory_order_relaxed);  // D-5 ⑤a-2: source split
                     epoch_node_wrapper *dead = node;
                     epoch_node_wrapper *wsucc = node->next.ptr();
                     dead->next.set_mark(wsucc);
@@ -510,6 +580,7 @@ namespace mvcc {
                 bool is_head = en != nullptr && en->header != nullptr &&
                                en->header->next.ptr() == en;
                 if (dead && !is_head) {
+                    epochs_retired_dummy_.fetch_add(1, std::memory_order_relaxed);  // D-5 ⑤a-2: source split
                     detach_and_retire_epoch(en);
                     reclaimer_.retire([w] { delete w; });
                 } else {
@@ -570,6 +641,9 @@ namespace mvcc {
         // Stage 1c retire-once conservation counters (see epochs_detached()/epochs_retired()).
         std::atomic<uint64_t> epochs_detached_{0};
         std::atomic<uint64_t> epochs_retired_{0};
+        // D-5 ⑤a-2: retire source split (windowed bucket sweep vs dummy-overflow drain).
+        std::atomic<uint64_t> epochs_retired_windowed_{0};
+        std::atomic<uint64_t> epochs_retired_dummy_{0};
         // Dummy-overflow list: a lock-free Treiber stack (nullptr = empty). Inserters push
         // orphan wrappers (bucket-swap race); the BG GC drains it (drain_dummy). backstop_counter_
         // paces the low-cadence full-bucket sweep; both are BG-only.

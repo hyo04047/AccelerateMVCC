@@ -51,6 +51,16 @@ namespace mvcc
             epoch_table->garbage_collect(get_epoch_num(trx_id), trxManger->get_copy_active_trx_list());
         }
 
+        // D-5 ⑤a-2: run ONE integration GC cycle at the given pushed-InnoDB boundary clock, building the
+        // dead zone from the active-view registry cuts + conservative floor (a superset of the truly-active
+        // views) instead of the standalone trx manager -- which the off-latch drainer never advances (M4).
+        // The SINGLE GC actor is the integration driver thread (accel_hook gc_loop); the standalone BG GC
+        // (start_background_gc) stays off, so there is exactly one mutator of the non-atomic GC state.
+        bool run_gc_cycle_from_cuts(uint64_t boundary_clock,
+                                    const std::vector<ViewCut>& cuts, uint64_t floor) {
+            return epoch_table->garbage_collect_from_cuts(get_epoch_num(boundary_clock), cuts, floor);
+        }
+
         // Dedicated background GC actor (single unlinker). Replaces the old inline
         // trigger so GC no longer runs on transaction threads; lifecycle owned here.
         // It fires at the same trx-id cadence the inline trigger used (every PERIOD trx).
@@ -231,6 +241,10 @@ namespace mvcc
         // vs retired. At quiescence these must be EQUAL (each detached node retired once).
         uint64_t epochs_detached() const { return epoch_table->epochs_detached(); }
         uint64_t epochs_retired()  const { return epoch_table->epochs_retired(); }
+        // D-5 ⑤a-2: GC retire counts split by source (windowed bucket sweep vs orphan dummy drain) so
+        // the GC-on gate can tell whether the dangerous windowed/unlink path actually ran.
+        uint64_t epochs_retired_windowed() const { return epoch_table->epochs_retired_windowed(); }
+        uint64_t epochs_retired_dummy()    const { return epoch_table->epochs_retired_dummy(); }
         // Stage 1c-3: orphan wrappers pending in the dummy-overflow stack (test-only).
         size_t dummy_pending() const { return epoch_table->dummy_pending(); }
         // Stage 1c-6: GC long-lived-bucket vector size (test-only; bounded by compaction).

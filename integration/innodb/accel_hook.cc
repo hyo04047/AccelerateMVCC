@@ -41,6 +41,8 @@ std::thread g_drainer;
 // body (no sweeping) to prove start/stop ordering before any real reclamation is added (step 2).
 std::thread g_gc;
 std::atomic<bool> g_gc_stop{false};      // GC driver should exit
+bool g_gc_enabled = false;               // ACCEL_GC=1 drives the deadzone GC ON (default OFF: GC dormant,
+                                         // existing GC-off runs unchanged); read once at accel_init.
 
 // D-4 4b-3b SHADOW consult counters (read by many InnoDB reader threads -> atomic). The headline
 // gate is g_c_hit_mismatch == 0: every time the cache claims a HIT, its image equals what InnoDB's
@@ -155,15 +157,53 @@ void drain_loop() {
   while (g_ring.dequeue(r)) consume(r);  // final drain after stop
 }
 
-// D-5 ⑤a-2 step 1: integration deadzone-GC driver loop. EMPTY body for now -- this step only proves
-// the thread's start/stop lifecycle and the shutdown ordering (stop+join GC before delete g_accel),
-// with no reclamation. Step 2 will read g_clock + g_view_reg.snapshot(cuts, floor) and call a
-// cuts-driven GC cycle on g_accel (the SINGLE GC actor; the standalone BG GC stays off). It exits
-// promptly on g_gc_stop so accel_shutdown's join cannot hang.
+// D-5 ⑤a-2 step 2: integration deadzone-GC driver loop. Drives the GC off the pushed InnoDB clock
+// (g_clock = max view begin id) + the active-view registry (g_view_reg) -- NOT the standalone trx
+// manager, which the off-latch drainer never advances (M4). PERIOD mirrors the standalone cadence
+// (advance the epoch window by EPOCH_TABLE_SIZE/4 per cycle so the bucket-swap math stays in step);
+// in id units that is EPOCH_SIZE*EPOCH_TABLE_SIZE/4 = 2500. last_boundary is SEEDED to the first
+// observed boundary so the catch-up never runs 0..g_clock (the boot allocation storm -- review
+// must-fix 2); we then advance one PERIOD at a time. This thread is the SINGLE GC actor (the
+// standalone BG GC stays off). Gated on ACCEL_GC (g_gc_enabled): when off, a no-op sleeper (step-1
+// behavior). It re-checks g_gc_stop inside the catch-up loop so accel_shutdown's join never hangs.
 void gc_loop() {
+  constexpr uint64_t PERIOD = 2500;   // EPOCH_SIZE(100) * EPOCH_TABLE_SIZE(100) / 4
+  uint64_t last_boundary = 0;
+  bool seeded = false;
+  uint64_t cycles = 0;
+  std::vector<mvcc::ViewCut> cuts;
+  uint64_t floor = mvcc::ActiveViewRegistry<>::NO_FLOOR;
   while (!g_gc_stop.load(std::memory_order_acquire)) {
-    // step 2: snapshot the active-view registry + pushed clock and run one cuts-driven GC cycle here.
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (!g_gc_enabled || g_accel == nullptr) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
+    uint64_t cur = g_clock.load(std::memory_order_relaxed);  // pushed InnoDB clock (0 until first view)
+    if (cur < PERIOD) {                                      // no meaningful boundary yet
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
+    uint64_t boundary = (cur / PERIOD) * PERIOD;
+    if (!seeded) { last_boundary = boundary; seeded = true; }  // baseline: skip the 0->cur boot storm
+    if (boundary > last_boundary) {
+      for (uint64_t b = last_boundary + PERIOD; b <= boundary; b += PERIOD) {
+        if (g_gc_stop.load(std::memory_order_acquire)) break;   // prompt stop -> join never hangs
+        g_view_reg.snapshot(cuts, floor);                       // fresh superset snapshot per cycle
+        g_accel->run_gc_cycle_from_cuts(b, cuts, floor);
+        ++cycles;
+      }
+      last_boundary = boundary;
+      if (cycles && (cycles % 5 == 0)) {
+        std::fprintf(stderr,
+            "[accel] gc: cycles=%llu retired{windowed=%llu dummy=%llu} live_buckets=%zu views=%zu clock=%llu\n",
+            (unsigned long long)cycles,
+            (unsigned long long)g_accel->epochs_retired_windowed(),
+            (unsigned long long)g_accel->epochs_retired_dummy(),
+            g_accel->long_live_size(), cuts.size(), (unsigned long long)cur);
+      }
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
   }
 }
 }  // namespace
@@ -190,6 +230,9 @@ void accel_init() noexcept {
   }
   if (const char *pv = std::getenv("ACCEL_PUBLISH")) {
     if (pv[0] == '0') g_publish_views = false;         // baseline: OLTP without the view-registry push
+  }
+  if (const char *gc = std::getenv("ACCEL_GC")) {
+    if (gc[0] == '1') g_gc_enabled = true;             // D-5 ⑤a-2: drive the deadzone GC (pushed clock + registry)
   }
   try {
     g_accel = new mvcc::Accelerate_mvcc(0, 16);  // dynamic keys, 64k-bin cuckoo, BG GC NOT started
@@ -257,7 +300,17 @@ void accel_shutdown() noexcept {
   std::fprintf(stderr, "[accel] newer split: vanilla_sees=%llu (cross-generation: ct visible, off vanilla's chain) "
                "vanilla_hides=%llu (input mismatch: consult got different view limits)\n",
                (unsigned long long)g_c_newer_vsees.load(), (unsigned long long)g_c_newer_vhides.load());
-  delete g_accel;  // drainer joined -> sole owner; dtor is a no-op for BG GC (never started)
+  // D-5 ⑤a-2: GC driver evidence -- did it actually sweep, and via which path? A green construct_BAD=0
+  // with retired{total=0} would mean GC never ran (gate hollow); all-dummy means the windowed/unlink
+  // path was unexercised (review critic M-D-ii). live_buckets is the GC's long-lived-bucket vector.
+  std::fprintf(stderr, "[accel] gc: enabled=%d retired{total=%llu windowed=%llu dummy=%llu} live_buckets=%zu clock=%llu\n",
+               g_gc_enabled ? 1 : 0,
+               (unsigned long long)(g_accel ? g_accel->epochs_retired() : 0),
+               (unsigned long long)(g_accel ? g_accel->epochs_retired_windowed() : 0),
+               (unsigned long long)(g_accel ? g_accel->epochs_retired_dummy() : 0),
+               g_accel ? g_accel->long_live_size() : 0, (unsigned long long)g_clock.load());
+  delete g_accel;  // GC driver + drainer already stopped+joined above -> sole owner; the object-owned
+                   // standalone BG GC was never started, so the dtor's stop_background_gc is a no-op.
   g_accel = nullptr;
 }
 
