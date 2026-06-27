@@ -277,11 +277,16 @@ after the oracle + a mode-2 soak + a 1-in-N walk-audit tripwire.
 
 **Staged plan (these stages ARE 5-2b, not prerequisites):**
 - **C0** serve OFF — baseline construct_BAD=0 across workloads.  ✅ (⑤a-2)
-- **C1** build the directed interior-over-prune oracle + the 2 must-fix guards (gc_generation 2nd firewall;
-  inversion/superseded_ts check), serve still OFF — oracle red-then-green, ASan/TSan clean.  **← NEXT**
+- **C1** ✅ DONE — directed interior-over-prune oracle: `Consult.M2InteriorOverPruneOracleStrict` (strict
+  lineage; neg control HITs V_K, pos control over-prunes V_K -> consult MISS, never the older V_{K-1}) +
+  `Consult.M2InvertedSupersededOverPruneOracle` (inverted-id / surface C; correct cut keeps V4 == reference =>
+  **superseded_ts is conservative under inversion**, omit cut -> MISS, never older). Release 36 / ASan 25 / TSan 25
+  green, serve still OFF. **gc_generation 2nd firewall MOVED to C3**: under mode-2 (the C2 default) the
+  walk-compare IS the 2nd firewall, so the gen-gate is only needed for mode-1, and it would cost hot-key serve perf.
 - **C2** mode-2 verify-serve ON, integration — construct_BAD HARD 0 + windowed&drain retire>0 + HIT-rate floor on
-  probed keys, across workloads incl. delete+reinsert/savepoint.
-- **C3** mode-1 serve-only, gated — after a mode-2 soak; add a 1-in-N walk-audit tripwire.
+  probed keys, across workloads incl. delete+reinsert/savepoint.  **← NEXT**
+- **C3** mode-1 serve-only, gated — after a mode-2 soak; add the gc_generation 2nd firewall + a 1-in-N walk-audit
+  tripwire (mode-1 has no in-run walk-compare, so it needs an independent backstop).
 
 **Caveat:** the mode-1/mode-2 walk-skip + MISS->walk fallback live in repo-external row0vers.cc (built via
 integration/scripts) — read it before C3 to confirm mode-1 has no hidden compare and NONCONTIG routes to walk.

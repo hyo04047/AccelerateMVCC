@@ -384,6 +384,60 @@ TEST(Consult, M2InteriorOverPruneOracleStrict) {
     EXPECT_NE(pos.first, CO::HIT) << "pos control: V_K over-pruned -> consult must MISS->walk (got HIT idx " << pos.second << ")";
 }
 
+// 5-2b C1c -- the INVERTED-id variant (review critic "surface C"): under concurrency trx ids are assigned at
+// START but commit at END, so a version's creator id can EXCEED the id of the trx that superseded it
+// (version_trx_id > writer_trx_id). The drainer then records that epoch's superseded_ts from a SMALLER id,
+// and the worry is GC computes the epoch's [min,superseded] interval too low -> over-prunes a still-needed
+// version EVEN WITH a correct active-view set, and the chase resolves to a wrong older version. This oracle
+// builds such an inverted lineage and uses REFERENCE-COMPARISON: the answer with NO over-prune is the truth;
+// after GC, consult must return the SAME version or MISS -- NEVER a different (older) version. Deterministic.
+TEST(Consult, M2InvertedSupersededOverPruneOracle) {
+    const uint64_t BASE = 1000000;
+    const uint64_t H = 7002;
+    std::vector<unsigned char> pk{8, 8};
+    // commit/insert order V1..V6; creator C[i] is NON-monotonic (C4=750 < C3=900 = the inverted link);
+    // writer(V_i) = C[i+1] (the next-committed version's creator). Spacing >=100 so distinct epochs.
+    const uint64_t C[7] = {0, 300, 600, 900, 750, 1200, 1500};
+    const uint64_t W[7] = {0, 600, 900, 750, 1200, 1500, 1800};   // W[i] = C[i+1]; head writer L = 1800
+    const uint64_t L = BASE + 1800;
+    const uint64_t reader_low = BASE + 1000;     // reader sees creators < 1000; correct boundary = V4 (c750)
+
+    auto probe = [&](const std::vector<ViewCut>& cuts) -> std::pair<CO, int> {
+        Accelerate_mvcc m(0, 12);
+        m.set_epoch_base(BASE);
+        for (int i = 1; i <= 6; ++i) {
+            uint64_t ver = BASE + C[i], wr = BASE + W[i];
+            unsigned char img[10]; img[0] = (unsigned char)i;
+            for (int b = 0; b < 8; ++b) img[1 + b] = (unsigned char)((ver >> (8 * b)) & 0xFF);
+            img[9] = 0xED;
+            m.insert(1, H, ver, ver * 10, ver * 100, ver * 1000, img, 10u, wr, pk.data(), (uint32_t)pk.size(), 0);
+        }
+        const uint64_t PERIOD = 2500;
+        for (int c = 1; c <= 80; ++c)
+            m.run_gc_cycle_from_cuts(BASE + (uint64_t)c * PERIOD, cuts, ActiveViewRegistry<>::NO_FLOOR);
+        unsigned char buf[64]; uint32_t bl = 0;
+        CO o = m.consult(1, H, pk.data(), (uint32_t)pk.size(), 0, reader_low, 0,
+                         nullptr, 0, L, buf, sizeof(buf), &bl);
+        return {o, (o == CO::HIT && bl == 10) ? (int)buf[0] : -1};
+    };
+
+    // REFERENCE: empty cuts -> empty dead zone -> nothing pruned -> the truth over the full inverted lineage.
+    auto ref = probe({});
+    ASSERT_EQ(ref.first, CO::HIT) << "reference (no prune) must HIT on the inverted lineage (else the oracle is vacuous)";
+    ASSERT_EQ(ref.second, 4) << "reference boundary must be V4 (creator 750, the first visible walking from the head)";
+
+    // CORRECT cut (reader's view present): superseded_ts conservatism should keep V4 -> HIT V4 == reference.
+    // If the inversion made superseded_ts too low, V4 would be wrongly pruned here (surface C) -> NOT HIT V4.
+    auto correct = probe({ {BASE + 1000, BASE + 1000} });
+    EXPECT_EQ(correct.first, CO::HIT) << "inverted lineage: a correct cut must KEEP the boundary V4 (superseded_ts must be conservative under inversion)";
+    EXPECT_EQ(correct.second, 4) << "must serve exactly V4 under the correct cut";
+
+    // OMITTED cut (reader's view dropped -> over-prune): consult MUST be MISS or V4, NEVER an older version.
+    auto omit = probe({ {BASE + 1800, BASE + 1800} });
+    EXPECT_TRUE(omit.second == -1 || omit.second == 4)
+        << "CATASTROPHIC: inverted over-prune served a different (older) version idx " << omit.second << " (expected MISS or 4)";
+}
+
 // ---------------------------------------------------------------------------
 // (a) MVCC visibility: search must return the LATEST committed version that is
 //     visible to the read view (trx_id < snapshot AND not in active list).
