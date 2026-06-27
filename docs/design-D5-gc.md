@@ -290,3 +290,44 @@ after the oracle + a mode-2 soak + a 1-in-N walk-audit tripwire.
 
 **Caveat:** the mode-1/mode-2 walk-skip + MISS->walk fallback live in repo-external row0vers.cc (built via
 integration/scripts) — read it before C3 to confirm mode-1 has no hidden compare and NONCONTIG routes to walk.
+
+## 11. ⑤b (recover ~0.16s serve latency) adversarial review — NO-GO on the back-edge chase, GO on "⑤b-lite" (34 agents, 2026-06-27)
+The proposed ⑤b (make roll_pred atomic + add a per-node `successor` inverse edge + GC nulls the back-edge before
+retire, so consult can chase per-node back-pointers = O(depth), no per-call map build) was reviewed. **Verdict:
+NO-GO as specified; GO on a strictly-safer alternative.** Reasons:
+- **Bad trade (16 must-fixes for ~0.29s):** the back-edge chase REOPENS the closed UAF class + four wrong-serve
+  gates (cross-generation delete+reinsert, pk-hash collision, inverted-superseded, interior-over-prune) that the
+  GC-safe MAP walk closes intrinsically, to recover ~0.29s on a *single-reader microbench* already ~770× faster
+  than vanilla, on a correctness-critical serve path.
+- **Most-likely crash:** the drainer's `P->successor = N` write is a WRITE-AFTER-FREE — `P` (prior newest) sits in
+  a just-demoted, GC-prunable epoch and the drainer holds NO Guard. "GC nulls the back-edge" protects *readers*,
+  not the *drainer writing the inverse edge into a node being freed*. Forces a header-resident redesign anyway.
+- **Structural tension (the headline doesn't generalize):** the fast chase needs the back-edge chain INTACT to be
+  O(depth); the memory bound needs GC to CUT interior nodes. In the multi-reader memory-win regime (≥2 views form
+  in-middle holes), GC cuts the chain -> chase truncates at a null -> MISS -> walk. So ⑤b is fast exactly when GC
+  is inert (single held reader, which also pins global-min so GC reclaims nothing on that lineage), and degenerates
+  exactly when GC does its job. 0.16s is a single-reader-only number.
+
+**⑤b-lite (the GO alternative) — memoize the link table, keep the map walk's correctness, add NO per-node back-edges:**
+The map walk's cost is Pass-1 *rebuilding* the writer->predecessor table every call (allocation + full live-chain
+scan), not the chase. Cache the built table on the header; reuse it while the key is unchanged.
+- header gains `std::atomic<ConsultCache*> consult_cache` (an immutable-once-published built link table + the
+  `node_count` and the require_full_pk/full-PK it was built for + any_pk_match).
+- consult, under the Guard: load consult_cache; if present AND `built_node_count == node_count` AND PK/mode match
+  -> REUSE (skip Pass 1, pure O(depth) chase, zero alloc). Else build Pass 1 as today, publish (exchange) the new
+  cache, EBR-retire the old (the existing published_deadzone pattern).
+- **Safety (no new UAF):** the GC retire path CLEARS the header's consult_cache (exchange null + EBR-retire the old
+  cache) BEFORE freeing any node of that header. So a reader that loads a NON-null cache loaded it before the clear
+  = before that retire, so its Guard pins every node the cache references (EBR defers the free past the Guard); a
+  reader after the clear gets null/a-fresh-cache that never references the freed node. The `node_count` check
+  catches new inserts (rebuild); the GC-clear catches retires (safety). No `successor`, no atomic-roll_pred chase,
+  no GC-null-back-edge, no write-after-free edge, no new ordering proof. The map walk's four firewalls are inherited
+  verbatim (the cached table IS the map walk's table).
+- **Caveat (M-3 inherited):** ⑤b-lite recovers the win only on REPEATED consults of a STATIC chain (held-snapshot,
+  multi-pass scan: the first build pays, reuse is fast). In the multi-reader regime GC bumps the chain -> cache
+  invalidates -> rebuild (= map walk, memory saved). This matches reality: the fast number is a single-reader number.
+
+**Plan:** implement ⑤b-lite as a separate increment; verify standalone Release/ASan/TSan + the C1 oracles + C2
+mode-2 construct_BAD=0 under GC (the cache reuses the map walk's logic, so the firewalls must stay green), then
+⑥ re-measure (does the held-reader repeat-scan drop toward ~0.16s?). **Checkpoint: if ⑤b-lite is good enough, the
+back-edge chase is abandoned** (the review's recommendation).

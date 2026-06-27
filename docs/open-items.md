@@ -32,7 +32,7 @@
 - ⓠ4 ⑥를 GC-on서 재측 → **부분 ✅**: held-reader deep read가 GC-on서 생존(64M 98s→0.45s ~190×, hit 2000/2000, SUM 정답). in-middle 회수는 활성 뷰 ≥2개여야 hole이라 단일 held-reader는 체인 intact. **남음**: multi-reader in-middle(GC가 실제 in-middle 회수하며 serve와 상호작용 = ⑤b가 빛나는 곳) · oltp_read_write/동시 HTAP latency.
 
 **여전히 열림(STILL OPEN):**
-- ⓠ1 ~0.16s fast consult → **⑤b**(GC-safe back-edge). GC-on serve 현 0.45s(⑥ 재측). **FG+BG cooperative-reclaim 트랙과 함께** — reader‖GC chain-pointer가 같은 hot 표면이라 hardening/리뷰 1회로 묶음. ⓠ2 FG +30% 동반(roadmap, perf 후퇴 아니면 채택; ⑤b는 FG strictly 불요[BG-only도 가능]나 묶는 이득 큼).
+- ⓠ1 ~0.16s fast consult → **⑤b**. 적대적 리뷰(34 agents, design-D5-gc §11) 결과 **원래 back-edge chase는 NO-GO**(닫힌 UAF 부류+wrong-serve 게이트 4개 재오픈, 드레이너 successor write-after-free, 그리고 근본 긴장: fast-chase는 back-edge intact 필요한데 메모리 bound는 GC가 그걸 끊어야 함 → multi-reader서 chase 끊겨 MISS→walk, 0.16s는 단일-reader 한정). **GO = ⑤b-lite**(map walk의 link table을 header에 메모이즈, GC retire가 free 전 cache clear=안전, node_count로 freshness; 새 UAF/successor 0, map walk 방화벽 4개 그대로). **구현 다음**: standalone+C1 오라클+C2 mode-2 검증 → ⑥ 재측(held-reader repeat-scan이 ~0.16s로). ⑤b-lite로 충분하면 back-edge chase 폐기. ⓠ2 FG +30%는 별개 roadmap(perf 후퇴 아니면 채택; ⑤b-lite는 FG 불요).
 - ⓝ9 cold-key 미회수(진짜 unbounded) → 구현 or 문서화.
 - ⓠ3 write-heavy+LLT로 in-middle 이득 생존 / ⓠ5 22% MISS effective speedup / ⓝ6 LOB / ⓝ11 signal-B sweep → **Phase 2**.
 - ⓝ14 REPORT Limitations / ⓣ10 패치 vendor / multi-run·error-bar / 논문 한글+영문 → **Phase 3**.
