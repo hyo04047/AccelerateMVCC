@@ -331,3 +331,15 @@ scan), not the chase. Cache the built table on the header; reuse it while the ke
 mode-2 construct_BAD=0 under GC (the cache reuses the map walk's logic, so the firewalls must stay green), then
 ⑥ re-measure (does the held-reader repeat-scan drop toward ~0.16s?). **Checkpoint: if ⑤b-lite is good enough, the
 back-edge chase is abandoned** (the review's recommendation).
+
+**⑤b-lite DONE (2026-06-27).** Implemented (header-resident immutable ConsultCache published via exchange +
+EBR-retire; GC retire CLEARS the cache before freeing any node; consult reuses iff node_count unchanged + PK/mode
+match). Verified: standalone Release 36 / ASan 25 / TSan 25 (oracles + drainer||consult||GC green); integration C2
+mode-2 construct_BAD=0 (served 421k); ⑥ 64M held-reader serve deep1 0.44s (cache build) / **deep2 0.22s (cache
+REUSE -- ~2x the repeat scan, ~470x vs vanilla 104s)**, hit 2000/2000, SUM correct. Per the checkpoint (~0.20s),
+**the back-edge chase is ABANDONED** -- ⑤b-lite captures the repeat-scan win with zero new unsafe surface. One
+implementation hazard found + fixed: publishing a cache on EVERY miss floods EBR with instantly-stale cache
+retires under churn and starves the GC (caught by `Consult.CutsGcConcurrencyDrainerConsultGc`); fixed by publishing
+only when no insert raced the build (node_count unchanged across it). First scan still pays the build; only
+static-chain reuse is fast -- exactly the single-reader regime the review predicted (the multi-reader memory-win
+regime invalidates the cache -> rebuild = map walk, as intended).

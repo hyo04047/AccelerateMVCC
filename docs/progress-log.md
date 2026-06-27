@@ -24,7 +24,9 @@
 
 **⑥ payoff under GC** (`build_d5_d6_gc.sh`): held-reader 깊은 읽기가 GC-on에서 생존 — 64M **vanilla 98s → serve 0.45s(~190×)**, 물리read 1.1M→7, consult hit 2000/2000, SUM 동일(679715=정답). **왜 체인 안 끊겼나**: in-middle 회수는 활성 뷰 ≥2개여야 hole이 생김 → held-reader 1개만이면 deadzone가 tail뿐이라 중간 버전이 안 지워짐 → 체인 intact(보수적 superset 작동). latency 0.45s는 GC-safe lineage walk 비용(⑤b가 0.16s로 조임). 커밋 `b2d8e55`.
 
-**남은 것**(open-items §0b): ⑤b(0.45s→0.16s, FG+BG 트랙) · C3(mode-1 hardening: gc_generation + walk-audit) · multi-reader in-middle 측정 · savepoint edge · Phase 2(워크로드 폭·LOB·FG) · Phase 3(논문). 전부 push.
+**⑤b (serve latency 0.45s→0.16s 회복)** — 적대적 리뷰(34 agents, design-D5-gc §11): 원래 안 = per-node roll_pred back-edge를 atomic으로 + successor 역방향 포인터 + GC가 회수 시 back-edge null. **판정 NO-GO** — 닫힌 UAF 부류 + wrong-serve 게이트 4개 재오픈, 드레이너 successor write 자체가 write-after-free(predecessor가 GC-prunable epoch, 드레이너 Guard 없음), 근본 긴장(fast-chase는 back-edge intact 필요 ↔ 메모리 bound는 GC가 끊어야 함 → multi-reader서 chase 끊겨 MISS→walk, 0.16s는 단일-reader 한정). **GO = ⑤b-lite**: map walk의 진짜 비용은 chase가 아니라 매 호출 link table을 *다시 빌드*하는 것 → header에 메모이즈. 구현: header에 immutable `ConsultCache`(atomic, exchange+EBR-retire 발행), consult는 node_count 불변+PK/mode 일치 시 reuse(순수 chase), GC retire가 노드 free 전 cache clear(reader가 freed 노드 참조 캐시 못 봄=안전), publish는 build 중 insert 안 끼었을 때만(churn EBR flood로 GC 굶기는 것 방지 — `CutsGcConcurrencyDrainerConsultGc`가 잡아 수정). 새 UAF/successor 0, 방화벽 4개 그대로. **검증**: standalone Release36/ASan25/TSan25 · C2 mode-2 construct_BAD=0(421k served) · **⑥ 64M held-reader deep2(reuse) 0.45s→0.22s ~2×(~470× vs vanilla 104s)·hit2000/2000·SUM정답**. checkpoint(~0.20s) 도달 → **back-edge chase 폐기**. 첫 스캔은 빌드 비용(reuse만 빠름=단일-reader regime). 커밋 `392f270`(리뷰)·`<⑤b-lite>`.
+
+**남은 것**(open-items §0b): C3(mode-1 serve-only 출하: gc_generation 2번째 방화벽 + walk-audit 샘플링) · multi-reader in-middle 측정 · savepoint edge · cold-key · Phase 2(워크로드 폭·LOB·FG +30% roadmap) · Phase 3(패치 vendor·Limitations·multi-run·논문 한글+영문). 전부 push. **docs 위키 정비됨(README=현황·NEXT-SESSION=재개가이드·progress-log=서사·open-items §0b=트래커).**
 
 ---
 

@@ -58,8 +58,9 @@ flowchart TD
 - **1차 목표 A+B+C ✅ · 최종 D ✅** — 실제 InnoDB 통합: populate → consult → authoritative serve → 성능 payoff.
 - **⑤ purge-view GC(메모리 유계)**: **⑤a-2 ✅** — deadzone GC가 통합 mysqld에서 InnoDB read-view로 구동돼
   실제로 회수(정확·효율·race/UAF 0·메모리 유계). serve는 안전망(5-2b C1·C2) 위에서 GC와 함께 정확.
-- **다음 = ⑤b**(serve 깊은-읽기 latency 0.45s→0.16s) **/ C3**(mode-1 출하). 세션별 상세
-  [progress-log.md](progress-log.md), 남은 작업 마스터 트래커 [open-items.md](open-items.md).
+- **⑤b-lite ✅** — serve 깊은-읽기 repeat-scan latency를 메모이즈로 0.45s→0.22s(안전, back-edge chase는
+  리뷰서 NO-GO로 폐기). **다음 = C3**(mode-1 serve-only 출하). 세션별 상세 [progress-log.md](progress-log.md),
+  남은 작업 마스터 트래커 [open-items.md](open-items.md).
 
 | 트랙 | 상태 |
 |---|---|
