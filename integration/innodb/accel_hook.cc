@@ -54,6 +54,7 @@ std::atomic<uint64_t> g_c_miss_absent{0};
 std::atomic<uint64_t> g_c_miss_novisible{0};
 std::atomic<uint64_t> g_c_miss_noncontig{0};
 std::atomic<uint64_t> g_c_miss_ineligible{0};
+std::atomic<uint64_t> g_c_miss_gcrace{0};   // D-5 C3: gen-gate race MISS (distinct from a real contiguity break)
 // D-4 4d-prep: of the HITs, did the rec_t the caller built from the fetched image match vanilla's
 // rebuilt *old_vers (data + delete flag + valid offsets)? Gate: construct_bad==0, construct_ok==hit.
 std::atomic<uint64_t> g_c_construct_ok{0};
@@ -95,6 +96,10 @@ int g_authoritative_mode = 0;
 int g_audit_n = 1024;
 std::atomic<uint64_t> g_audit_hit_ctr{0};
 std::atomic<uint64_t> g_audited{0};
+// D-5 C3 (diagnostic / operational toggle): the mode-1 gc_generation 2nd firewall is ON by default. Set
+// ACCEL_GEN_GATE=0 to disable it even in mode-1 (consult does not enforce the gen-recheck) -- used to isolate
+// whether a held-reader HIT collapse comes from the gen-gate (race) vs a real contiguity break / chain sever.
+bool g_gen_gate_on = true;
 
 // D-5 5-1b: leaf-domain ACTIVE READ-VIEW REGISTRY (collection signal B). InnoDB pushes each view's
 // {low_limit_id, up_limit_id} here on view_open (piggybacking the trx_sys mutex it already holds) and
@@ -265,6 +270,9 @@ void accel_init() noexcept {
       g_authoritative_mode = 0;
     }
   }
+  if (const char *gg = std::getenv("ACCEL_GEN_GATE")) {
+    if (gg[0] == '0') g_gen_gate_on = false;   // D-5 C3 diagnostic: disable the gen-gate even in mode-1
+  }
   if (const char *pv = std::getenv("ACCEL_PUBLISH")) {
     if (pv[0] == '0') g_publish_views = false;         // baseline: OLTP without the view-registry push
   }
@@ -311,12 +319,13 @@ void accel_shutdown() noexcept {
   // construct_bad=0 and construct_ok==hit (a cache-built record is a valid servable substitute).
   std::fprintf(stderr,
                "[accel] consult: calls=%llu hit=%llu miss{absent=%llu novisible=%llu noncontig=%llu "
-               "ineligible=%llu} | construct_ok=%llu construct_BAD=%llu | auth_mode=%d served=%llu\n",
+               "ineligible=%llu gcrace=%llu} | construct_ok=%llu construct_BAD=%llu | auth_mode=%d served=%llu gen_gate=%d\n",
                (unsigned long long)g_c_calls.load(), (unsigned long long)g_c_hit.load(),
                (unsigned long long)g_c_miss_absent.load(), (unsigned long long)g_c_miss_novisible.load(),
                (unsigned long long)g_c_miss_noncontig.load(), (unsigned long long)g_c_miss_ineligible.load(),
+               (unsigned long long)g_c_miss_gcrace.load(),
                (unsigned long long)g_c_construct_ok.load(), (unsigned long long)g_c_construct_bad.load(),
-               g_authoritative_mode, (unsigned long long)g_c_serve.load());
+               g_authoritative_mode, (unsigned long long)g_c_serve.load(), g_gen_gate_on ? 1 : 0);
   // D-5 C3-b: walk-audit evidence. In mode-1, construct_ok+construct_bad == audited (only audited HITs
   // run the compare); construct_bad is an AUDIT FAILURE (a served-equivalent cache HIT that did not match
   // vanilla). The gate: audited > 0 (sampling actually ran) AND audited ~= mode1_hits / audit_n AND
@@ -324,6 +333,12 @@ void accel_shutdown() noexcept {
   std::fprintf(stderr, "[accel] audit: mode=%d audit_n=%d mode1_hits=%llu audited=%llu (mode-1: ok+bad==audited, bad==0)\n",
                g_authoritative_mode, g_audit_n,
                (unsigned long long)g_audit_hit_ctr.load(), (unsigned long long)g_audited.load());
+  // D-5 C3-c diag: split noncontig into head-writer-gate (drainer lag) vs chase-break (GC reclaimed an
+  // intermediate version the lineage walk needs = GC chain-sever). Attributes the ⑥ collapse.
+  std::fprintf(stderr, "[accel] noncontig split: head_writer_gate=%llu (cache head behind live row) "
+               "chase_break=%llu (GC severed a mid-chain link)\n",
+               (unsigned long long)(g_accel ? g_accel->nc_headwriter() : 0),
+               (unsigned long long)(g_accel ? g_accel->nc_chasebreak() : 0));
   // D-5 5-1b: view-registry push evidence. published/unpublished are the per-view_open/close push
   // counts (not per row); live_snapshot is what the GC would see now (~0 at shutdown, all closed).
   std::vector<mvcc::ViewCut> vcut; uint64_t vfloor;
@@ -424,8 +439,9 @@ int accel_consult_fetch(uint64_t table_id, uint64_t pk_hash,
                          // D-5 C3: enforce the gc_generation 2nd firewall ONLY in mode-1 (serve-only),
                          // which has no per-row walk-compare; shadow/mode-2 leave it off (their compare is
                          // the 2nd firewall, and forcing the gate there would only convert hot-key HITs to
-                         // MISSes on keys GC is actively retiring -- perf loss for zero safety gain).
-                         /*enforce_gc_gen=*/(g_authoritative_mode == 1));
+                         // MISSes on keys GC is actively retiring -- perf loss for zero safety gain). The
+                         // ACCEL_GEN_GATE=0 toggle disables it even in mode-1 (diagnostic / isolation).
+                         /*enforce_gc_gen=*/(g_authoritative_mode == 1 && g_gen_gate_on));
   } catch (...) { return 1; }  // defensive: consult does not allocate/throw, but the facade is noexcept
   switch (o) {
     case CO::HIT:
@@ -437,6 +453,7 @@ int accel_consult_fetch(uint64_t table_id, uint64_t pk_hash,
     case CO::MISS_NOVISIBLE:  g_c_miss_novisible.fetch_add(1, std::memory_order_relaxed);  return 2;
     case CO::MISS_NONCONTIG:  g_c_miss_noncontig.fetch_add(1, std::memory_order_relaxed);  return 3;
     case CO::MISS_INELIGIBLE: g_c_miss_ineligible.fetch_add(1, std::memory_order_relaxed); return 4;
+    case CO::MISS_GCRACE:     g_c_miss_gcrace.fetch_add(1, std::memory_order_relaxed);     return 5;
   }
   return 1;
 }

@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-06-28 — 세션 10: C3(mode-1 serve-only 안전 출하) + ⑥ chain-sever 특성화 + GC-쪽 완성 deferral
+
+> C3로 mode-1(serve-only, walk-skip = perf 경로)을 안전하게 출하 가능하게 만들고, ⑥ 재측에서 GC chain-sever를
+> 발견·특성화. 두 차례 멀티에이전트(설계 22 + 리뷰 32)로 "재봉합(healing)" fix가 NO-GO임을 확정 → GC-쪽 완성을
+> FG+BG GC 스테이지로 deferral. **핵심: correctness는 항상 보존(construct_BAD=0), 남은 건 PERF 트레이드오프.**
+
+**C3 — mode-1 serve-only 안전 출하** (적대 리뷰 42에이전트 `GO_WITH_CONDITIONS`, design-D5-gc §10.1):
+- **C3-a** `gc_generation` 2nd firewall (커밋 `6025021`): per-key 카운터를 GC retire 길목(`detach_and_retire_epoch`, windowed+dummy 둘 다 통과하는 유일 지점)에서 bump(release). consult가 Guard-open에 snapshot·HIT 직전 recheck, **mode-1 한정**(facade가 `g_authoritative_mode==1`일 때만). 리뷰 must-fix #1 반영해 **4-layer 분업 명시**(link-gap 구조 firewall=1차 / C1 inverted oracle=R1 / walk-audit=런타임 / gen-gate=race backstop) — "green gen-gate ≠ R1/R2 closed". 오라클: `GenGateRacingRetireFlipsHitToMiss`(결정적 seam positive/negative + mode-gating 증명)·`GenGateConcurrentRetireNoWrongServe`(실 동시 retire 무오답·gen 전진)·`GcBackstopDrain` dummy-path gen 검증. standalone Release38/ASan27/TSan27.
+- **C3-b** 1-in-N walk-audit (커밋 `3b21003`): mode-1엔 in-run self-check가 없으니 HIT 1/N을 샘플링해 vanilla walk+compare(observe-only, vanilla 서빙). `ACCEL_AUDIT_N`(기본 1024), **N=0이면 mode-1 거부→shadow 강등**(audit 무력화 차단). 검증(oltp_read_write 32thr): construct_BAD=0·audited=hit/N 정확·served=hit−audited·HIT 84.6%(coverage 안 무너짐)·retire windowed+dummy 둘 다·**강제 cross-row면 audit trip(construct_BAD=57)**.
+- **C3-c** soak + ship gate(`build_d5_c3c.sh`) + 4-layer 문서화.
+
+**⑥ chain-sever — 발견·계측확정·특성화** (design-D5-gc §12):
+- GC가 navigation 경로(중간 dead 버전)를 회수하면 lineage 재구성 chase가 끊겨 consult MISS→walk. noncontig 원인 분리계측(`nc_headwriter_`/`nc_chasebreak_`) + gen-gate 토글(`ACCEL_GEN_GATE`) + `gcrace` 분리카운터로 **확정**: collapse는 **chase_break**(861/862·gen-gate 무관 gcrace=0)이고 GC dummy-drain 486k와 상관. **construct_BAD=0 = PERF-only, 절대 틀린 답 X.**
+- 특성화 4 run(동일 mode-1+GC, 64M): **3/4 hold(~4.7s ~19×) / 1/4 degrade(~90s walk)**, reclaim storm(dummy 510k)과 상관, **전 run construct_BAD=0**. 4G는 hold 신뢰(~0.27s). honest framing = "moderate GC선 빠른 읽기, reclaim storm선 정답 walk로 우아한 degrade, 메모리bound·correctness 항상 보존".
+
+**healing fix NO-GO** (설계 22에이전트→GC-side link-healing 추천, 리뷰 32에이전트 `NO_GO`):
+- 노드 free하되 lineage 재봉합(GC가 끊긴 자리 re-stitch)으로 chase가 O(surviving-depth)로 boundary 도달 — but ⑤b 긴장을 "truncate→MISS→walk(안전·느림)"에서 **"heal-race→MISS or wrong-serve(correctness-critical)"로 악화**. WAF 안전변형은 결국 live-chain scan=⑤b-lite로 수렴(더 싸고 안전한 inverse-edge 변형 없음). gen-gate는 healing 하에 더 load-bearing(self-defeating).
+- **결정**: chain-sever는 GC-쪽 긴장이고 FG cooperative reclaim이 reclaim dynamics를 바꾸므로 **GC-쪽 완성을 FG+BG GC 스테이지로 묶어 deferral**. 유일 sanctioned 경로 = GC-clear-tolerant memoized-lineage(⑤b-lite 진화, live state 유도). C3(mode-1 SAFE serve)은 출하 deliverable로 유지, mode-1 perf 이득은 regime-dependent.
+
+**→ 다음 = FG+BG GC 스테이지** — ⓠ2 FG cooperative reclaim(+30%) 통합 + 위 GC-clear-tolerant mitigation을 한 묶음으로. 상세 [open-items.md](open-items.md) §0c.
+
+---
+
 ## 2026-06-27 — 세션 9: ⑤a-2(GC 통합 ON) + 5-2b serve(C1·C2) + ⑥ GC-on 재측
 
 > 한 세션에 ⑤a-2 전체(5단계) + 5-2b 적대적 리뷰·C1·C2 + ⑥ GC-on 재측까지. GC가 통합 mysqld에서 실제로

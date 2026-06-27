@@ -203,7 +203,8 @@ namespace mvcc
             MISS_ABSENT,     // key (or this row's PK) not in the cache
             MISS_NOVISIBLE,  // PK present but no cached version is visible to this read view
             MISS_NONCONTIG,  // cache cannot prove contiguity to the live row (drainer lag / ring drop)
-            MISS_INELIGIBLE  // candidate has no usable image (locator-only / over-cap)
+            MISS_INELIGIBLE, // candidate has no usable image (locator-only / over-cap)
+            MISS_GCRACE      // D-5 C3: a GC retire of this key raced the probe (gc_generation moved) -> distrust
         };
         // require_full_pk=false is a TEST-ONLY negative control: it skips the full-PK identity check
         // so a forced pk_hash collision serves a cross-row image -> the shadow byte-compare must then
@@ -245,6 +246,17 @@ namespace mvcc
         // unlink (1c-4) will shrink. In 1c-1 readers judge-only and just increment this.
         uint64_t coop_dead_seen() const { return coop_dead_seen_.load(std::memory_order_relaxed); }
         std::atomic<uint64_t> coop_dead_seen_{0};
+
+        // D-5 C3-c diag: split MISS_NONCONTIG into its two causes so the ⑥ collapse can be attributed.
+        //   nc_headwriter_ = the contiguity scalar gate fired (cache head writer != live row's last writer:
+        //     the cache head does not reach the live row -- drainer lag / ring drop).
+        //   nc_chasebreak_ = the lineage chase ran off the end (best==nullptr with a visible version present):
+        //     a writer->predecessor link is GONE mid-chain = GC reclaimed an intermediate version the walk
+        //     needs to navigate down to the held reader's version. This is the GC chain-sever.
+        std::atomic<uint64_t> nc_headwriter_{0};
+        std::atomic<uint64_t> nc_chasebreak_{0};
+        uint64_t nc_headwriter() const { return nc_headwriter_.load(std::memory_order_relaxed); }
+        uint64_t nc_chasebreak() const { return nc_chasebreak_.load(std::memory_order_relaxed); }
 
         // Stage C-2 experiment toggles (set once before threads start; default = current behavior).
         // fg_unlink_enabled_: when false, search() still help-splices already-marked nodes (needed

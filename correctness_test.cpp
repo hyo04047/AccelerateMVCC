@@ -464,7 +464,7 @@ TEST(Consult, GenGateRacingRetireFlipsHitToMiss) {
     EXPECT_EQ(probe(true), CO::HIT) << "gen-gate must not change the steady-state answer when nothing races";
     // (2) POSITIVE CONTROL: a retire bumps the key's generation mid-probe -> end-recheck sees it -> MISS.
     m.set_test_bump_gen_mid_consult(true);
-    EXPECT_EQ(probe(true), CO::MISS_NONCONTIG) << "gen-gate must MISS when a GC retire races the probe";
+    EXPECT_EQ(probe(true), CO::MISS_GCRACE) << "gen-gate must MISS (GCRACE) when a GC retire races the probe";
     // (3) MODE GATING: the SAME racing bump with enforce_gc_gen=false (shadow / mode-2) is ignored -> HIT.
     EXPECT_EQ(probe(false), CO::HIT) << "gen-gate must be inert when not enforced (shadow / mode-2)";
 }

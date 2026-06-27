@@ -380,3 +380,69 @@ retires under churn and starves the GC (caught by `Consult.CutsGcConcurrencyDrai
 only when no insert raced the build (node_count unchanged across it). First scan still pays the build; only
 static-chain reuse is fast -- exactly the single-reader regime the review predicted (the multi-reader memory-win
 regime invalidates the cache -> rebuild = map walk, as intended).
+
+## 12. The ⑥-vs-⑤ chain-sever tension: confirmed, characterized, and DEFERRED to the FG+BG GC stage (2026-06-28)
+While validating C3 (mode-1 serve-only), re-measuring ⑥ under GC-on at small BP exposed a **non-deterministic
+collapse** of the read-latency payoff. This section records the confirmed root cause, the rejected fix, the
+honest characterization, and the decision to complete the GC side later (with FG+BG cooperative reclaim).
+
+### 12.1 Confirmed root cause (instrumented) — GC reclaims the navigation path
+consult finds the held reader's visible version by a lineage walk: it (re)builds the writer->predecessor table
+from the **live chain** and chases from the live top down to the first `changes_visible` version. GC's deadzone
+reclaims **interior dead versions** (in-middle holes no active view needs = the ⑤ memory win); reclaiming an
+interior version removes its link from the live chain, so the rebuild's chase runs off the end at the gap ->
+`MISS_NONCONTIG` -> InnoDB does the slow full walk. A split counter (`nc_headwriter_` vs `nc_chasebreak_`, added
+this session) attributed the collapse precisely: **chase_break = 861/862** (drainer-lag head-writer = 1), with GC
+having retired **486k+** versions almost entirely via the orphan/dummy-drain. **construct_BAD = 0 throughout** --
+the MISS->walk fallback is always correct; this is a PERF collapse, not a wrong answer. (The gen-gate is NOT the
+cause: `gcrace = 0` in every run; isolated via the `ACCEL_GEN_GATE` toggle.) This IS the §11 structural tension
+made concrete: the fast chase needs the chain intact; the memory bound needs GC to cut interior nodes; the
+in-middle reclaim (memory win) IS the navigation sever.
+
+### 12.2 Characterization (honest) — holds under moderate GC, degrades (correctly) under a reclaim storm
+Same config (mode-1 + GC, 64M BP, one held reader + 8-thread churn, `build_d5_c3c_char.sh`), 4 runs:
+| run | deep-scan | hit | chase_break | construct_BAD | GC retired |
+|---|---|---|---|---|---|
+| 1 | 4.70s | 999/1000 | 0 | **0** | 24 |
+| 2 | 4.69s | 999/1000 | 0 | **0** | 24 |
+| 3 | **89.9s** | 0/1000 | 1000 | **0** | **510,735** (dummy) |
+| 4 | 4.81s | 999/1000 | 0 | **0** | 24 |
+
+So **3/4 hold the payoff** (~4.7s, ~19x vs ~90s vanilla walk at 64M); **1/4 degrades** to the correct walk
+(~90s) when GC has a reclaim storm (dummy-drain fires ~500k, severing the navigation chain). **construct_BAD = 0
+in every run** -- correctness is never compromised. At 4G the chain stays intact and the payoff holds reliably
+(~0.27-0.45s). The degradation is non-deterministic, correlated with GC aggressiveness (24 vs ~500k retires),
+which small-BP purge-starvation drives.
+
+### 12.3 Design exploration + the GC-side link-healing NO-GO (22-agent design panel + 32-agent review)
+A design exploration (6 approaches: navigable tombstones, generation-direct, GC-preserve-suffix, skip-index,
+consult-fallback, free) judged every node-RETAINING approach disqualified on the memory bound (keeping reclaimed
+nodes under a pinned global-min IS the accumulation ⑤ forbids) and/or a reopened wrong-serve gate. The synthesis
+recommended a HYBRID: **GC-side link-healing** -- free the node but RE-STITCH the lineage (GC patches the dying
+node's neighbors' roll_pred/roll_succ past it) so the chase still reaches the boundary in O(surviving-depth).
+A focused adversarial review (32 agents, reconciled head-on with the §11 ⑤b NO-GO) returned **NO_GO**:
+- It does **not escape ⑤b reason 3**; it RELOCATES the tension from "truncate -> MISS -> walk (safe, slow)" into
+  "heal-race -> must MISS via gen-gate or serve wrong (correctness-critical)" -- a strictly WORSE failure mode.
+- It does **not escape reason 1**: the live-chain map walk closes the wrong-serve gates intrinsically (it rebuilds
+  from only Guard-reachable live nodes); a chased per-node back-edge graph that persists across the unlink must be
+  kept correct by GC under a heal||consult||drainer race.
+- The WAF (reason 2): a drainer-written `roll_succ` is the exact WAF ⑤b flagged; the only provably-safe variant is
+  a GC-side live-chain scan to find the successor -- **which IS the map walk's traversal, i.e. it collapses into
+  the already-shipped ⑤b-lite**. There is no inverse-edge variant both WAF-free and cheaper than the shipped
+  header-resident memoized derivation.
+- The gen-gate becomes MORE load-bearing under healing (the structural link-gap firewall is intentionally
+  disabled for the common over-prune), and 486k heals/cycle each bump it -> the gate's own conservative MISS
+  defeats the payoff. The "healing makes the gen-gate unnecessary" claim is FALSE.
+
+### 12.4 Decision — defer GC-side completion to the FG+BG GC stage
+The collapse is **PERF-only** (never a wrong row); the safe cheap fix does not exist (it reduces to ⑤b-lite,
+which already gives the repeat-scan win but cannot navigate a severed chain). The chain-sever is fundamentally a
+**GC-side** tension (GC reclaiming the navigation path), and FG+BG cooperative reclaim (signal C, the deferred
++30% track, open-items ⓠ2) changes the reclaim dynamics. So the GC side is completed **together** as a coherent
+stage: FG+BG cooperative reclaim + any GC-clear-tolerant memoized-lineage mitigation (the only sanctioned avenue,
+an evolution of ⑤b-lite derived from live state, never a chased mutable graph), designed against the same
+constraints. For now: the ⑥ payoff is documented as a **regime-qualified** result (holds under moderate GC
+pressure; degrades gracefully to the correct walk under a small-BP reclaim storm; memory bound + correctness
+always preserved). C3 (mode-1 SAFE serve) stands as the shipped deliverable; mode-1's perf benefit is regime-
+dependent. Diagnostics retained: `ACCEL_GEN_GATE` toggle, `gcrace` counter, `nc_headwriter_`/`nc_chasebreak_`
+split.

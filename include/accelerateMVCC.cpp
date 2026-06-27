@@ -418,7 +418,7 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
     if (!any_pk_match) return ConsultOutcome::MISS_ABSENT;
     // Contiguity precondition (complementary cross-generation suppressor): the gap-free run must reach the
     // live row's last writer, else we cannot trust the cache -> MISS.
-    if (head_writer != live_top_writer) return ConsultOutcome::MISS_NONCONTIG;
+    if (head_writer != live_top_writer) { nc_headwriter_.fetch_add(1, std::memory_order_relaxed); return ConsultOutcome::MISS_NONCONTIG; }
 
     // Pass 2: chase the (cached or freshly-built) link table from the live top, exactly as vanilla follows
     // roll_ptr -- step to each writer's predecessor and return the first changes_visible. id-EQUALITY links
@@ -437,16 +437,18 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
 
     // best==nullptr: a safe MISS (full walk), never a guess. The build path computed any_visible (it scans
     // every entry) to split NOVISIBLE vs NONCONTIG; the reuse path skips that scan -> conservative NONCONTIG.
-    if (best == nullptr)
-        return (reuse || any_visible) ? ConsultOutcome::MISS_NONCONTIG : ConsultOutcome::MISS_NOVISIBLE;
+    if (best == nullptr) {
+        if (reuse || any_visible) { nc_chasebreak_.fetch_add(1, std::memory_order_relaxed); return ConsultOutcome::MISS_NONCONTIG; }
+        return ConsultOutcome::MISS_NOVISIBLE;
+    }
 
     // D-5 C3 (mode-1 2nd firewall): if a GC retire of this key raced our probe (generation moved since the
     // Guard-open snapshot), the chain/cache we just walked may have been pruned mid-flight -> do NOT serve;
-    // MISS to the InnoDB walk. Reuses MISS_NONCONTIG ("cache not trustworthy, fall back"), which the caller
-    // already routes to the full walk exactly like a contiguity miss. Mode-2/shadow (enforce_gc_gen=false)
-    // are unaffected -- their per-row walk-compare is the independent 2nd firewall.
+    // MISS to the InnoDB walk. Distinct outcome MISS_GCRACE (NOT MISS_NONCONTIG) so the integration can tell
+    // a gen-gate race apart from a real contiguity break -- the two have very different perf implications.
+    // The caller routes any non-HIT to the full walk. Mode-2/shadow (enforce_gc_gen=false) are unaffected.
     if (enforce_gc_gen && header->gc_generation.load(std::memory_order_acquire) != gen0)
-        return ConsultOutcome::MISS_NONCONTIG;
+        return ConsultOutcome::MISS_GCRACE;
 
     if (out_img != nullptr) {
         if (best->img_len == 0 || best->img_len > out_cap) return ConsultOutcome::MISS_INELIGIBLE;

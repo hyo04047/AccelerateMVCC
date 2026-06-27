@@ -37,6 +37,20 @@
 - ⓠ3 write-heavy+LLT로 in-middle 이득 생존 / ⓠ5 22% MISS effective speedup / ⓝ6 LOB / ⓝ11 signal-B sweep → **Phase 2**.
 - ⓝ14 REPORT Limitations / ⓣ10 패치 vendor / multi-run·error-bar / 논문 한글+영문 → **Phase 3**.
 
+## 0c. 세션 10 갱신 (2026-06-28) — C3(mode-1 출하) 완료 + ⑥ chain-sever 특성화 + GC-쪽 완성을 FG+BG로 deferral
+> C3(mode-1 serve-only 안전 출하)를 적대 리뷰(42 agents)→C3-a(gc_generation 2nd firewall + 오라클)→C3-b(1-in-N
+> walk-audit)→C3-c(soak+ship gate)로 진행. ⑥ 재측에서 chain-sever 발견·특성화·healing NO-GO. design-D5-gc §10.1·§12.
+
+**닫힘(CLOSED):**
+- **C3 mode-1 SAFE serve ✅** — gc_generation 2nd firewall(race detector, GC retire 때 bump·consult가 Guard-open snapshot+HIT 전 recheck, mode-1 한정) + 1-in-N walk-audit(observe-only, N=0이면 mode-1 거부) + 4-layer 분업 명시(link-gap·C1 oracle·audit·gen-gate). standalone Release38/ASan27/TSan27, integration construct_BAD=0(oltp_read_write mode-1 45만 served·audit 1.45만 전부 vanilla 일치·강제 divergence는 audit trip). 커밋 `6025021`(C3-a)·`3b21003`(C3-b).
+- **ⓣ4 session-7 잔여 newer / gen-gate GC-on 재확인** → C3-a 오라클 + integration construct_BAD=0로 닫힘.
+
+**특성화·문서화(PERF-only, 버그 아님):**
+- **⑥ chain-sever 긴장 확정·특성화·deferral** — GC가 navigation 경로(중간 dead 버전)를 회수하면 lineage 재구성 chase가 끊겨(chase_break, 계측 split로 확정 861/862·GC dummy-drain 486k) consult MISS→walk. **construct_BAD=0 항상**(PERF-only, 절대 틀린 답 X). 특성화(4 run): **3/4 hold(~4.7s ~19×) / 1/4 degrade(~90s walk), reclaim storm과 상관, 항상 정답.** 설계 탐색(22)→GC-side link-healing 추천→적대 리뷰(32) **NO_GO**(⑤b 긴장을 perf-collapse[안전]→correctness-race[위험]로 악화, WAF 안전변형은 ⑤b-lite로 수렴). **결정: GC-쪽 완성을 FG+BG GC 스테이지로 deferral**(체인-sever는 GC-쪽 긴장이고 FG cooperative reclaim이 reclaim dynamics를 바꿈 → 한 묶음으로 완성). 유일 sanctioned 경로 = GC-clear-tolerant memoized-lineage(⑤b-lite 진화형, live state 유도, chased mutable graph 금지). design-D5-gc §12. 진단계측 유지(`ACCEL_GEN_GATE` 토글·`gcrace`·noncontig split).
+
+**다음 = FG+BG GC 스테이지(여기서 GC-쪽 완성):**
+- ⓠ2 FG cooperative reclaim(signal C, 측정 +30%) 통합 + 위 GC-clear-tolerant memoized-lineage mitigation + ⑤b 0.16s는 이 안전 틀에서만(chased graph로 X). 그다음 Phase 2(워크로드 폭·LOB) → Phase 3(논문).
+
 ---
 
 ## ⓠ 조용히 버려질 위험이 있는 목표 (최우선 — 사용자 핵심 우려)

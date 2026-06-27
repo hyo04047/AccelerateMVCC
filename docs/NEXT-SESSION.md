@@ -4,16 +4,21 @@
 > [README.md](README.md), 남은 작업의 상세 트래커는 [open-items.md](open-items.md), 세션별 서사는
 > [progress-log.md](progress-log.md), 설계 근거는 `design-*.md`에 있습니다.
 >
-> 최종 갱신: **2026-06-27** (세션 9 — ⑤a-2 GC-on + 5-2b serve(C1·C2) + ⑥ GC-on 재측 완료)
+> 최종 갱신: **2026-06-28** (세션 10 — C3 mode-1 안전 출하 + ⑥ chain-sever 특성화 + GC-쪽 완성 deferral)
 
 ## 현재 위치 (한눈에)
 - **1차 목표 A+B+C 완료**, **최종 D 완료** (populate → consult → authoritative serve → ⑥ 성능 payoff).
-- **⑤a-2 완료** — deadzone GC가 통합 mysqld 안에서 실제로 돈다: pushed InnoDB clock + active-view
-  registry로 구동, amortized windowed sweep, 정확(construct_BAD=0)·race/UAF 0·메모리 유계.
-- **5-2b 진행 중 — serve를 GC 위에서 켜는 단계.** C1(안전망 오라클) + C2(mode-2 verify-serve가 GC 위에서
-  정확, 49만 레코드 서빙 construct_BAD=0) 완료. **⑥ payoff가 GC-on에서도 생존**(64M deep read 98s→0.45s).
-- **다음 = ⑤b**(serve latency 0.45s→0.16s, FG+BG 트랙) **/ C3**(mode-1 출하 hardening). 상세는
-  [open-items.md](open-items.md) §0b "여전히 열림".
+- **⑤a-2 완료** — deadzone GC가 통합 mysqld 안에서 실제로 돈다(pushed InnoDB clock + active-view registry,
+  amortized windowed sweep, construct_BAD=0·race/UAF 0·메모리 유계). **5-2b C1·C2 완료**(mode-2 verify-serve가
+  GC 위에서 정확, 49만 served construct_BAD=0).
+- **C3(mode-1 serve-only 안전 출하) 완료** — gc_generation 2nd firewall(race detector·mode-1 한정) +
+  1-in-N walk-audit(observe-only·N=0이면 거부) + 4-layer 분업. construct_BAD=0 도처. 커밋 `6025021`·`3b21003`.
+  상세 design-D5-gc §10.1.
+- **⑥ chain-sever 발견·특성화(PERF-only)** — GC가 navigation 경로를 회수하면 consult가 MISS→walk(chase_break,
+  계측확정). **construct_BAD=0 항상**(틀린 답 X). 특성화: 3/4 hold(~4.7s ~19×)/1/4 degrade(~90s walk). "재봉합"
+  fix는 적대 리뷰(32) **NO_GO**. **GC-쪽 완성을 FG+BG GC 스테이지로 deferral.** 상세 design-D5-gc §12.
+- **다음 = FG+BG GC 스테이지**(여기서 GC-쪽 완성: ⓠ2 FG cooperative reclaim +30% 통합 + GC-clear-tolerant
+  memoized-lineage mitigation). 상세 [open-items.md](open-items.md) §0c.
 
 ## 새 세션 시작 절차
 1. **맥락**: [README.md](README.md) §현황 → [open-items.md](open-items.md) §0b(남은 작업) → 필요 시
