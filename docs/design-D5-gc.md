@@ -291,6 +291,43 @@ after the oracle + a mode-2 soak + a 1-in-N walk-audit tripwire.
 **Caveat:** the mode-1/mode-2 walk-skip + MISS->walk fallback live in repo-external row0vers.cc (built via
 integration/scripts) — read it before C3 to confirm mode-1 has no hidden compare and NONCONTIG routes to walk.
 
+### 10.1 C3 adversarial design review (42 agents, 2026-06-27) = GO_WITH_CONDITIONS — the three-layer division
+A second review attacked the C3 design (gen-gate + walk-audit) before any code. **Verdict: GO_WITH_CONDITIONS.**
+The load-bearing correction (must-fix #1, blocker): **the gc_generation gate is a RACE detector, not an
+over-prune detector.** It snapshots the generation at Guard-open and re-loads before HIT, so it only fires when
+a GC retire's release-bump lands BETWEEN those two loads — i.e. a retire that RACES this consult. The residual
+wrong-serve paths R1 (superseded_ts under-estimation on inverted links) and R2 (same-writer cross-gen) in their
+steady-state form bake the wrong chain in a PRIOR GC cycle; by the time a later consult runs, snapshot==reload,
+the gate passes. So **a green gen-gate is NOT, by itself, "R1/R2 closed".** The actual division of labor for
+mode-1 safety:
+- **Layer 1 (structural, primary):** the lineage **link-gap** — an over-prune at/above the visible boundary
+  breaks the writer→predecessor link, the chase breaks, consult MISSes → InnoDB walks = correct. Closes the
+  COMMON interior over-prune.
+- **Layer 2 (structural, R1):** the **C1 inverted-superseded oracle** (`Consult.M2InvertedSupersededOverPruneOracle`)
+  proves superseded_ts is conservative under id-inversion, so R1's over-prune resolves to MISS, never an older
+  version. R2 is held by the ambiguity guard (a second predecessor for one writer → MISS).
+- **Layer 3 (runtime sample):** the **1-in-N walk-audit** (C3-b) samples mode-1 HITs and walk-compares them,
+  catching any residual that slips Layers 1–2 in production.
+- **Layer 4 (race backstop):** the **gc_generation gate** (C3-a) — the only NEW C3-a mechanism — catches a retire
+  that races the probe (TOCTOU on the cache/chain), covering BOTH the fresh-build and the 5b-lite reuse paths.
+
+**C3 ship criteria (must-fix #1 checklist):** mode-1 ships only when ALL of Layers 1–4 are green — NOT just the
+gen-gate. The other must-fixes: #2 gen-recheck covers rebuild AND reuse with ordering unlink→cache-clear→gen-bump
+(release)→retire-free; #3 the standalone oracle drives both retire paths with a positive control; #4 the audit
+fails loud (N default 1024, refuse N=0, log audited count, negative-control trips, audit walk uses the SAME read
+view as the HIT); #5 the C3-c ship gate is a 4-way AND (construct_BAD=0 over mode-2 soak AND mode-1 audit +
+both retire counts>0 + HIT-rate floor + audited>0) on the historically-divergent workloads. Out of scope
+(documented residual, Phase 2): secondary-index/composite-PK record formats, savepoint partial-rollback.
+
+**C3-a DONE (2026-06-27).** Implemented: `interval_list_header::gc_generation` (per-key); the SOLE bump in
+`detach_and_retire_epoch` (after the consult_cache clear, before retire schedules the free, release) — both the
+windowed sweep and the orphan drain funnel through it; consult snapshots it after the Guard and re-checks before
+HIT, enforced only when `enforce_gc_gen` (the facade passes `g_authoritative_mode == 1`), covering rebuild AND
+reuse uniformly. Oracles: `Consult.GenGateRacingRetireFlipsHitToMiss` (deterministic positive/negative control
+via a test seam + proves the gate is inert when not enforced = mode-1-only), `Consult.GenGateConcurrentRetireNoWrongServe`
+(real concurrent windowed-sweep retires: no wrong/torn serve, gen advanced), and a dummy-drain gen-bump assertion
+in `GcBackstopDrain`. Verified: standalone **Release 38 / ASan 27 / TSan 27** green. Next = C3-b (walk-audit).
+
 ## 11. ⑤b (recover ~0.16s serve latency) adversarial review — NO-GO on the back-edge chase, GO on "⑤b-lite" (34 agents, 2026-06-27)
 The proposed ⑤b (make roll_pred atomic + add a per-node `successor` inverse edge + GC nulls the back-edge before
 retire, so consult can chase per-node back-pointers = O(depth), no per-call map build) was reviewed. **Verdict:

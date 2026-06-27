@@ -182,6 +182,19 @@ namespace mvcc {
         // (release) on (re)build, reused while node_count is unmoved + PK/mode match, cleared (exchange null
         // + EBR-retire) by the GC retire path before freeing any node of this key. nullptr = not built/stale.
         std::atomic<ConsultCache *> consult_cache{nullptr};
+
+        // D-5 C3: per-key GC generation counter -- the mode-1 serve-only 2nd firewall. Bumped (release)
+        // by the GC retire path (epoch_table.h detach_and_retire_epoch, the SOLE chokepoint both the
+        // windowed sweep and the orphan drain funnel through) right after it clears consult_cache and
+        // before it schedules the node free. consult, when enforce_gc_gen is set (mode-1 only), snapshots
+        // this (acquire) right after taking its EBR Guard and re-loads it (acquire) before returning HIT;
+        // a change means a GC retire RACED this consult on this key -> MISS (-> InnoDB walk = correct).
+        // SCOPE (design-D5-gc.md §10): this detects a retire that RACES the consult (TOCTOU on the
+        // cache/chain); it does NOT detect an over-prune completed in a PRIOR GC cycle. Steady-state R1
+        // (superseded_ts under-estimation on inverted links) is closed structurally by the C1 inverted-
+        // superseded oracle and sampled at runtime by the walk-audit; R2 (same-writer cross-gen) by the
+        // ambiguity guard + audit. A green gen-gate is NOT, by itself, "R1/R2 closed".
+        std::atomic<uint64_t> gc_generation{0};
         ~interval_list_header() { delete consult_cache.load(std::memory_order_relaxed); }
 
         // Called by the drainer right after it links the NEWEST version for this key (version =

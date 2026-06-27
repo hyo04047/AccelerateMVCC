@@ -514,6 +514,12 @@ namespace mvcc {
             if (en->header != nullptr) {
                 ConsultCache *oldc = en->header->consult_cache.exchange(nullptr, std::memory_order_acq_rel);
                 if (oldc != nullptr) reclaimer_.retire([oldc] { delete oldc; });
+                // D-5 C3 mode-1 2nd firewall: bump the per-key GC generation AFTER the cache clear and
+                // BEFORE retire schedules the free (release, ordered after the structural unlink above), so
+                // a mode-1 consult whose probe straddled this retire observes the change at its end-recheck
+                // and MISSes. This is the SOLE bump site -- both retire paths (windowed sweep, orphan drain)
+                // reach here via detach_and_retire_epoch, so one bump covers every retire of this key.
+                en->header->gc_generation.fetch_add(1, std::memory_order_release);
             }
             retire_epoch_once(en);
         }

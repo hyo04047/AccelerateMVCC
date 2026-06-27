@@ -294,7 +294,8 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
                                const uint64_t *m_ids, std::size_t m_ids_n,
                                uint64_t live_top_writer,
                                unsigned char *out_img, uint32_t out_cap, uint32_t *out_len,
-                               bool require_full_pk, uint64_t live_schema_epoch, uint32_t *out_extra) {
+                               bool require_full_pk, uint64_t live_schema_epoch, uint32_t *out_extra,
+                               bool enforce_gc_gen) {
     // D-4 4c-2: instant-DDL safety. live_schema_epoch = the READER's table current_row_version. If
     // that table has had any instant ADD/DROP COLUMN (>0), a cached raw-byte image may decode wrong
     // under the changed layout, so we do not trust the cache for this table at all -> MISS (the table
@@ -315,6 +316,16 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
 
     // Pin reclamation for this whole probe (the image copy below must happen under it -- M2).
     EpochReclaimer::Guard guard(epoch_table->reclaimer());
+
+    // D-5 C3 (mode-1 2nd firewall): snapshot the per-key GC generation under the Guard. If a GC retire of
+    // this key bumps it before we return HIT, the live chain (and any memoized cache we read) may have been
+    // concurrently pruned mid-probe -> we re-check at the HIT site and MISS instead of serving. Covers BOTH
+    // the fresh-build and the 5b-lite reuse paths uniformly (the snapshot precedes the consult_cache load
+    // below; the reload precedes the HIT return). enforce_gc_gen is set only in mode-1 (serve-only), which
+    // has no per-row walk-compare; mode-2/shadow leave it off (the walk-compare is their 2nd firewall).
+    const uint64_t gen0 = header->gc_generation.load(std::memory_order_acquire);
+    if (test_bump_gen_mid_consult_.load(std::memory_order_relaxed))
+        header->gc_generation.fetch_add(1, std::memory_order_release);  // test seam: simulate a racing retire
 
     // D-5 (5-2 prep): GC-SAFE LINEAGE WALK via the LIVE chain. consult builds a writer->predecessor
     // link table by traversing ONLY the live links (header->next epochs + first_entry/next_entry) under
@@ -428,6 +439,14 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
     // every entry) to split NOVISIBLE vs NONCONTIG; the reuse path skips that scan -> conservative NONCONTIG.
     if (best == nullptr)
         return (reuse || any_visible) ? ConsultOutcome::MISS_NONCONTIG : ConsultOutcome::MISS_NOVISIBLE;
+
+    // D-5 C3 (mode-1 2nd firewall): if a GC retire of this key raced our probe (generation moved since the
+    // Guard-open snapshot), the chain/cache we just walked may have been pruned mid-flight -> do NOT serve;
+    // MISS to the InnoDB walk. Reuses MISS_NONCONTIG ("cache not trustworthy, fall back"), which the caller
+    // already routes to the full walk exactly like a contiguity miss. Mode-2/shadow (enforce_gc_gen=false)
+    // are unaffected -- their per-row walk-compare is the independent 2nd firewall.
+    if (enforce_gc_gen && header->gc_generation.load(std::memory_order_acquire) != gen0)
+        return ConsultOutcome::MISS_NONCONTIG;
 
     if (out_img != nullptr) {
         if (best->img_len == 0 || best->img_len > out_cap) return ConsultOutcome::MISS_INELIGIBLE;

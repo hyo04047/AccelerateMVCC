@@ -393,7 +393,12 @@ int accel_consult_fetch(uint64_t table_id, uint64_t pk_hash,
                          up_limit_id, low_limit_id, creator_trx_id,
                          m_ids, static_cast<std::size_t>(m_ids_n), live_top_writer,
                          out_buf, out_cap, &outlen,
-                         /*require_full_pk=*/!g_no_full_pk, sch, &outextra);
+                         /*require_full_pk=*/!g_no_full_pk, sch, &outextra,
+                         // D-5 C3: enforce the gc_generation 2nd firewall ONLY in mode-1 (serve-only),
+                         // which has no per-row walk-compare; shadow/mode-2 leave it off (their compare is
+                         // the 2nd firewall, and forcing the gate there would only convert hot-key HITs to
+                         // MISSes on keys GC is actively retiring -- perf loss for zero safety gain).
+                         /*enforce_gc_gen=*/(g_authoritative_mode == 1));
   } catch (...) { return 1; }  // defensive: consult does not allocate/throw, but the facade is noexcept
   switch (o) {
     case CO::HIT:

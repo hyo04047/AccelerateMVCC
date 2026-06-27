@@ -216,7 +216,8 @@ namespace mvcc
                                uint64_t live_top_writer,
                                unsigned char *out_img = nullptr, uint32_t out_cap = 0,
                                uint32_t *out_len = nullptr, bool require_full_pk = true,
-                               uint64_t live_schema_epoch = 0, uint32_t *out_extra = nullptr);
+                               uint64_t live_schema_epoch = 0, uint32_t *out_extra = nullptr,
+                               bool enforce_gc_gen = false);
 
         static uint64_t get_epoch_num(uint64_t trx_id) {
             return trx_id / EPOCH_SIZE;
@@ -309,6 +310,27 @@ namespace mvcc
             }
             return n;
         }
+
+        // D-5 C3 (test-only): read a key's GC generation counter (the mode-1 2nd-firewall epoch). Looks the
+        // header up like chain_length; treat the value as a sample under concurrency. Lets the gen-gate
+        // oracles assert the GC retire path actually bumped it.
+        uint64_t gc_generation_of(uint64_t table_id, uint64_t index) {
+            kuku::item_type item = kuku::make_item(table_id, index);
+            kuku::QueryResult q = kuku_table->query(item);
+            if (!q.found()) return 0;
+            uint64_t value = q.in_stash()
+                ? kuku::get_value(kuku_table->stash(q.location()))
+                : kuku::get_value(kuku_table->table(q.location()));
+            auto* header = reinterpret_cast<interval_list_header*>(value);
+            return header->gc_generation.load(std::memory_order_acquire);
+        }
+
+        // D-5 C3 (test-only seam): when set, consult bumps THIS key's gc_generation once, right after it
+        // snapshots the value under its Guard -- deterministically simulating a GC retire that RACES the
+        // probe. With enforce_gc_gen=true the end-recheck then observes the change -> MISS. The positive/
+        // negative control oracle toggles this to prove the gate flips a would-be HIT to MISS. Default off.
+        std::atomic<bool> test_bump_gen_mid_consult_{false};
+        void set_test_bump_gen_mid_consult(bool v) { test_bump_gen_mid_consult_.store(v, std::memory_order_relaxed); }
 
         trx_t* start_trx(){
             return trxManger->startTrx();

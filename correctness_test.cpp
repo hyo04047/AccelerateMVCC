@@ -438,6 +438,120 @@ TEST(Consult, M2InvertedSupersededOverPruneOracle) {
         << "CATASTROPHIC: inverted over-prune served a different (older) version idx " << omit.second << " (expected MISS or 4)";
 }
 
+// C3 -- the gc_generation 2nd firewall (mode-1 serve-only). The gate detects a GC retire that RACES a
+// consult: consult snapshots the per-key generation under its Guard and re-checks it before returning HIT;
+// a change -> MISS (-> walk). This is a DETERMINISTIC positive/negative control using the test seam
+// (set_test_bump_gen_mid_consult), which bumps the generation right after the snapshot, exactly simulating
+// a retire that lands mid-probe. It proves: (1) with no race the gate does not change the answer (HIT),
+// (2) a racing bump flips the HIT to MISS, (3) the gate is INERT when not enforced (shadow / mode-2).
+// (Steady-state over-prune -- a retire in a PRIOR cycle -- is NOT this gate's job; it is closed by the
+// link-gap + the C1 inverted-superseded oracle above. See design-D5-gc.md §10.)
+TEST(Consult, GenGateRacingRetireFlipsHitToMiss) {
+    Accelerate_mvcc m(0, 10);
+    const uint64_t H = 91; std::vector<unsigned char> pk{9, 1};
+    ins_ver(m, H, 10, 20, pk, {0xA0});            // v10 overwritten by 20
+    ins_ver(m, H, 20, 30, pk, {0xB0, 0xB1});      // v20 overwritten by 30
+    ins_ver(m, H, 30, 40, pk, {0xC0, 0xC1, 0xC2});// v30 overwritten by 40 (= live writer); reader<35 -> v30
+    unsigned char buf[64]; uint32_t bl = 0;
+    auto probe = [&](bool enforce) {
+        return m.consult(1, H, pk.data(), (uint32_t)pk.size(), /*up*/5, /*low*/35, /*creator*/0,
+                         nullptr, 0, /*live*/40, buf, sizeof(buf), &bl,
+                         /*require_full_pk=*/true, /*schema*/0, nullptr, /*enforce_gc_gen=*/enforce);
+    };
+    // (1) gate enforced, no racing retire -> the answer is unchanged (HIT). Also publishes the cache, so
+    //     the next probe exercises the 5b-lite REUSE path under the gate (must-fix #2: both paths covered).
+    m.set_test_bump_gen_mid_consult(false);
+    EXPECT_EQ(probe(true), CO::HIT) << "gen-gate must not change the steady-state answer when nothing races";
+    // (2) POSITIVE CONTROL: a retire bumps the key's generation mid-probe -> end-recheck sees it -> MISS.
+    m.set_test_bump_gen_mid_consult(true);
+    EXPECT_EQ(probe(true), CO::MISS_NONCONTIG) << "gen-gate must MISS when a GC retire races the probe";
+    // (3) MODE GATING: the SAME racing bump with enforce_gc_gen=false (shadow / mode-2) is ignored -> HIT.
+    EXPECT_EQ(probe(false), CO::HIT) << "gen-gate must be inert when not enforced (shadow / mode-2)";
+}
+
+// C3 -- the gen-gate under REAL concurrent GC retires (windowed-sweep path) + drainer + mode-1 consults
+// (enforce_gc_gen=true). Mirrors CutsGcConcurrencyDrainerConsultGc but turns the gate ON. Asserts: no HIT
+// is ever a wrong/torn/too-new image (correctness under the gate), the GC actually reclaimed (windowed
+// retire path ran), and the per-key gc_generation actually advanced (the retire-side bump fired). Run
+// under ASan + TSan (the gate adds a generation load/recheck to the reader's concurrent path).
+TEST(Consult, GenGateConcurrentRetireNoWrongServe) {
+    Accelerate_mvcc m(0, 14);
+    const uint64_t BASE = 1000000;
+    m.set_epoch_base(BASE + 1);
+    const int KEYS = 8;
+    const int NV = 20000;
+    const uint64_t KEEP = 4000;
+    auto pk_of = [](int k){ return std::vector<unsigned char>{(unsigned char)k, 0xCC, (unsigned char)(k ^ 0x5A)}; };
+    auto hash_of = [](int k){ return (uint64_t)(5000 + k); };
+
+    std::array<std::atomic<uint64_t>, 8> head_writer{};
+    std::atomic<uint64_t> g_step{0};
+    std::atomic<bool> stop{false};
+    std::atomic<bool> bad{false};
+    std::atomic<uint64_t> hits{0};
+
+    std::thread ins([&] {
+        for (int step = 1; step <= NV; ++step) {
+            int k = (step - 1) % KEYS;
+            uint64_t ver = BASE + (uint64_t)step, wr = ver + KEYS;
+            unsigned char img[10]; img[0] = (unsigned char)k;
+            for (int b = 0; b < 8; ++b) img[1 + b] = (unsigned char)((ver >> (8 * b)) & 0xFF);
+            img[9] = 0xED;
+            std::vector<unsigned char> pk = pk_of(k);
+            m.insert(1, hash_of(k), ver, ver * 10ull, ver * 100ull, ver * 1000ull,
+                     img, 10u, wr, pk.data(), (uint32_t)pk.size(), 0);
+            head_writer[k].store(wr, std::memory_order_release);
+            g_step.store((uint64_t)step, std::memory_order_release);
+        }
+        stop.store(true, std::memory_order_release);
+    });
+    std::thread gc([&] {
+        const uint64_t PERIOD = 2500; uint64_t last_norm = 0;
+        while (!stop.load(std::memory_order_acquire)) {
+            uint64_t s = g_step.load(std::memory_order_acquire);
+            uint64_t base = m.epoch_base(); uint64_t cur = BASE + 1 + s;
+            if (cur <= base + PERIOD) { std::this_thread::yield(); continue; }
+            uint64_t norm = cur - base, nb_top = (norm / PERIOD) * PERIOD;
+            for (uint64_t nb = last_norm + PERIOD; nb <= nb_top; nb += PERIOD) {
+                if (stop.load(std::memory_order_acquire)) break;
+                uint64_t cut_id = (cur > KEEP) ? cur - KEEP : 1;
+                std::vector<ViewCut> cuts = { {cut_id, cut_id} };
+                m.run_gc_cycle_from_cuts(nb + base, cuts, ActiveViewRegistry<>::NO_FLOOR);
+            }
+            if (nb_top > last_norm) last_norm = nb_top;
+            std::this_thread::yield();
+        }
+    });
+    auto consultor = [&](int seed) {
+        unsigned char buf[64]; uint32_t bl = 0; int k = seed;
+        while (!stop.load(std::memory_order_acquire)) {
+            k = (k + 1) % KEYS;
+            uint64_t lw = head_writer[k].load(std::memory_order_acquire);
+            if (lw == 0) { std::this_thread::yield(); continue; }
+            std::vector<unsigned char> pk = pk_of(k);
+            CO o = m.consult(1, hash_of(k), pk.data(), (uint32_t)pk.size(), 0, lw, 0,
+                             nullptr, 0, lw, buf, sizeof(buf), &bl,
+                             /*require_full_pk=*/true, /*schema*/0, nullptr, /*enforce_gc_gen=*/true);
+            if (o == CO::HIT) {
+                hits.fetch_add(1, std::memory_order_relaxed);
+                if (bl != 10 || buf[0] != (unsigned char)k || buf[9] != 0xED) { bad.store(true); continue; }
+                uint64_t ver = 0;
+                for (int b = 0; b < 8; ++b) ver |= (uint64_t)buf[1 + b] << (8 * b);
+                if (ver >= lw || ver < BASE) bad.store(true);
+            }
+        }
+    };
+    std::vector<std::thread> cs;
+    for (int i = 0; i < 4; ++i) cs.emplace_back(consultor, i);
+    ins.join(); gc.join();
+    for (auto& t : cs) t.join();
+    EXPECT_FALSE(bad.load()) << "a mode-1 (gated) HIT returned a torn / cross-key / too-new image under concurrent GC";
+    EXPECT_GT(m.epochs_retired(), 0u) << "GC reclaimed nothing -> the reclaim||consult edge under the gate was vacuous";
+    uint64_t gen_sum = 0;
+    for (int k = 0; k < KEYS; ++k) gen_sum += m.gc_generation_of(1, hash_of(k));
+    EXPECT_GT(gen_sum, 0u) << "the GC retire path never bumped gc_generation -> the 2nd firewall is dead code";
+}
+
 // ---------------------------------------------------------------------------
 // (a) MVCC visibility: search must return the LATEST committed version that is
 //     visible to the read view (trx_id < snapshot AND not in active list).
@@ -859,6 +973,12 @@ TEST(GcBackstopDrain, DummyOverflowDrainsAndConserves) {
     EXPECT_GT(mvcc.epochs_retired(), 0u);                       // GC actually reclaimed
     EXPECT_EQ(mvcc.epochs_detached(), mvcc.epochs_retired());   // conservation across all paths
     EXPECT_LT(mvcc.dummy_pending(), 256u);                      // dummy drained (no unbounded leak)
+    // D-5 C3: this run reclaims through the windowed sweep AND the dummy-overflow drain (dummy_pending
+    // asserts the drain ran); every retire funnels through detach_and_retire_epoch's single gc_generation
+    // bump, so a non-zero generation across the keys confirms the orphan-drain retire path bumps it too.
+    uint64_t gen_sum = 0;
+    for (int k = 0; k < 8; ++k) gen_sum += mvcc.gc_generation_of(1, (uint64_t)k);
+    EXPECT_GT(gen_sum, 0u) << "GC retire (incl. dummy drain) must bump the per-key gc_generation (C3 2nd firewall)";
 }
 
 // ---------------------------------------------------------------------------
