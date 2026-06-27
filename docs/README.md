@@ -3,7 +3,7 @@
 > 디스크 기반 DBMS(InnoDB/MySQL)의 MVCC를 가속하는 **인메모리 보조 인덱스**.
 > 하태성의 2023년 졸업프로젝트를 **단독으로** 재개 (현재는 졸업용이 아닌 **개인 프로젝트**). 이 문서는 진행과 함께 갱신되는 **리빙 도큐먼트**입니다.
 
-- 최종 수정: **2026-06-20** (Stage C 완료)
+- 최종 수정: **2026-06-27** (세션 9 — Stage D + ⑤a-2 GC-on + 5-2b serve(C1·C2) + ⑥ GC-on 재측)
 - 상세 포렌식·이슈 트래커 → [findings.md](findings.md)
 - 세션별 진행 로그 → [progress-log.md](progress-log.md)
 
@@ -46,23 +46,30 @@ flowchart TD
 
 상수: `EPOCH_SIZE=100`, `EPOCH_TABLE_SIZE=100`, `NUM_DEADZONE=50` ([common.h](../include/common.h), [epoch_table.h](../include/epoch_table.h)).
 
+> **통합(Stage D)에서**: 위 코어가 mysqld 안에서 돈다. InnoDB undo가 off-latch **drainer**를 통해 캐시로
+> 채워지고(populate), reader는 consistent-read 시점에 **consult**(GC-safe lineage walk)로 가시 버전을 찾아
+> 캐시 레코드를 **서빙**한다. deadzone GC는 standalone Trx_manager가 아니라 **InnoDB의 active read-view**
+> (pushed clock + leaf-domain registry)로 재구동된다 — 상세 [design-D5-gc.md](design-D5-gc.md).
+
 ---
 
-## 3. 현재 상태 (2026-06-20 기준)
+## 3. 현재 상태 (2026-06-27 기준)
 
-- **진행: A ✅ → B ✅ → 동시성 하드닝 1a~1c ✅ → C(HTAP/long-txn 실험) ✅. 다음 = D(MySQL/InnoDB 통합, 최종).** 세션별 상세는 [progress-log.md](progress-log.md), 결과는 [design-gc.md](design-gc.md) §11.
-- (재개 시작점, 2023) 마지막 코드 활동 2023-07-28 / `feat/deadzone-detector` 브랜치에서 `epoch_table`을 interval list에 연결하던 중 중단 → 2026-06 master에서 재개·전면 진행. 포렌식은 [findings.md](findings.md).
+- **1차 목표 A+B+C ✅ · 최종 D ✅** — 실제 InnoDB 통합: populate → consult → authoritative serve → 성능 payoff.
+- **⑤ purge-view GC(메모리 유계)**: **⑤a-2 ✅** — deadzone GC가 통합 mysqld에서 InnoDB read-view로 구동돼
+  실제로 회수(정확·효율·race/UAF 0·메모리 유계). serve는 안전망(5-2b C1·C2) 위에서 GC와 함께 정확.
+- **다음 = ⑤b**(serve 깊은-읽기 latency 0.45s→0.16s) **/ C3**(mode-1 출하). 세션별 상세
+  [progress-log.md](progress-log.md), 남은 작업 마스터 트래커 [open-items.md](open-items.md).
 
 | 트랙 | 상태 |
 |---|---|
-| 빌드 | ✅ WSL2 · gcc 15 · cmake 4 에서 성공 |
-| insert 경로 | ✅ 빌드·실행·벤치 통과 |
-| search 경로 | ✅ 최신 가시버전 반환, 정확성 테스트 통과 |
-| GC / deadzone | ✅ 단일스레드 정확·메모리안전(ASAN), 테스트 통과 |
-| 동시성 GC (멀티스레드) | ✅ 1a~1c 완료 — marked-pointer + per-traversal EBR + 전용 BG GC + FG cooperative unlink + tight-bound deadzone (20테스트 ASan/TSan green) |
-| insert 마이크로벤치 | ✅ 실행됨 (1M: vector 7ms · interval-list 53–73ms) |
-| 실험 (HTAP / long-txn) | ✅ Stage C 완료 — 60s LLT 하 deadzone vs tail-only version-chain CDF ([design-gc.md](design-gc.md) §11) |
-| MySQL 통합 | ❌ 미착수 (Stage D, 최종) |
+| 코어 (A·B·동시성 1a~1c) | ✅ marked-pointer + per-traversal EBR + 전용 BG GC + FG cooperative unlink + tight-bound deadzone |
+| Stage C 실험 (HTAP/long-txn) | ✅ 60s LLT 하 deadzone vs tail-only chain-CDF ([design-gc.md](design-gc.md) §11) |
+| D-populate (쓰기) | ✅ off-latch drainer가 InnoDB undo를 캐시로 적재 (write tput = vanilla) |
+| D-consult (읽기) | ✅ GC-safe lineage walk — 가시 버전 byte-정확 (construct_BAD=0) |
+| D-serve (authoritative) | ✅ mode-2 verify-serve가 GC 위에서 정확 (49만 레코드 served, construct_BAD=0) |
+| ⑥ 성능 payoff | ✅ held-reader deep read 64M 98s→0.45s (~190×), GC-on에서 생존 |
+| ⑤ purge-view GC (메모리 유계) | ✅ ⑤a-2 통합 GC-on. ⑤b(0.16s 회복)·C3 남음 |
 
 ---
 
@@ -81,9 +88,19 @@ flowchart TD
 - **DoD**: HTAP(OLTP+OLAP 병렬) / long-transaction 워크로드에서 baseline 대비 search 비용·GC 효과를 **수치 + 차트**로 제시. → 달성.
 - 결과(상세 [design-gc.md](design-gc.md) §11): vDriver 하니스를 `stage_c_bench.cpp`로 이식(Zipfian writer + OLTP reader + 60s LLT + Guard-safe chain 샘플러). baseline = 프로토타입 내 tail-only GC 모드(InnoDB purge 모델). **60s LLT 하 deadzone hot-chain max 155 vs tail-only 845,977(~5,500×), read tput 1.36M/s vs 487/s(~2,800×)**, retire 22.4M vs 277. skew 0.8/1.2/1.6 전반 견고(~8,000×). FG cooperative unlink는 read-path +30%. 전 run LLT visibility OK + ASan/TSan clean. version-chain length CDF 차트 생성.
 
-### D. MySQL/InnoDB 통합 (최종)
-- **DoD**: 실제 InnoDB 소스에 가속 인덱스 연결, sysbench HTAP로 vanilla MySQL 대비 효과 측정.
-- 비고: 규모 큼. C 결과로 가치 입증 후 착수.
+### D. MySQL/InnoDB 통합 ✅ (2026-06)
+- **DoD**: 실제 InnoDB 소스에 가속 인덱스 연결, held-snapshot 깊은 읽기에서 vanilla 대비 효과 측정.
+- 달성: populate(drainer) → consult(lineage walk, construct_BAD=0) → authoritative serve → **⑥ payoff**
+  (held-reader deep read 64M 98s→0.16s[GC-off]/0.45s[GC-on], ~190~775×). 상세 [design-D.md](design-D.md)·
+  [design-D4b-shadow.md](design-D4b-shadow.md).
+
+### ⑤ purge-view GC + serve under GC (진행 중)
+- **목표**: 캐시 메모리를 working-set으로 유계(GC) + 그 위에서 정확하게 서빙. 설계 [design-D5-gc.md](design-D5-gc.md).
+- **⑤a-2 ✅**: deadzone GC를 InnoDB read-view(pushed clock + registry)로 구동 — 통합서 정확·효율·메모리 유계.
+- **5-2b 진행**: serve under GC — C1(interior-over-prune 오라클) ✅ · C2(mode-2 verify-serve 정확) ✅ ·
+  C3(mode-1 출하 hardening) 남음.
+- **남은 것**: ⑤b(0.16s 회복, FG+BG 트랙) · 워크로드 폭(LOB·write-heavy+LLT) · 논문(한글+영문). 마스터
+  트래커 [open-items.md](open-items.md).
 
 ---
 
@@ -96,10 +113,12 @@ flowchart TD
 ---
 
 ## 6. 문서 인덱스
-- **README.md** (이 문서) — 개요·아키텍처·로드맵·상태
-- **[REPORT.md](REPORT.md)** — A~C 통합 보고서(논문급): 문제→설계→구현→Stage C 평가·CDF→관련연구→결론
-- **[design-gc.md](design-gc.md)** — GC·동시성 설계 & 결정 근거 (1차 자료 기반)
-- **[design-D.md](design-D.md)** — Stage D(InnoDB 실통합) 설계: hook 지점·빌드 계획·증분·리스크
+- **README.md** (이 문서) — 개요·아키텍처·로드맵·상태 (위키 front page)
+- **[NEXT-SESSION.md](NEXT-SESSION.md)** — 재개 가이드: 현재 위치·빌드/검증 레시피·로드맵 포인터
+- **[open-items.md](open-items.md)** — 남은 작업 마스터 트래커(deferred·threats-to-validity·§0b 현황)
+- **[progress-log.md](progress-log.md)** — 세션별 진행 로그(시간순 서사)
+- **[REPORT.md](REPORT.md)** — A~C 통합 보고서(논문급) ⚠️ Stage C에 frozen, Stage-D Limitations 미반영(open-items)
+- 설계 근거 — **[design-gc.md](design-gc.md)**(GC·동시성)·**[design-D.md](design-D.md)**(Stage D)·
+  **[design-D4b-shadow.md](design-D4b-shadow.md)**(consult·serve)·**[design-D5-gc.md](design-D5-gc.md)**(⑤ purge-view GC·5-2b serve)·**[design-1c.md](design-1c.md)**
 - **[findings.md](findings.md)** — 포렌식·이슈 트래커
-- **[progress-log.md](progress-log.md)** — 세션별 진행 로그
 - 원자료: Google Drive `AccelerateMVCC` 폴더 (졸프 문서, 미팅 영상, 논문 정리, 테스트 결과)

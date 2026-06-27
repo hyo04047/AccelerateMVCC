@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-06-27 — 세션 9: ⑤a-2(GC 통합 ON) + 5-2b serve(C1·C2) + ⑥ GC-on 재측
+
+> 한 세션에 ⑤a-2 전체(5단계) + 5-2b 적대적 리뷰·C1·C2 + ⑥ GC-on 재측까지. GC가 통합 mysqld에서 실제로
+> 돌고, 그 위에서 serve가 정확하며, 깊은-읽기 payoff가 GC-on에서도 생존함을 end-to-end로 실증.
+
+**⑤a-2 — deadzone GC를 통합 mysqld에서 ON** (적대적 설계 리뷰 54에이전트 `GO_WITH_CONDITIONS`, design-D5-gc §9 후 5단계, 커밋 `b83adb2`~`beeefc8`):
+- **step 1** lifecycle 골격 + 종료 UAF 차단 — 통합 GC 스레드를 캐시 delete 전에 stop+join(must-fix 1). 빈 루프로 배선만 증명, 종료 clean.
+- **step 2** GC 실제 ON — standalone trx manager가 아니라 **pushed InnoDB clock + active-view registry cuts**로 `garbage_collect_from_cuts` 구동(`ACCEL_GC` 게이트). last_boundary seed로 부팅 storm 회피. GC off vs on: retired 0 → 169,670, construct_BAD=0.
+- **step 3** epoch를 InnoDB id space에 **normalize**(base-relative `epoch_of`; standalone base=0=behavior-neutral) — amortized windowed sweep engage(retired 99.6% windowed). 부팅 catch-up이 절대 id가 아니라 run 길이에 비례.
+- **step 4** **drainer‖consult‖cuts-GC를 ASan/TSan clean** — 새 테스트 `Consult.CutsGcConcurrencyDrainerConsultGc`(drainer는 EBR Guard 밖, 안전이 구조적: single inserter·head-only append·GC는 head 제외). ASan/TSan 23 green.
+- **step 5** active-view registry pool 256→4096(must-fix 3) — realistic concurrency서 overflow floor 미pin(64thr floor=none). slot은 thread 종료 시 반납이라 live slot=동시 thread 수.
+- 결과: 다워크로드 + 64thr 137만 consult construct_BAD=0, windowed 우세, race/UAF 0, retire가 churn 추종·live_buckets bounded. standalone 34 green + ASan/TSan. serve 여전히 OFF(shadow).
+
+**5-2b — serve를 GC 위에서 켜기** (적대적 리뷰 44에이전트 `GO_WITH_CONDITIONS`, design-D5-gc §10):
+- **리뷰 핵심**: GC-safe lineage walk가 흔한 interior over-prune을 **구조적으로 MISS→walk로** 변환(틀린 서빙 없음). contiguity 스칼라 gate는 GC 하 무력 → 진짜 방화벽은 link-gap 하나. 잔여 wrong-serve 후보 = superseded_ts inversion(surface C) + same-writer cross-gen. 계획 C0~C3(mode-2 verify-serve 기본, mode-1 gated).
+- **C1 ✅** 안전망 오라클(`correctness_test.cpp`): `M2InteriorOverPruneOracleStrict`(중간 V_K 강제 과회수 → consult가 더 오래된 V_{K-1} 안 서빙하고 MISS; negative control이 V_K 생존→HIT로 테스트가 무는 걸 증명) + `M2InvertedSupersededOverPruneOracle`(surface C: inverted-id lineage서 correct cut이 V4 유지 == 참조 → **superseded_ts가 inversion 하에서도 conservative**, omit cut → MISS). Release 36 / ASan 25 / TSan 25. gc_generation 2번째 방화벽은 C3로 이동(C2 기본 mode-2가 이미 walk-compare = 2번째 방화벽). 커밋 `bc3003c`·`ec75b55`.
+- **C2 ✅** mode-2 verify-serve(walk+byte-compare 후 일치 시 서빙)를 GC와 함께(`build_d5_c2.sh`, `ACCEL_AUTHORITATIVE=2 ACCEL_GC=1`): oltp_read_write 32thr **construct_BAD=0, served=489,511**(전부 vanilla byte-동일), HIT 87%(coverage 미붕괴), GC retired 57만(windowed+dummy 둘 다), floor=none, clean. 커밋 `144b2e5`.
+
+**⑥ payoff under GC** (`build_d5_d6_gc.sh`): held-reader 깊은 읽기가 GC-on에서 생존 — 64M **vanilla 98s → serve 0.45s(~190×)**, 물리read 1.1M→7, consult hit 2000/2000, SUM 동일(679715=정답). **왜 체인 안 끊겼나**: in-middle 회수는 활성 뷰 ≥2개여야 hole이 생김 → held-reader 1개만이면 deadzone가 tail뿐이라 중간 버전이 안 지워짐 → 체인 intact(보수적 superset 작동). latency 0.45s는 GC-safe lineage walk 비용(⑤b가 0.16s로 조임). 커밋 `b2d8e55`.
+
+**남은 것**(open-items §0b): ⑤b(0.45s→0.16s, FG+BG 트랙) · C3(mode-1 hardening: gc_generation + walk-audit) · multi-reader in-middle 측정 · savepoint edge · Phase 2(워크로드 폭·LOB·FG) · Phase 3(논문). 전부 push.
+
+---
+
 ## 2026-06-24 — 세션 8 이어서: 전수 감사 + GC-on/0.16s UAF pivot + ⑤a-1(consult를 GC-safe로 복원)
 
 > 세션 8 후반: serve 재확인·⑥ 재측·O(C) pred-pointer까지 한 뒤(아래 2026-06-23 엔트리) ⑤(purge-view GC)로 진입하려다, pred-pointer chase가 GC와 양립 불가임을 적대적 리뷰로 발견 → 안전 복원 + 전수 감사로 재계획.

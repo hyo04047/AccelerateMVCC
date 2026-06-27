@@ -12,9 +12,10 @@
 방치. 정확성·커버리지는 **쉬운 단일-lineage 워크로드에서만** 측정. **논문 draft·분산(multi-run) 데이터는 어디에도
 없음**(모든 latency가 단일 수치).
 
-## 0b. ⑤a-2 완료 갱신 (2026-06-27 세션 9) — GC가 통합에서 실제로 돌기 시작
-> ⑤a-2(GC ON)를 적대적 리뷰(54 agents, GO_WITH_CONDITIONS; design-D5-gc §9) 후 5-step으로 완료.
-> 커밋 `b83adb2`~`beeefc8` (push). 아래 항목 상태가 바뀜.
+## 0b. 세션 9 갱신 (2026-06-27) — ⑤a-2(GC ON) + 5-2b serve(C1·C2) + ⑥ GC-on 재측
+> ⑤a-2(GC ON)를 적대적 리뷰(54 agents, design-D5-gc §9) 후 5-step 완료(커밋 `b83adb2`~`beeefc8`).
+> 이어서 5-2b(serve under GC)를 리뷰(44 agents, §10) 후 C1(안전망 오라클)+C2(mode-2 verify-serve 정확)
+> 완료, ⑥ payoff가 GC-on서 생존 실증(커밋 `bc3003c`~`b2d8e55`). 전부 push. 아래 항목 상태가 바뀜.
 
 **닫힘(CLOSED):**
 - ⓝ1 [blocker] GC가 통합서 한 번도 안 돎 → **GC ON·실제 sweep**(retired 68만, windowed 우세). 캐시 더는 무한성장 X.
@@ -26,11 +27,14 @@
 - ⓝ5 통합 ASan/TSan 미실행 → **drainer‖consult‖cuts-GC를 ASan/TSan clean**(focused harness, 통합과 동일 race 표면). 잔여: full-mysqld ASan(gold-standard)·LOB/FTS/spatial.
 - ⓝ13 view-reuse ADD-on-open 완결성 → GC-on shadow서 open_calls==published·construct_BAD=0 확인. 잔여: serve(5-2b).
 
-**여전히 열림(STILL OPEN — 다음 작업):**
-- ⓠ1 ~0.16s fast consult → **⑤b**(GC-safe back-edge). 현재 GC-safe map walk ~0.4s. **(2026-06-27 결정: ⑤b는 FG+BG cooperative-reclaim 트랙과 함께 — reader‖GC chain-pointer가 같은 hot 표면이라 hardening/적대적 리뷰를 1회로 묶음. ⓠ2 FG +30%와 동반(roadmap, perf 후퇴 아니면 채택 — '결정' 아님). ⑤b는 FG를 strictly 요구하진 않으나[BG-only도 가능] 묶는 이득이 큼. payoff는 5-2b serve만으로 ~0.4s 평탄으로 입증 가능, ⑤b는 0.16s로 조이는 마무리.)**
-- ⓝ2 / ⓝ3 / ⓝ15 serve+GC correctness, M2 interior-over-prune wrong-serve oracle → **5-2b**. serve 여전히 OFF.
+**진행/부분 닫힘(세션 9 이어서):**
+- ⓝ2 / ⓝ3 / ⓝ15 serve+GC correctness, M2 wrong-serve oracle → **5-2b 진행**: C1(interior-over-prune 오라클 strict+inverted, `correctness_test.cpp`; superseded_ts inversion[surface C]이 conservative 실증) ✅ · C2(mode-2 verify-serve가 GC 위에서 construct_BAD=0, oltp_read_write 32thr 49만 served) ✅. **남음 = C3**(mode-1 serve-only 출하 = gc_generation 2번째 방화벽 + walk-audit 샘플링) · savepoint edge(ⓝ15) · full-mysqld ASan.
+- ⓠ4 ⑥를 GC-on서 재측 → **부분 ✅**: held-reader deep read가 GC-on서 생존(64M 98s→0.45s ~190×, hit 2000/2000, SUM 정답). in-middle 회수는 활성 뷰 ≥2개여야 hole이라 단일 held-reader는 체인 intact. **남음**: multi-reader in-middle(GC가 실제 in-middle 회수하며 serve와 상호작용 = ⑤b가 빛나는 곳) · oltp_read_write/동시 HTAP latency.
+
+**여전히 열림(STILL OPEN):**
+- ⓠ1 ~0.16s fast consult → **⑤b**(GC-safe back-edge). GC-on serve 현 0.45s(⑥ 재측). **FG+BG cooperative-reclaim 트랙과 함께** — reader‖GC chain-pointer가 같은 hot 표면이라 hardening/리뷰 1회로 묶음. ⓠ2 FG +30% 동반(roadmap, perf 후퇴 아니면 채택; ⑤b는 FG strictly 불요[BG-only도 가능]나 묶는 이득 큼).
 - ⓝ9 cold-key 미회수(진짜 unbounded) → 구현 or 문서화.
-- ⓠ4 ⑥를 GC-on(+serve)·넓은 워크로드서 재측 / ⓠ3 write-heavy+LLT로 in-middle 이득 생존 / ⓠ5 22% MISS effective speedup / ⓠ2 FG +30%(roadmap: perf 후퇴 아니면 채택, ⑤b/FG+BG 트랙) / ⓝ6 LOB / ⓝ11 signal-B sweep → **Phase 2**.
+- ⓠ3 write-heavy+LLT로 in-middle 이득 생존 / ⓠ5 22% MISS effective speedup / ⓝ6 LOB / ⓝ11 signal-B sweep → **Phase 2**.
 - ⓝ14 REPORT Limitations / ⓣ10 패치 vendor / multi-run·error-bar / 논문 한글+영문 → **Phase 3**.
 
 ---
