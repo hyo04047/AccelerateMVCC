@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <atomic>
+#include <vector>
+#include <unordered_map>
 #include "marked_ptr.h"
 
 #ifndef node_h
@@ -134,6 +136,22 @@ namespace mvcc {
     void update_epoch_node(epoch_node *epoch, uint64_t epoch_num, uint64_t trx_id, undo_entry_node *undo_entry,
                            epoch_node *next);
 
+    // D-5 ⑤b-lite: a memoized consult link table, published immutably on the header and reused while the
+    // key's chain is unchanged. Built exactly like the consult's Pass 1 (writer_trx_id -> the version that
+    // writer overwrote, on the FULL-PK-matching live chain; ambiguous = two distinct predecessors for one
+    // writer). Reuse is valid iff built_node_count == header->node_count (no new insert) AND the GC retire
+    // path has not cleared it (a retire of this key sets it null) AND the same PK + mode -- then the cache's
+    // nodes are exactly the live chain, all pinned by the reader's EBR Guard. The GC clears the cache
+    // BEFORE freeing any node, so a reader that loaded a non-null cache loaded it before that retire.
+    struct ConsultLink { uint64_t version; undo_entry_node *node; bool ambiguous; };
+    struct ConsultCache {
+        uint64_t built_node_count = 0;
+        bool require_full_pk = true;
+        bool any_pk_match = false;
+        std::vector<unsigned char> pk;
+        std::unordered_map<uint64_t, ConsultLink> link;
+    };
+
     struct interval_list_header {
         uint64_t next_epoch_num;
         MarkedPtr<epoch_node> next;   // forward chain head (never marked: the header is not a deletable node)
@@ -159,6 +177,12 @@ namespace mvcc {
         // node_count as a defensive hop cap. Single drainer = sole writer.
         std::atomic<undo_entry_node *> newest_node{nullptr};
         std::atomic<uint64_t> node_count{0};
+
+        // D-5 ⑤b-lite: memoized consult link table for this key (see ConsultCache). Published via exchange
+        // (release) on (re)build, reused while node_count is unmoved + PK/mode match, cleared (exchange null
+        // + EBR-retire) by the GC retire path before freeing any node of this key. nullptr = not built/stale.
+        std::atomic<ConsultCache *> consult_cache{nullptr};
+        ~interval_list_header() { delete consult_cache.load(std::memory_order_relaxed); }
 
         // Called by the drainer right after it links the NEWEST version for this key (version =
         // that version's creator, writer = the trx that overwrote it). If this version is the one the

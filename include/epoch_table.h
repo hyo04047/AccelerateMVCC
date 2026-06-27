@@ -508,6 +508,13 @@ namespace mvcc {
             if (en->state.compare_exchange_strong(expLive, EPOCH_CHAIN_DETACHED,
                                                   std::memory_order_acq_rel))
                 epochs_detached_.fetch_add(1, std::memory_order_relaxed);
+            // D-5 ⑤b-lite: invalidate this key's memoized consult cache BEFORE retire schedules the node
+            // free, so no reader can load a cache that references a node about to be freed -- a reader that
+            // loaded a non-null cache did so before this clear, so its EBR Guard pins the referenced nodes.
+            if (en->header != nullptr) {
+                ConsultCache *oldc = en->header->consult_cache.exchange(nullptr, std::memory_order_acq_rel);
+                if (oldc != nullptr) reclaimer_.retire([oldc] { delete oldc; });
+            }
             retire_epoch_once(en);
         }
 

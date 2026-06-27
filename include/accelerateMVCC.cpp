@@ -3,6 +3,7 @@
 #include "accelerateMVCC.h"
 #include "read_view_mirror.h"  // D-4 (4a): exact InnoDB ReadView::changes_visible mirror
 #include <unordered_map>       // D-5 (5-2 prep): GC-safe live-chain lineage walk builds a writer->pred table
+#include <memory>              // D-5 ⑤b-lite: unique_ptr owns a non-published (raced) consult-cache build
 
 mvcc::Accelerate_mvcc::Accelerate_mvcc(uint64_t record_count, uint32_t kuku_log2) {
     constexpr uint64_t max_value = ~0ULL;
@@ -327,73 +328,106 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
     // See docs/open-items.md ⓠ1.) Cost: O(chain) per call (~0.4s on the deep held-snapshot reader vs
     // ~0.16s for the back-pointer chase); the BP-independent flatness / cliff removal is unchanged.
     const uint64_t head_writer = header->contiguous_head_writer.load(std::memory_order_acquire);
+    const uint64_t node_count = header->node_count.load(std::memory_order_acquire);
 
-    // Pass 1: build the writer -> predecessor link table for the FULL-PK-matching entries reached on the
-    // live chain. link[w] = the version trx w overwrote (w's predecessor). A trx's own within-txn
-    // intermediate has version==writer (not a predecessor) and is excluded. version MAY exceed writer
-    // (trx ids assigned at start, commit order differs under concurrency) -- those inverted links are
-    // real, so we test version!=writer, never version<writer. A writer mapping to >=2 distinct
-    // predecessor versions is an ambiguous link -> any chase through it MISSes.
-    struct Link { uint64_t version; undo_entry_node *node; bool ambiguous; };
-    std::unordered_map<uint64_t, Link> link;
-    bool any_pk_match = false;
+    // D-5 ⑤b-lite: the writer -> predecessor link table is MEMOIZED on the header. Reuse the published
+    // table iff the key's chain is unchanged since it was built -- built_node_count == node_count (no new
+    // insert) AND it is still non-null (the GC retire path clears it before freeing any node of this key)
+    // AND same PK + mode -- in which case the cached nodes are exactly the current live chain, every one
+    // pinned by this consult's EBR Guard. Otherwise (re)build it the same way Pass 1 always did, publish it
+    // (exchange) and EBR-retire the old. The cache holds the SAME table the live-chain walk builds, so the
+    // four firewalls (full-PK filter, ambiguity, contiguity gate below, link-gap break) are inherited.
+    std::unique_ptr<ConsultCache> scratch;   // owns a non-published (insert-raced) build until consult returns
+    ConsultCache *c = header->consult_cache.load(std::memory_order_acquire);
+    bool reuse = c != nullptr && c->built_node_count == node_count && c->require_full_pk == require_full_pk;
+    if (reuse && require_full_pk) {
+        reuse = (c->pk.size() == pk_len);
+        for (uint32_t i = 0; reuse && i < pk_len; ++i)
+            if (c->pk[i] != pk[i]) reuse = false;
+    }
+    const std::unordered_map<uint64_t, ConsultLink> *linkp;
+    bool any_pk_match;
     bool any_visible = false;
-    for (epoch_node *epoch = header->next.ptr(); epoch != nullptr; ) {
-        uintptr_t w = epoch->next.load();
-        epoch_node *succ = MarkedPtr<epoch_node>::ptr_of(w);
-        if (!MarkedPtr<epoch_node>::mark_of(w)) {   // skip logically-deleted epochs (read-only, no help-splice)
-            for (undo_entry_node *u = epoch->first_entry; u != nullptr; u = u->next_entry.load()) {
-                // Full-PK identity check (pk_hash is only a bucket hint). pk_len==0 = locator-only
-                // entry whose identity we cannot prove -> skip. (require_full_pk=false = test-only
-                // negative control: accept any entry so a forced collision yields a cross-row hit.)
-                if (require_full_pk) {
-                    if (u->pk_len == 0 || u->pk_len != pk_len) continue;
-                    bool pk_eq = true;
-                    for (uint32_t i = 0; i < pk_len; ++i) {
-                        if (u->pk[i] != pk[i]) { pk_eq = false; break; }
+    if (reuse) {
+        linkp = &c->link;
+        any_pk_match = c->any_pk_match;
+    } else {
+        // (Re)build the link table on the live chain (the predecessor a writer overwrote; version==writer
+        // intermediates excluded; version MAY exceed writer under id-inversion so we test version!=writer;
+        // >=2 distinct predecessors for one writer = ambiguous -> any chase through it MISSes).
+        ConsultCache *nc = new ConsultCache();
+        nc->built_node_count = node_count;
+        nc->require_full_pk = require_full_pk;
+        if (require_full_pk && pk != nullptr && pk_len > 0) nc->pk.assign(pk, pk + pk_len);
+        bool apm = false;
+        for (epoch_node *epoch = header->next.ptr(); epoch != nullptr; ) {
+            uintptr_t w = epoch->next.load();
+            epoch_node *succ = MarkedPtr<epoch_node>::ptr_of(w);
+            if (!MarkedPtr<epoch_node>::mark_of(w)) {   // skip logically-deleted epochs
+                for (undo_entry_node *u = epoch->first_entry; u != nullptr; u = u->next_entry.load()) {
+                    if (require_full_pk) {              // full-PK identity (pk_hash is only a bucket hint)
+                        if (u->pk_len == 0 || u->pk_len != pk_len) continue;
+                        bool pk_eq = true;
+                        for (uint32_t i = 0; i < pk_len; ++i)
+                            if (u->pk[i] != pk[i]) { pk_eq = false; break; }
+                        if (!pk_eq) continue;
                     }
-                    if (!pk_eq) continue;
-                }
-                any_pk_match = true;
-                if (changes_visible(u->version_trx_id, up_limit_id, low_limit_id, creator_trx_id,
-                                    m_ids, m_ids_n))
-                    any_visible = true;
-                if (u->version_trx_id != u->writer_trx_id) {   // a real overwrite link (skip own intermediates)
-                    auto it = link.find(u->writer_trx_id);
-                    if (it == link.end()) {
-                        link.emplace(u->writer_trx_id, Link{u->version_trx_id, u, false});
-                    } else if (it->second.version != u->version_trx_id) {
-                        it->second.ambiguous = true;          // two distinct predecessors for one writer
+                    apm = true;
+                    if (changes_visible(u->version_trx_id, up_limit_id, low_limit_id, creator_trx_id,
+                                        m_ids, m_ids_n))
+                        any_visible = true;
+                    if (u->version_trx_id != u->writer_trx_id) {
+                        auto it = nc->link.find(u->writer_trx_id);
+                        if (it == nc->link.end())
+                            nc->link.emplace(u->writer_trx_id, ConsultLink{u->version_trx_id, u, false});
+                        else if (it->second.version != u->version_trx_id)
+                            it->second.ambiguous = true;
                     }
                 }
             }
+            epoch = succ;
         }
-        epoch = succ;
+        nc->any_pk_match = apm;
+        linkp = &nc->link;
+        any_pk_match = apm;
+        // Publish ONLY if no insert raced our build (node_count still == the value we keyed on): then the
+        // table is current and a later static-chain consult (held snapshot) can reuse it. Under churn the
+        // node_count advances during the build, so we do NOT publish -- a per-call publish would be
+        // instantly stale and would flood EBR with cache retires, starving the GC. Not-published builds are
+        // consult-local (freed at return via `scratch`); on publish the header owns the cache and the
+        // superseded one is EBR-retired (a concurrent consult may still read it under its Guard).
+        if (header->node_count.load(std::memory_order_acquire) == node_count) {
+            ConsultCache *old = header->consult_cache.exchange(nc, std::memory_order_acq_rel);
+            if (old != nullptr) epoch_table->reclaimer().retire([old] { delete old; });
+        } else {
+            scratch.reset(nc);
+        }
     }
+
     if (!any_pk_match) return ConsultOutcome::MISS_ABSENT;
-    // Contiguity precondition (retained as a complementary cross-generation suppressor): the cache's
-    // gap-free run must reach the live row's last writer, else we cannot trust it -> MISS.
+    // Contiguity precondition (complementary cross-generation suppressor): the gap-free run must reach the
+    // live row's last writer, else we cannot trust the cache -> MISS.
     if (head_writer != live_top_writer) return ConsultOutcome::MISS_NONCONTIG;
 
-    // Pass 2: chase the link table from the live top, exactly as vanilla follows roll_ptr -- step to each
-    // writer's predecessor version and return the first that is changes_visible. id-EQUALITY links, so
-    // inversions are handled. Absent/ambiguous link -> MISS. Bounded by the link count (acyclic chain).
+    // Pass 2: chase the (cached or freshly-built) link table from the live top, exactly as vanilla follows
+    // roll_ptr -- step to each writer's predecessor and return the first changes_visible. id-EQUALITY links
+    // handle inversions; absent/ambiguous -> break. Bounded by the link count (acyclic chain).
     undo_entry_node *best = nullptr;
     uint64_t target = live_top_writer;
-    for (size_t hop = 0; hop <= link.size(); ++hop) {
-        auto it = link.find(target);
-        if (it == link.end() || it->second.ambiguous) break;     // gap / anomaly -> classified below
+    for (size_t hop = 0; hop <= linkp->size(); ++hop) {
+        auto it = linkp->find(target);
+        if (it == linkp->end() || it->second.ambiguous) break;
         undo_entry_node *e = it->second.node;
         if (changes_visible(e->version_trx_id, up_limit_id, low_limit_id, creator_trx_id, m_ids, m_ids_n)) {
-            best = e; break;                                     // first visible on the true lineage
+            best = e; break;
         }
-        target = e->version_trx_id;                              // step to this version's own predecessor
+        target = e->version_trx_id;
     }
 
-    // best==nullptr: no visible boundary proven. NO cached version visible -> NOVISIBLE; otherwise a
-    // gap/anomaly hid the boundary -> NONCONTIG. Either way a safe MISS (full walk), never a guess.
+    // best==nullptr: a safe MISS (full walk), never a guess. The build path computed any_visible (it scans
+    // every entry) to split NOVISIBLE vs NONCONTIG; the reuse path skips that scan -> conservative NONCONTIG.
     if (best == nullptr)
-        return any_visible ? ConsultOutcome::MISS_NONCONTIG : ConsultOutcome::MISS_NOVISIBLE;
+        return (reuse || any_visible) ? ConsultOutcome::MISS_NONCONTIG : ConsultOutcome::MISS_NOVISIBLE;
 
     if (out_img != nullptr) {
         if (best->img_len == 0 || best->img_len > out_cap) return ConsultOutcome::MISS_INELIGIBLE;
