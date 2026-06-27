@@ -85,6 +85,16 @@ int accel_authoritative_mode() noexcept;
 // for a serve run is served == HIT count (every HIT served), with construct_bad==0 in mode 2.
 void accel_note_serve() noexcept;
 
+// D-5 C3-b: the 1-in-N walk-audit tripwire for mode-1 serve-only. mode-1 normally serves the cache and
+// SKIPS the walk, so it has no in-run self-check. accel_audit_should() is called on a mode-1 consult HIT;
+// it advances a per-HIT counter and returns 1 for every N-th HIT (N = ACCEL_AUDIT_N, default 1024) meaning
+// "AUDIT this one": the caller then does NOT skip the walk -- it falls through, the existing shadow
+// byte-compare runs (accel_note_construct, so construct_bad counts an audited mismatch), and it serves the
+// VANILLA walked answer (observe-only -- the cache is checked, never served on the sample). Returns 0 for a
+// non-sampled HIT (serve the cache, skip the walk) or when not in mode 1. Mode-1 with ACCEL_AUDIT_N=0 is
+// REFUSED at init (downgraded to shadow) so the tripwire can never be silently disabled.
+int accel_audit_should() noexcept;
+
 // D-5 5-1b: push facade for InnoDB's read-view lifecycle (collection signal B). accel_publish_view_open
 // is called from MVCC::view_open with the view's {low_limit_id (begin), up_limit_id (up)};
 // accel_publish_view_close from MVCC::view_close. Both are leaf-domain lock-free pushes into the

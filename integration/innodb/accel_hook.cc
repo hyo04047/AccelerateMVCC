@@ -89,6 +89,12 @@ bool g_no_schema_check = false;  // D-4 4c-2 negative control: consult ignores t
 // at accel_init before g_ready is released; the live consult path acquires g_ready first, so a reader
 // thread sees this write before it ever acts on the mode. Default 0 = shadow (safe).
 int g_authoritative_mode = 0;
+// D-5 C3-b: 1-in-N walk-audit knobs for mode-1 serve-only. g_audit_n = ACCEL_AUDIT_N (default 1024; an
+// explicit 0 / unparsable refuses mode-1 at init). g_audit_hit_ctr is the per-HIT sample clock (mode-1
+// HITs); g_audited counts the HITs actually audited (~ hit / N). Touched by many reader threads -> atomic.
+int g_audit_n = 1024;
+std::atomic<uint64_t> g_audit_hit_ctr{0};
+std::atomic<uint64_t> g_audited{0};
 
 // D-5 5-1b: leaf-domain ACTIVE READ-VIEW REGISTRY (collection signal B). InnoDB pushes each view's
 // {low_limit_id, up_limit_id} here on view_open (piggybacking the trx_sys mutex it already holds) and
@@ -245,6 +251,20 @@ void accel_init() noexcept {
     if (au[0] == '1') g_authoritative_mode = 1;        // serve-only (skip the walk)
     else if (au[0] == '2') g_authoritative_mode = 2;   // verify-serve (walk + compare, then serve)
   }
+  // D-5 C3-b: mode-1 (serve-only) MUST ship with the walk-audit tripwire (its only in-run self-check).
+  // Read ACCEL_AUDIT_N (default 1024); if it is explicitly set to 0 or an unparsable value, REFUSE mode-1
+  // -- downgrade to shadow -- rather than run the perf path with the tripwire silently disabled.
+  if (g_authoritative_mode == 1) {
+    if (const char *an = std::getenv("ACCEL_AUDIT_N")) {
+      long v = std::strtol(an, nullptr, 10);
+      g_audit_n = (v > 0) ? (int)v : 0;
+    }
+    if (g_audit_n <= 0) {
+      std::fprintf(stderr, "[accel] REFUSING mode-1: ACCEL_AUDIT_N must be > 0 (walk-audit is mandatory); "
+                           "downgrading to shadow (mode 0)\n");
+      g_authoritative_mode = 0;
+    }
+  }
   if (const char *pv = std::getenv("ACCEL_PUBLISH")) {
     if (pv[0] == '0') g_publish_views = false;         // baseline: OLTP without the view-registry push
   }
@@ -297,6 +317,13 @@ void accel_shutdown() noexcept {
                (unsigned long long)g_c_miss_noncontig.load(), (unsigned long long)g_c_miss_ineligible.load(),
                (unsigned long long)g_c_construct_ok.load(), (unsigned long long)g_c_construct_bad.load(),
                g_authoritative_mode, (unsigned long long)g_c_serve.load());
+  // D-5 C3-b: walk-audit evidence. In mode-1, construct_ok+construct_bad == audited (only audited HITs
+  // run the compare); construct_bad is an AUDIT FAILURE (a served-equivalent cache HIT that did not match
+  // vanilla). The gate: audited > 0 (sampling actually ran) AND audited ~= mode1_hits / audit_n AND
+  // construct_bad == 0. mode1_hits is the sample clock (every mode-1 HIT); served counts non-audited HITs.
+  std::fprintf(stderr, "[accel] audit: mode=%d audit_n=%d mode1_hits=%llu audited=%llu (mode-1: ok+bad==audited, bad==0)\n",
+               g_authoritative_mode, g_audit_n,
+               (unsigned long long)g_audit_hit_ctr.load(), (unsigned long long)g_audited.load());
   // D-5 5-1b: view-registry push evidence. published/unpublished are the per-view_open/close push
   // counts (not per row); live_snapshot is what the GC would see now (~0 at shutdown, all closed).
   std::vector<mvcc::ViewCut> vcut; uint64_t vfloor;
@@ -423,6 +450,19 @@ void accel_note_construct(int matched) noexcept {
 // happens-before this read on the same reader thread, so no separate atomic is needed.
 int accel_authoritative_mode() noexcept { return g_authoritative_mode; }
 void accel_note_serve() noexcept { g_c_serve.fetch_add(1, std::memory_order_relaxed); }
+
+// D-5 C3-b: 1-in-N walk-audit decision for a mode-1 consult HIT. Advances the per-HIT sample clock and
+// returns 1 for every N-th mode-1 HIT (= audit this one: don't skip the walk, run the byte-compare, serve
+// vanilla). 0 otherwise. Cheap relaxed atomics: the sample is statistical, not a correctness ordering.
+int accel_audit_should() noexcept {
+  if (g_authoritative_mode != 1 || g_audit_n <= 0) return 0;
+  uint64_t n = g_audit_hit_ctr.fetch_add(1, std::memory_order_relaxed) + 1;
+  if ((n % (uint64_t)g_audit_n) == 0) {
+    g_audited.fetch_add(1, std::memory_order_relaxed);
+    return 1;
+  }
+  return 0;
+}
 
 // D-5 5-1b: push facade for InnoDB's read-view lifecycle (collection signal B). Called from
 // MVCC::view_open (both the reuse fast-path and the mutex path) and MVCC::view_close. begin =
