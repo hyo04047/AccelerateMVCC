@@ -4,7 +4,7 @@
 > [README.md](README.md), 남은 작업의 상세 트래커는 [open-items.md](open-items.md), 세션별 서사는
 > [progress-log.md](progress-log.md), 설계 근거는 `design-*.md`에 있습니다.
 >
-> 최종 갱신: **2026-06-28** (세션 10 — C3 mode-1 안전 출하 + ⑥ chain-sever 특성화 + GC-쪽 완성 deferral)
+> 최종 갱신: **2026-06-28** (세션 10 — C3 mode-1 안전 출하 + ⑥ chain-sever 규명 + FG+BG GC 스테이지 완료: drain-cap이 ⑥ 안정화)
 
 ## 현재 위치 (한눈에)
 - **1차 목표 A+B+C 완료**, **최종 D 완료** (populate → consult → authoritative serve → ⑥ 성능 payoff).
@@ -37,25 +37,30 @@
 복잡한 bash 인라인은 따옴표가 깨지니 **스크립트 파일**로 실행하고 출력은 `/mnt/c` 로그로 받아 읽을 것.
 긴 빌드는 포그라운드(블로킹)로.
 
-**standalone** (정확성 + 동시성, 36 tests):
-- Release: `build_d5_walk_std.sh` — `correctness_test.cpp`의 `Consult.*`(serve 오라클 포함)+전체 스위트.
-- ASan/TSan: `build_d5_walk_san.sh` — UAF/leak/race 0.
+**standalone** (정확성 + 동시성, **39 tests**, 5/5 안정):
+- Release: `build_d5_walk_std.sh` — `correctness_test.cpp`의 `Consult.*`(serve·gen-gate·FG-α 오라클 포함)+전체 스위트.
+- ASan/TSan: `build_d5_walk_san.sh` — UAF/leak/race 0 (28 tests in filter).
 - 둘 다 레포 밖 `/mnt/c/Users/USER/`에 있음(편의 스크립트).
 
 **integration** (통합 mysqld, `integration/scripts/`):
 - 패치 적용 = `accel_hook.{h,cc}` + `accel_ring.h`를 `~/mysql-server/storage/innobase`로 복사 후
   `cmake --build ~/mysql-build --target mysqld`(증분). accel 헤더는 `-I repo/include`로 해결.
 - mysqld 기동 주의: `--user=root`, `--lc-messages-dir=$BUILD/share`, `--mysql-native-password=ON`.
-- **런타임 토글(env)**: `ACCEL_GC=1`(deadzone GC 켜기, 기본 off) · `ACCEL_AUTHORITATIVE=2`(verify-serve =
-  walk+byte-compare 후 서빙) `=1`(serve-only, walk skip) `=0`(shadow, 기본).
-- 재현 스크립트: `build_d5_a2s{1,2,3,5}.sh`(⑤a-2 단계별) · `build_d5_c2.sh`(serve mode-2 under GC) ·
-  `build_d5_d6_gc.sh`(⑥ payoff under GC) · `build_d6.sh`(원본 ⑥, GC-off) · `build_d5_diag*.sh`(진단).
+- **런타임 토글(env)**: `ACCEL_GC=1`(deadzone GC, 기본 off) · `ACCEL_AUTHORITATIVE=2`(verify-serve = walk+byte
+  -compare 후 서빙) `=1`(serve-only, walk skip = mode-1 출하 perf) `=0`(shadow, 기본) · `ACCEL_AUDIT_N=N`
+  (mode-1 1-in-N walk-audit, 기본 1024; mode-1+N=0이면 거부→shadow) · `ACCEL_DRAIN_CAP=N`(⑥ stabilizer:
+  dummy-drain per-cycle reclaim cap, 기본 0=무제한; **⑥-serving 권장 ≈1000**) · `ACCEL_CONSULT_FG=1`(FG-α
+  consult cooperative reclaim, 기본 off=측정상 이득 0) · `ACCEL_GEN_GATE=0`(진단: gen-gate 끄기, 기본 on).
+- 재현 스크립트: C3 = `build_d5_c3.sh`(walk-audit)·`build_d5_c3c.sh`(soak+ship gate)·`build_d5_c3c_char.sh`
+  (⑥ 특성화)·`build_d5_c3c_diag.sh`(gen-gate 격리). FG+BG = `build_d5_alpha.sh`(α A/B)·`build_d5_gctune{,2,3}.sh`
+  (drain-cap 곡선). 그 외 `build_d5_c2.sh`(mode-2/GC)·`build_d5_d6_gc.sh`(⑥/GC)·`build_d6.sh`(원본 ⑥).
 
-## 로드맵 (다음 작업)
-[open-items.md](open-items.md)가 마스터 트래커. 요약:
-- **⑤b** — serve 깊은-읽기 latency 0.45s→0.16s (GC-safe back-edge; **FG cooperative reclaim과 같은
-  트랙** — reader‖GC chain-pointer 표면이 같음).
-- **C3** — mode-1(빠른 serve) 출하 hardening: gc_generation 2번째 방화벽 + walk-audit 샘플링.
-- **multi-reader in-middle 측정** — 동시 reader 다수일 때 GC의 in-middle 회수(메모리 이득)와 serve 상호작용.
-- **Phase 2** — 워크로드 폭(LOB·write-heavy+LLT in-middle 이득·savepoint) · FG +30% 채택 측정.
-- **Phase 3** — InnoDB 패치 vendor · REPORT Limitations · multi-run/error-bar · **논문 한글본+영문본**.
+## 로드맵 (다음 작업) — GC-side 완료, 다음은 Phase 2
+[open-items.md](open-items.md) §0c가 마스터 트래커. **GC-side perf는 짜낼 만큼 짜냄**(C3 출하 ✅ · ⑥
+drain-cap stabilizer ✅ · β 구조적 불가 · α 측정상 null). 남은 것:
+- **Phase 2 — 워크로드 폭(우선)**: write-heavy+LLT에서 in-middle 이득(~5500× 헤드라인)이 실 InnoDB서 생존하나
+  (ⓠ3) · LOB/off-page/virtual(ⓝ6) · oltp_read_write 22% MISS effective speedup(ⓠ5) · savepoint(ⓝ15) ·
+  secondary-index/composite-PK(mode-1 출하 범위 밖이었음) · full-mysqld ASan/TSan(ⓝ5).
+- **Phase 3 — 논문**: InnoDB 패치 vendor(ⓣ10) · REPORT Limitations/Threats(ⓝ14) · multi-run/error-bar ·
+  **논문 한글본+영문본**(최종 산출물).
+- (낮은 우선순위) ⑤b 0.16s는 memoized-lineage 안전틀에서만(이미 0.22s reuse 있음) · cold-key 회수(ⓝ9).
