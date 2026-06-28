@@ -22,7 +22,19 @@
 - **pinned hot-set(10키)**: **10×/21×/42×**@15/30/60s.
 - 캐시 live_versions는 bounded(~6–9k)·LLT에 ~flat, InnoDB HLL은 선형 증가 → **비율이 LLT 나이에 선형**(무한 성장). held-reader 체인 깊이도 flat(~80–92 epochs)=⑥ read-latency(~190×) 일관. magnitude는 프로토타입 5500×(고-rate 마이크로벤치)와 다르나 실 InnoDB OLTP rate(~4,200 versions/s)가 정한 정직한 값, 메커니즘·scaling·gap 요건 동일.
 
-**부산물:** in-process tail-only 캐시 모드는 throughput을 ~5× 떨어뜨림(시간에 악화·reporter on/off 동일로 reporter 아닌 GC 재스캔 추정) → apples-to-apples baseline 부적합, **실 InnoDB HLL을 baseline으로**(더 정직). core 헤더(epoch_table.h·accelerateMVCC.h) 변경 후 **standalone 39 green 유지** 확인. 재현 `integration/scripts/build_q3_{pinned,realistic}.sh`. **→ 다음 = Phase 2 잔여**(LOB·22% MISS·savepoint·secondary-index·full-mysqld ASan/TSan) → Phase 3(논문).
+**부산물:** in-process tail-only 캐시 모드는 throughput을 ~5× 떨어뜨림(시간에 악화·reporter on/off 동일로 reporter 아닌 GC 재스캔 추정) → apples-to-apples baseline 부적합, **실 InnoDB HLL을 baseline으로**(더 정직). core 헤더(epoch_table.h·accelerateMVCC.h) 변경 후 **standalone 39 green 유지** 확인. 재현 `integration/scripts/build_q3_{pinned,realistic}.sh`. 커밋 `88394ba`.
+
+**세션 11 이어서 — Phase 2 잔여 전부 완료:**
+- **ⓠ5(effective speedup) — "22% MISS"는 오해** (커밋 `cc69867`): held analytic reader(캐시 타깃)는 write-heavy+delete/insert churn서도 HIT ~99.8–100%(22%는 head 근처 짧은 reader=캐시 불필요). speedup resident ~3×·**I/O-bound 64M ~34×**(undo I/O 23,783→352)·construct_BAD=0. `build_q5_writeonly.sh`.
+- **ⓝ6(LOB/off-page/virtual) — 안전 제외 Limitation** (커밋 `de6bb2a`): 캡처 게이트(`rec_offs_any_extern||n_v_cols`)+512B cap → 4변형 ineligible 100%·construct_BAD=0(off-page LOB 부분 image 안 서빙=안전 핵심)·small HIT 100%. LOB-heavy 커버리지 붕괴하나 무해 → 캐시 scope=small-row OLTP. `build_q6_coverage.sh`.
+- **composite/string-PK·secondary-index·savepoint — 전부 안전** (커밋 `ea30202`): mode-2 verify-serve construct_BAD=0(full-PK FNV가 multi-col·string 일반화·savepoint rollback 미서빙). 방법론 교훈=correctness 체크는 4G resident+짧은 churn(64M+깊은 churn+secondary는 병리적 느림, 16분 hang 1회). `build_q7_keys.sh`·`build_q8_savepoint.sh`.
+- **ⓝ5 full-mysqld ASan CLEAN** (커밋 `7d92aed`): `-DWITH_ASAN=ON` mysqld(15m)서 drainer‖consult‖held reader‖GC‖teardown 스트레스→리포트 0·served 243,803·construct_BAD=0=gold-standard 통합 memory-safety. TSan은 residual. `build_q9_asan.sh`.
+
+**세션 11 이어서 — Phase 3 전 사전 감사 + 정리 + cold-key:**
+- **멀티에이전트 사전 감사** (workflow 6에이전트, 42 findings→정제, claim 코드검증) → **MUST-FIX doc 정리**(커밋 `5945adf`): §0 진단 supersede·ⓝ1/ⓝ4 CLOSED·README/NEXT-SESSION 로드맵 Phase 3로·토글 6→13개·반환코드 5. **mode-1 출하 경로 ASan CLEAN**(build_q9는 mode-2만)·standalone 테스트 +1(40 green)·phase2 doc 측정 캐비엇 블록.
+- **cold-key(ⓝ9) 측정 → "터짐" 수정** (커밋 `281a978`): `headers_created`로 footprint 정량화(용량 아래 plateau=bounded). 진짜 한계=**Kuku 용량(kuku_log2=16=65536)**—초과 시 old churn(2.6M)/crash → **graceful non-admission**(`kuku_full_`·실패 header 미삭제[failed cuckoo가 슬롯에 ptr publish 가능→delete=UAF, 원래 leak이 안전장치였음 규명]·초과 키 vanilla fallback): headers 43,432 plateau·메모리 bounded·construct_BAD=0·crash 없음. `versions_dropped` 빼서 live_versions 정직. standalone 40+ASan/TSan 29 green. 잔여=진짜 cold-key EVICTION(LRU·deferral, 사용자 합의). `build_q10_coldkey.sh`.
+
+**→ Phase 2 + GC-side + 사전감사 완료. 엔지니어링은 Phase 3 시작에 defensible(correctness 갭 0, construct_BAD=0 도처). 다음 = Phase 3(논문 한글+영문) — 단 하드게이트 3개 먼저: ① multi-run/error-bar ② raw 로그 보존 ③ cold-key EVICTION 결정.**
 
 ---
 

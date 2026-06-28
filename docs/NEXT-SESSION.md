@@ -4,7 +4,7 @@
 > [README.md](README.md), 남은 작업의 상세 트래커는 [open-items.md](open-items.md), 세션별 서사는
 > [progress-log.md](progress-log.md), 설계 근거는 `design-*.md`에 있습니다.
 >
-> 최종 갱신: **2026-06-28** (세션 11 — Phase 2 착수: ⓠ3 in-middle 헤드라인이 실 InnoDB에서 생존·확정)
+> 최종 갱신: **2026-06-29** (세션 11 — Phase 2 완료 + 사전 감사·정리 + cold-key graceful fix. 다음 = Phase 3 논문)
 
 ## 현재 위치 (한눈에)
 - **Phase 2 ⓠ3 CLOSED (세션 11)** — write-heavy OLTP + held LLT + 동시 HTAP 리더 하에서 캐시 보존이 bounded
@@ -28,7 +28,16 @@
 - **Phase 2 ⓝ5 full-mysqld ASan CLOSED — CLEAN (세션 11)** — `-DWITH_ASAN=ON` mysqld서 drainer‖consult‖held
   reader(serve)‖GC‖teardown 동시 스트레스 → **AddressSanitizer 리포트 0**(consult 251k·serve 243,803·construct_BAD=0·
   GC retired 9,114·clean shutdown). full-mysqld TSan은 documented residual. 재현 `build_q9_asan.sh`.
-  **→ Phase 2 사실상 완료. 다음 = Phase 3(논문 한글+영문·multi-run/error-bar·패치 vendor·Limitations[ⓝ6·TSan residual]).**
+- **Phase 3 전 사전 감사 + 정리 (세션 11, 커밋 `5945adf`)** — 멀티에이전트 감사(6에이전트, 42 findings)로 doc drift·
+  미기록 개선 발굴 후: open-items §0 진단 supersede·ⓝ1/ⓝ4 CLOSED·README/NEXT-SESSION 로드맵 Phase 3로·토글 목록
+  6→13개·반환코드 5 문서화. **mode-1 serve-only 출하 경로도 ASan CLEAN**(build_q9는 mode-2만), standalone 테스트
+  +1(capped chain+entries_retired). phase2 doc 상단에 측정 캐비엇 블록(단일-run·로그 미보존 등).
+- **cold-key (ⓝ9) 측정 → "터짐" 수정 (세션 11, 커밋 `281a978`)** — `headers_created` 카운터로 footprint=admitted
+  distinct 키(~72B/키·GC무관) 정량화: 용량 아래 plateau(bounded). **진짜 한계=Kuku 용량(kuku_log2=16=65536 bin)**:
+  초과 시 old code가 header churn(2.6M)/crash → **graceful non-admission fix**(`kuku_full_`·실패 header 미삭제[UAF
+  회피]·초과 키 vanilla fallback): headers plateau·메모리 bounded·**construct_BAD=0·crash 없음**. "memory∝working set"은
+  Kuku 용량 안에서 defensible. **잔여=진짜 cold-key EVICTION(LRU·Kuku erase+EBR, deferral)**. 재현 `build_q10_coldkey.sh`.
+  **→ Phase 2 + GC-side + 사전감사 완료. 엔지니어링은 Phase 3 시작에 defensible(correctness 갭 0, construct_BAD=0 도처).**
 - **1차 목표 A+B+C 완료**, **최종 D 완료** (populate → consult → authoritative serve → ⑥ 성능 payoff).
 - **⑤a-2 완료** — deadzone GC가 통합 mysqld 안에서 실제로 돈다(pushed InnoDB clock + active-view registry,
   amortized windowed sweep, construct_BAD=0·race/UAF 0·메모리 유계). **5-2b C1·C2 완료**(mode-2 verify-serve가
@@ -92,8 +101,9 @@
 키 일반화·savepoint·full-mysqld ASan, 전부 construct_BAD=0). **남은 것 = Phase 3(논문) — 단, 신뢰성 게이트 3개 먼저**:
 - **(논문 전 하드 게이트)** ① **multi-run/error-bar**: 모든 헤드라인이 단일-run인데 ⑥는 non-deterministic(3/4 hold,
   1/4 degrade) → 헤드라인 config N≥3–5 재측·median+min/max. ② **raw 로그 보존**: q*.log 미보존 → `integration/results/`로
-  아카이브·커밋(현재 repo 단독 재현 불가). ③ **cold-key 결정**: "memory ∝ live-txn window" 주장이 dataset 스코프선
-  cold-key(ⓝ9) 때문에 현재 미성립 → 회수 구현 or 주장 스코핑(Limitation).
+  아카이브·커밋(현재 repo 단독 재현 불가). ③ **cold-key EVICTION 결정(사용자 미정)**: graceful non-admission("터짐" 제거)은
+  세션 11서 완료(headers bounded·construct_BAD=0). 남은 건 *이동하는* working set 추적용 진짜 EVICTION(LRU·Kuku erase+EBR,
+  lock-free race=적대적 리뷰 필요) — 논문이 "shifting working set 추적"을 주장할지로 결정. 안 하면 "용량 N 안에서 bounded" 스코핑.
 - **Phase 3 본체**: **논문 한글본+영문본**(최종 산출물) · REPORT Stage-D+Limitations(ⓝ14) · InnoDB 패치 vendor(.diff, ⓣ10).
 - (잔여, 낮은 우선순위) FTS/spatial/partition correctness · full-mysqld TSan(residual) · crash-recovery/ephemeral
-  rebuild(ⓣ17) · ⑤b 0.16s(이미 0.22s reuse) · mode-1 ASan run.
+  rebuild(ⓣ17) · ⑤b 0.16s(이미 0.22s reuse).
