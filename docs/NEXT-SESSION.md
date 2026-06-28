@@ -16,7 +16,11 @@
 - **Phase 2 ⓠ5 CLOSED (세션 11)** — "22% MISS effective speedup" 우려는 held analytic reader엔 해당 없음:
   write-heavy+delete/insert churn서도 **HIT ~99.8–100%**(22%는 head 근처 짧은 reader=캐시 불필요 대상).
   effective speedup resident ~3×·**I/O-bound(64M) ~34×**(undo I/O 23,783→352)·construct_BAD=0. 재현
-  `build_q5_writeonly.sh`. **다음 = Phase 2 잔여**(LOB ⓝ6·savepoint·secondary-index·full-mysqld ASan/TSan) → Phase 3(논문).
+  `build_q5_writeonly.sh`.
+- **Phase 2 ⓝ6 CLOSED (세션 11)** — LOB/off-page/virtual/>512B 행은 캡처 시 제외(`trx0rec.cc` 게이트 +512B cap)
+  → MISS_INELIGIBLE→vanilla. 4 변형 실측: 제외 행 **ineligible 100%·construct_BAD=0**(off-page LOB 부분 image
+  안 서빙=안전 핵심)·small HIT 100%. 커버리지 LOB-heavy서 ~0 붕괴하나 무해 → **캐시 scope=small-row OLTP**(정직한
+  Limitation). 재현 `build_q6_coverage.sh`. **다음 = Phase 2 잔여**(savepoint ⓝ15·secondary-index/composite-PK·full-mysqld ASan/TSan ⓝ5) → Phase 3(논문).
 - **1차 목표 A+B+C 완료**, **최종 D 완료** (populate → consult → authoritative serve → ⑥ 성능 payoff).
 - **⑤a-2 완료** — deadzone GC가 통합 mysqld 안에서 실제로 돈다(pushed InnoDB clock + active-view registry,
   amortized windowed sweep, construct_BAD=0·race/UAF 0·메모리 유계). **5-2b C1·C2 완료**(mode-2 verify-serve가

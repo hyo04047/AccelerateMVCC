@@ -64,6 +64,7 @@
 - **ⓠ3 in-middle 헤드라인이 실 InnoDB에서 생존·확정** — write-heavy OLTP + held LLT + 동시 HTAP 리더 하에서 캐시 live_versions는 bounded(~6–9k), InnoDB HLL은 LLT 시간에 선형 증가 → **비율이 LLT 나이에 선형 성장: 20×/40×/63×@15/30/60s**(realistic full-table). pinned hot-set도 10×/21×/42×. **5-3 후퇴 트리거 안 됨.** 승리는 동시 read-view 리더가 만드는 gap을 요구(리더0 대조군=0.9× 승리 0). magnitude는 프로토타입 5500×(고-rate 마이크로벤치)와 다르나 메커니즘·scaling·gap 요건 동일(실 InnoDB OLTP rate가 정함).
 - **ⓠ3 부산물**: ① in-process tail-only 캐시 모드(`ACCEL_TAIL_ONLY`)는 throughput을 ~5× 떨어뜨려(시간에 따라 악화) apples-to-apples baseline 부적합 → **실 InnoDB HLL을 baseline으로**(더 정직). ② metric 단위 교훈: `drained−epochs_retired`는 version과 epoch를 섞어 승리를 ~2×로 가렸음 → `drained−entries_retired`(version 단위)로 63× 회복.
 - **ⓠ5(22% MISS effective speedup) CLOSED — 긍정 해소** — held analytic reader(캐시의 실 타깃)는 write-heavy+delete/insert churn에서도 **HIT ~99.8–100%**(held snapshot이 churn 전이라 reader는 원본 행만 필요=캐시됨; 22% MISS는 head 근처 *짧은 reader*의 workload-wide 수치로 캐시 불필요 대상). effective speedup: resident ~3×, **I/O-bound(64M) ~34×**(undo I/O 23,783→352), construct_BAD=0 전부. oltp_read_write workload-wide HIT도 78%→94%(세션8 수정). 재현 `build_q5_writeonly.sh`. 상세 phase2-q3-llt.md ⓠ5 섹션.
+- **ⓝ6(LOB/off-page/virtual 커버리지) CLOSED — 정직한 limitation** — LOB/off-page(`rec_offs_any_extern`)/virtual(`n_v_cols`)/>512B 행은 캡처 시 img_len=0 → **MISS_INELIGIBLE → vanilla walk**. 4 변형 실측(small/big-in-page/off-page-LOB/virtual): 제외 행 **ineligible 100%·construct_BAD=0·served=0**(off-page LOB도 부분 image 안 서빙=안전 핵심 실증), small 대조군 HIT 100%. 커버리지는 LOB-heavy서 ~0 붕괴하나 **무해**(graceful vanilla degrade). big-row vanilla deep read 82.7s=캐시가 가장 필요한데 cap이 막음 → **캐시 scope=small-row OLTP**(논문 Limitation). future-work=configurable cap/in-page prefix. 재현 `build_q6_coverage.sh`. 상세 phase2-q3-llt.md ⓝ6 섹션.
 
 **진행/부분(세션 11):**
 - ⓠ4(⑥ realistic) 부분 보강 — held-reader 체인 깊이 flat(~90 epochs) 재확인. 동시 HTAP latency 별도.
@@ -109,8 +110,10 @@
    터짐). FTS/spatial/partition/composite-PK/secondary-index/savepoint 미검증.
 5. **최종검증 매트릭스(LOB/FTS/spatial/큰 비-resident 테이블/full mysqld ASan+TSan) 매 세션 약속·미실행** — **현재 모든
    sanitizer 증거는 standalone뿐**; 통합 경로(드레이너‖consult‖동시 reader‖미래 GC)는 ASan/TSan 한 번도 안 돔.
-6. **LOB/off-page/virtual-column/>512B payload 행 캐싱 제외 — LOB/text-heavy HTAP(실 타깃)서 커버리지 붕괴, 미측정** —
-   `accel_ring.h ACCEL_IMG_MAX=512`. coverage ~100%는 sbtest(INT/CHAR)에서만.
+6. **[CLOSED 세션 11] LOB/off-page/virtual-column/>512B 행 캐싱 제외 — 커버리지 붕괴** —
+   `accel_ring.h ACCEL_IMG_MAX=512` + `trx0rec.cc` 캡처 게이트(`rec_offs_any_extern || n_v_cols`). → **측정 완료:
+   4 변형서 제외 행 ineligible 100%·construct_BAD=0**(off-page LOB 부분 image 안 서빙 실증)·small HIT 100%. 커버리지는
+   LOB-heavy서 ~0이나 **안전**(graceful vanilla). 캐시 scope=small-row OLTP=정직한 Limitation. 상세 phase2-q3-llt.md ⓝ6, §0d.
 7. **Stage-C 헤드라인(~5500×)은 프로토타입 내 self-modeled tail-only 모드, 실 InnoDB purge 아님** — 실 InnoDB 메모리/체인
    비교는 ⑤(GC-off). → 통합은 read-latency(⑥)만 증명, 메모리/체인 우위는 실 InnoDB서 미증명.
 8. **[memory 무한성장] overflow reservation floor가 monotone-down·never reset → >256 reader가 reclaim 영구 pin** —

@@ -127,10 +127,49 @@ the MISS effect from the ⑥ chain-sever). `integration/scripts/build_q5_writeon
 - construct_BAD=0 at every BP — the 22% (now ~0.2%) MISS rows fall back to the correct vanilla walk; never a
   wrong row.
 
+---
+
+# Phase 2 / ⓝ6 — LOB / off-page / virtual / >512B coverage + safety (2026-06-28)
+
+> **Result: coverage collapses to ~0 on these rows, but it is 100% SAFE.** Rows with an off-page (external)
+> column, a virtual column, or a physical record over the 512-byte image cap are excluded at capture
+> (`img_len=0`) and consult returns `MISS_INELIGIBLE` -> the held reader does the correct vanilla walk.
+> construct_BAD=0 in every variant — never a wrong or partial-image serve. This is an honest, scoped
+> limitation: the cache targets small-row (INT/CHAR) OLTP — where the ⓠ3/⑥ wins live — and gives no benefit
+> on LOB/text-heavy HTAP (but no harm). It is consistent with the compact-cache design (it stores small
+> images/metadata, never MB-scale LOB).
+
+## The exclusion gate
+At capture (`storage/innobase/trx/trx0rec.cc`):
+`accel_img_len = (rec_offs_any_extern(offsets) || index->table->n_v_cols > 0) ? 0 : rec_offs_size(offsets)`,
+and the hook drops the image if it exceeds `ACCEL_IMG_MAX = 512`. So off-page LOB, virtual-column, and
+oversized rows all land with `img_len=0` -> stored locator-only -> `MISS_INELIGIBLE` -> vanilla walk. Serve
+is double-gated on `n_v_cols == 0`.
+
+## Data (64M BP, GC off; mode 1 for big/small, mode 2 verify-serve for lob/virtual)
+| variant | consult HIT | MISS_INELIGIBLE | construct_BAD | served | vanilla deep read |
+|---|---|---|---|---|---|
+| small control (sbtest) | 1000 (100%) | 0 | 0 | 1000 | 0.37 s |
+| big in-page (>512B, 1698 B/row) | 0 | 1000 (100%) | 0 | 0 | 82.7 s |
+| off-page LOB (LONGTEXT 20 KB) | 0 | 1000 (100%) | 0 | 0 | — |
+| virtual column (`AS (k*2) VIRTUAL`) | 0 | 1000 (100%) | 0 | 0 | — |
+
+## Reading it
+- The **off-page LOB** case is the subtle safety check: its main clustered record (with a ~20-byte LOB
+  pointer) can be < 512 B, so WITHOUT the `rec_offs_any_extern` gate the cache would capture a partial image
+  and could serve a row missing its LOB. The gate prevents it — 100% ineligible, construct_BAD=0.
+- The irony: the big-row vanilla deep read is 82.7 s (bigger rows -> bigger undo -> more I/O) — exactly where
+  a cache would help most — but the 512 B cap excludes it. So LOB-heavy HTAP is the one regime the cache
+  cannot accelerate. Honest paper Limitation.
+- Future work (optional): a configurable cap, or caching the in-page prefix + a locator for the off-page
+  part. Full-LOB caching contradicts the compact-cache design and is not planned.
+
 ## What this closes / what remains
 - **Closes ⓠ3** (the central 5-3 retreat worry): the in-middle headline survives in real InnoDB and scales
   with LLT, given the HTAP gap.
-- **Closes ⓠ5**: the held reader's coverage is ~complete; effective speedup is strong (~34× I/O-bound) and
-  correct. The MISS worry was a misframing (it was about short readers the cache doesn't target).
-- Remaining Phase 2: LOB/off-page coverage (ⓝ6), savepoint (ⓝ15), secondary-index/composite-PK,
-  full-mysqld ASan/TSan (ⓝ5). Then Phase 3 (paper).
+- **Closes ⓠ5**: the held reader's coverage is ~complete on small-row OLTP; effective speedup ~34× I/O-bound
+  and correct. The MISS worry was a misframing (short readers the cache doesn't target).
+- **Closes ⓝ6**: LOB/off-page/virtual/>512B rows are safely excluded (construct_BAD=0); coverage collapses
+  on LOB-heavy but degrades gracefully to vanilla. Documented Limitation; cache scope = small-row OLTP.
+- Remaining Phase 2: savepoint (ⓝ15), secondary-index/composite-PK, full-mysqld ASan/TSan (ⓝ5). Then Phase 3
+  (paper, incl. this Limitation).
