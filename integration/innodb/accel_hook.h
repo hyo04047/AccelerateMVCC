@@ -54,7 +54,8 @@ void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_
 // NON-locking consistent-read path with the row key (table_id + pk_hash + full PK bytes extracted
 // exactly like the populate hook), the reader's ReadView fields, the live row's last writer, and the
 // reader's schema epoch. Returns the consult outcome (0=HIT, 1=MISS_ABSENT, 2=MISS_NOVISIBLE,
-// 3=MISS_NONCONTIG, 4=MISS_INELIGIBLE) and bumps the outcome counters. On HIT it copies the cached
+// 3=MISS_NONCONTIG, 4=MISS_INELIGIBLE, 5=MISS_GCRACE [D-5 C3 gen-gate race, mode-1 only]) and bumps the
+// outcome counters. Any nonzero == MISS == caller falls back to the vanilla walk. On HIT it copies the cached
 // FULL physical record into out_buf UNDER the EBR Guard (data origin at out_buf+*out_extra,
 // *out_len = full rec length). The caller (InnoDB domain) then builds a rec_t from it and compares
 // to vanilla -- the cache result is NOT served yet (4d-prep proves the construction in shadow).

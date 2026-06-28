@@ -1027,6 +1027,35 @@ TEST(GcRetireOnce, ConservationSingleThread) {
     EXPECT_EQ(mvcc.epochs_detached(), mvcc.epochs_retired());
 }
 
+// ⓠ3 (Phase 2): lock down the two accessors the integration retention reporter relies on --
+// chain_length_guarded_capped (the chain-depth column, bounded so a tail-only run's huge chain
+// can't steal CPU) and entries_retired (VERSIONS freed, the denominator of the ⓠ3 ratio
+// live_versions = drained - entries_retired). A standalone gate so this paper-cited metric can't
+// silently drift. (a) the cap saturates exactly and equals the uncapped walk below the cap; (b)
+// entries_retired is 0 before any GC and >= epochs_retired after (each retired epoch frees >= 1
+// undo_entry, so it can never under-count versions vs epochs).
+TEST(GcRetireOnce, RetentionReporterAccessors) {
+    Accelerate_mvcc mvcc(4);
+    for (uint64_t i = 0; i < 5000; i++) mvcc.insert_trx_without_gc(0);   // deep chain on ONE key, no GC
+    const size_t full = mvcc.chain_length_guarded(1, 0);
+    ASSERT_GT(full, 10u) << "expected a deep chain to exercise the cap";
+    EXPECT_EQ(mvcc.chain_length_guarded_capped(1, 0, 0), full)           << "cap=0 == unbounded";
+    EXPECT_EQ(mvcc.chain_length_guarded_capped(1, 0, full + 100), full)  << "cap above length == full";
+    EXPECT_EQ(mvcc.chain_length_guarded_capped(1, 0, full), full)        << "cap == length == full";
+    EXPECT_EQ(mvcc.chain_length_guarded_capped(1, 0, 5), 5u)             << "cap below length saturates";
+    EXPECT_EQ(mvcc.entries_retired(), 0u)                               << "no GC yet -> no versions freed";
+    trx_t* rd = mvcc.start_trx();                                        // snapshot above -> below is dead
+    for (uint64_t i = 0; i < 80000; i++) {
+        mvcc.insert_trx_without_gc(i % 4);
+        if (i % 2500 == 0) mvcc.run_gc_once();
+    }
+    for (int i = 0; i < 80; i++) mvcc.run_gc_once();
+    mvcc.commit_trx(rd);
+    EXPECT_GT(mvcc.epochs_retired(), 0u);
+    EXPECT_GE(mvcc.entries_retired(), mvcc.epochs_retired())
+        << "each retired epoch frees >= 1 undo_entry, so versions_freed >= epochs_freed";
+}
+
 // ---------------------------------------------------------------------------
 // Stage 1c-3: full-bucket backstop sweep + dummy-overflow drain (#2). 4 writers race the
 // BG bucket-swap (epoch_num != bucket epoch_num) -> orphan wrappers pile into the dummy

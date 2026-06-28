@@ -7,6 +7,25 @@
 > deadzone's in-middle reclaim beats InnoDB's tail-only purge under a long-lived transaction — **holds in
 > real InnoDB**, not just the standalone prototype. The pre-authorized 5-3 retreat is NOT triggered.
 
+## ⚠️ Measurement caveats (read before citing any number — Phase-3 hardens these)
+- **Every number below is a SINGLE run — no variance / error bars.** Before any of these enters the paper,
+  re-run headline configs N≥3–5 and report median + min/max. This matters most for ⑥ (the held-read latency
+  payoff), which is **known non-deterministic** (3/4 hold ~190×, 1/4 degrades to the correct walk under a
+  small-BP reclaim storm — design-D5-gc §12.2). The drain-cap "X/N degrade" table already has this discipline;
+  the rest does not yet.
+- **Raw run logs were not retained** (overwritten per run; only the ASan log survives). Phase 3 must archive
+  the `[accel] retention:`/`consult:` lines into `integration/results/` so each table cell is verifiable.
+- **Regime differences between sections are real, not interchangeable:** ⓠ3 is GC-ON retention; ⓠ5 is a
+  GC-OFF, cross-boot A/B (mode-0 vs mode-1 are separate server instances) at a different BP. Don't compare the
+  ⓠ3 ratios to the ⓠ5 ~34× as if one scale.
+- **ASan ran `detect_leaks=0`** — it validates UAF/overflow/SEGV, says nothing about leaks/bounded-memory.
+- **"Held reader chain stays flat ~80–92"** is the reporter's sampled epoch-depth (a read-cost PROXY), not a
+  measured held-read latency; the actual latency payoff is the separately-measured ⑥. The chain `max` column
+  also under-samples ~1/3 of keys (1024 pk buckets vs ~1000 keys collide) — it is a lower bound, and does NOT
+  affect the headline ratio (that uses a global counter, bucket-independent).
+- **`ACCEL_RETENTION_CAP` default 512** (0 = unbounded) — load-bearing for reproduction: it bounds the
+  reporter's per-key chain walk so a tail-only run's huge chains don't steal CPU and confound throughput.
+
 ## The question (open-items ⓠ3 / §0)
 The headline (standalone Stage C: deadzone hot-chain max 155 vs tail-only 845,977 ≈ 5500× under a 60 s LLT)
 was measured in the prototype, where the "tail-only" baseline is **self-modeled inside the cache**
@@ -155,9 +174,15 @@ is double-gated on `n_v_cols == 0`.
 | virtual column (`AS (k*2) VIRTUAL`) | 0 | 1000 (100%) | 0 | 0 | — |
 
 ## Reading it
-- The **off-page LOB** case is the subtle safety check: its main clustered record (with a ~20-byte LOB
-  pointer) can be < 512 B, so WITHOUT the `rec_offs_any_extern` gate the cache would capture a partial image
-  and could serve a row missing its LOB. The gate prevents it — 100% ineligible, construct_BAD=0.
+- **What the safety evidence actually is** (avoid a hollow gate): for the excluded rows, `construct_BAD=0`
+  is *vacuous* (served=0 → nothing was checked). The load-bearing evidence is the pair (a) **the exclusion
+  fired** — `MISS_INELIGIBLE = 100%` on every excluded variant, so the gate, not luck, kept these out of the
+  serve path; and (b) **the small-row control serves correctly** — `HIT 100%, construct_BAD=0` with served>0,
+  proving the serve path itself is byte-correct. Together: the gate excludes the unservable rows AND the
+  servable rows serve right.
+- The **off-page LOB** case is the subtle one: its main clustered record (with a ~20-byte LOB pointer) can be
+  < 512 B, so WITHOUT the `rec_offs_any_extern` gate the cache would capture a partial image and could serve a
+  row missing its LOB. The gate prevents it — 100% ineligible.
 - The irony: the big-row vanilla deep read is 82.7 s (bigger rows -> bigger undo -> more I/O) — exactly where
   a cache would help most — but the 512 B cap excludes it. So LOB-heavy HTAP is the one regime the cache
   cannot accelerate. Honest paper Limitation.
@@ -223,6 +248,12 @@ The run did real work under ASan: consult calls=251,150, hit=243,803, **construc
 serves under ASan), served=243,803; GC retired 9,114 (windowed 8,716 + dummy 398), live_buckets bounded;
 clean shutdown. So the drainer, consult, serve, GC, and teardown all executed under ASan and the integration
 path is memory-clean.
+
+**Both serve modes ASan-clean.** The run above is mode-2 (verify-serve). The actual SHIP path is mode-1
+(serve-only, walk-skip) — re-run separately under ASan with `ACCEL_AUTHORITATIVE=1 ACCEL_AUDIT_N=512`: served
+183,591, the 1-in-N **walk-audit tripwire fired** (audited=359, bad=0), the gen-gate fired (gcrace=7 →
+conservative MISS), construct_BAD=0, **and zero ASan reports**. So the production serve path + its in-run
+self-check are both memory-clean, not just the verify-serve diagnostic path.
 
 ## TSan
 Full-mysqld TSan is a documented residual: the standalone TSan already exercises the accel race surface

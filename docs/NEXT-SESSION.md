@@ -59,8 +59,9 @@
 복잡한 bash 인라인은 따옴표가 깨지니 **스크립트 파일**로 실행하고 출력은 `/mnt/c` 로그로 받아 읽을 것.
 긴 빌드는 포그라운드(블로킹)로.
 
-**standalone** (정확성 + 동시성, **39 tests**, 5/5 안정):
-- Release: `build_d5_walk_std.sh` — `correctness_test.cpp`의 `Consult.*`(serve·gen-gate·FG-α 오라클 포함)+전체 스위트.
+**standalone** (정확성 + 동시성, **40 tests**, 5/5 안정):
+- Release: `build_d5_walk_std.sh` — `correctness_test.cpp`의 `Consult.*`(serve·gen-gate·FG-α 오라클 포함)+전체 스위트
+  (세션 11 `GcRetireOnce.RetentionReporterAccessors` 추가 = capped chain + entries_retired semantics).
 - ASan/TSan: `build_d5_walk_san.sh` — UAF/leak/race 0 (28 tests in filter).
 - 둘 다 레포 밖 `/mnt/c/Users/USER/`에 있음(편의 스크립트).
 
@@ -68,21 +69,31 @@
 - 패치 적용 = `accel_hook.{h,cc}` + `accel_ring.h`를 `~/mysql-server/storage/innobase`로 복사 후
   `cmake --build ~/mysql-build --target mysqld`(증분). accel 헤더는 `-I repo/include`로 해결.
 - mysqld 기동 주의: `--user=root`, `--lc-messages-dir=$BUILD/share`, `--mysql-native-password=ON`.
-- **런타임 토글(env)**: `ACCEL_GC=1`(deadzone GC, 기본 off) · `ACCEL_AUTHORITATIVE=2`(verify-serve = walk+byte
-  -compare 후 서빙) `=1`(serve-only, walk skip = mode-1 출하 perf) `=0`(shadow, 기본) · `ACCEL_AUDIT_N=N`
-  (mode-1 1-in-N walk-audit, 기본 1024; mode-1+N=0이면 거부→shadow) · `ACCEL_DRAIN_CAP=N`(⑥ stabilizer:
-  dummy-drain per-cycle reclaim cap, 기본 0=무제한; **⑥-serving 권장 ≈1000**) · `ACCEL_CONSULT_FG=1`(FG-α
-  consult cooperative reclaim, 기본 off=측정상 이득 0) · `ACCEL_GEN_GATE=0`(진단: gen-gate 끄기, 기본 on).
-- 재현 스크립트: C3 = `build_d5_c3.sh`(walk-audit)·`build_d5_c3c.sh`(soak+ship gate)·`build_d5_c3c_char.sh`
-  (⑥ 특성화)·`build_d5_c3c_diag.sh`(gen-gate 격리). FG+BG = `build_d5_alpha.sh`(α A/B)·`build_d5_gctune{,2,3}.sh`
-  (drain-cap 곡선). 그 외 `build_d5_c2.sh`(mode-2/GC)·`build_d5_d6_gc.sh`(⑥/GC)·`build_d6.sh`(원본 ⑥).
+- **런타임 토글(env) — accel_hook.cc가 읽는 13개 전체**:
+  - **운영/측정**: `ACCEL_GC=1`(deadzone GC, 기본 off) · `ACCEL_AUTHORITATIVE=2`(verify-serve=walk+byte-compare 후 서빙)
+    `=1`(serve-only, walk skip=mode-1 출하 perf) `=0`(shadow, 기본) · `ACCEL_AUDIT_N=N`(mode-1 1-in-N walk-audit,
+    기본 1024; mode-1+N=0이면 거부→shadow) · `ACCEL_DRAIN_CAP=N`(⑥ stabilizer: dummy-drain per-cycle cap, 기본
+    0=무제한, **⑥-serving 권장 ≈1000**) · `ACCEL_CONSULT_FG=1`(FG-α, 기본 off=측정상 이득 0) · `ACCEL_GEN_GATE=0`
+    (진단: gen-gate 끄기, 기본 on) · `ACCEL_PUBLISH=0`(view-registry push 끄기=baseline, 기본 on).
+  - **ⓠ3/ⓝ6 측정(세션 11, read-only·기본 off=중립)**: `ACCEL_RETENTION_MS=N`(held-LLT retention reporter cadence ms,
+    0=off) · `ACCEL_RETENTION_CAP=N`(per-key chain-walk cap, 기본 512, 0=무제한; tail-only 거대체인 CPU-steal 방지) ·
+    `ACCEL_TAIL_ONLY=1`(in-process tail-only GC baseline; ⚠️ throughput ~5× confound, baseline은 실 InnoDB HLL 권장).
+  - **test/negative-control 전용**: `ACCEL_PK_MASK_BITS`·`ACCEL_NO_FULL_PK`·`ACCEL_NO_SCHEMA_CHECK`(강제 충돌/게이트
+    우회로 가드 작동 증명; 프로덕션 미사용).
+- 재현 스크립트: **Phase 2(세션 11)** = `build_q3_{pinned,realistic}.sh`(in-middle 헤드라인)·`build_q5_writeonly.sh`
+  (effective speedup)·`build_q6_coverage.sh`(LOB/virtual)·`build_q7_keys.sh`(composite/string-PK/secondary)·
+  `build_q8_savepoint.sh`(savepoint)·`build_q9_asan.sh`(full-mysqld ASan, ⚠️ mode-2; mode-1 ASan은 별도 필요).
+  C3 = `build_d5_c3.sh`·`build_d5_c3c.sh`·`build_d5_c3c_char.sh`(⑥ 특성화). FG+BG = `build_d5_alpha.sh`·
+  `build_d5_gctune{,2,3}.sh`. 그 외 `build_d5_c2.sh`·`build_d5_d6_gc.sh`·`build_d6.sh`(원본 ⑥).
 
-## 로드맵 (다음 작업) — GC-side 완료, 다음은 Phase 2
-[open-items.md](open-items.md) §0c가 마스터 트래커. **GC-side perf는 짜낼 만큼 짜냄**(C3 출하 ✅ · ⑥
-drain-cap stabilizer ✅ · β 구조적 불가 · α 측정상 null). 남은 것:
-- **Phase 2 — 워크로드 폭(우선)**: write-heavy+LLT에서 in-middle 이득(~5500× 헤드라인)이 실 InnoDB서 생존하나
-  (ⓠ3) · LOB/off-page/virtual(ⓝ6) · oltp_read_write 22% MISS effective speedup(ⓠ5) · savepoint(ⓝ15) ·
-  secondary-index/composite-PK(mode-1 출하 범위 밖이었음) · full-mysqld ASan/TSan(ⓝ5).
-- **Phase 3 — 논문**: InnoDB 패치 vendor(ⓣ10) · REPORT Limitations/Threats(ⓝ14) · multi-run/error-bar ·
-  **논문 한글본+영문본**(최종 산출물).
-- (낮은 우선순위) ⑤b 0.16s는 memoized-lineage 안전틀에서만(이미 0.22s reuse 있음) · cold-key 회수(ⓝ9).
+## 로드맵 (다음 작업) — GC-side ✅ + Phase 2 ✅, 다음은 Phase 3
+[open-items.md](open-items.md) §0d가 마스터 트래커. **GC-side perf 완료**(C3 출하·⑥ drain-cap·β 불가·α null) +
+**Phase 2 완료**(ⓠ3 in-middle 헤드라인 실 InnoDB 생존 20×/40×/63× · ⓠ5 effective ~34× · ⓝ6 LOB Limitation ·
+키 일반화·savepoint·full-mysqld ASan, 전부 construct_BAD=0). **남은 것 = Phase 3(논문) — 단, 신뢰성 게이트 3개 먼저**:
+- **(논문 전 하드 게이트)** ① **multi-run/error-bar**: 모든 헤드라인이 단일-run인데 ⑥는 non-deterministic(3/4 hold,
+  1/4 degrade) → 헤드라인 config N≥3–5 재측·median+min/max. ② **raw 로그 보존**: q*.log 미보존 → `integration/results/`로
+  아카이브·커밋(현재 repo 단독 재현 불가). ③ **cold-key 결정**: "memory ∝ live-txn window" 주장이 dataset 스코프선
+  cold-key(ⓝ9) 때문에 현재 미성립 → 회수 구현 or 주장 스코핑(Limitation).
+- **Phase 3 본체**: **논문 한글본+영문본**(최종 산출물) · REPORT Stage-D+Limitations(ⓝ14) · InnoDB 패치 vendor(.diff, ⓣ10).
+- (잔여, 낮은 우선순위) FTS/spatial/partition correctness · full-mysqld TSan(residual) · crash-recovery/ephemeral
+  rebuild(ⓣ17) · ⑤b 0.16s(이미 0.22s reuse) · mode-1 ASan run.

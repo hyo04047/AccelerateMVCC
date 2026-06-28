@@ -63,10 +63,11 @@ flowchart TD
 - **⑥ chain-sever → drain-cap으로 안정화** — GC storm이 navigation 경로 회수 시 consult가 정답 walk로 degrade였으나
   (construct_BAD=0 항상), **GC-tuning drain-cap(`ACCEL_DRAIN_CAP`≈1000)이 ⑥를 fragile(1/4 붕괴)→stable(0 붕괴)로**
   (design-D5-gc §13). α(FG cooperative reclaim)는 측정상 이득 0.
-- **Phase 2 ⓠ3 ✅ (세션 11)** — 프로젝트 중심 헤드라인(in-middle deadzone이 LLT 하 tail-only 압도)이 **실 InnoDB
-  write-heavy+LLT+HTAP에서 생존·확정**: 캐시 보존 bounded(~6–9k versions), InnoDB HLL은 LLT에 선형 증가 → **비율이
-  LLT 나이에 선형(20×/40×/63×@15/30/60s)**. 승리는 동시 read-view 리더의 gap을 요구(대조군 0.9×). 5-3 후퇴 트리거
-  안 됨. 상세 [phase2-q3-llt.md](phase2-q3-llt.md). **다음 = Phase 2 잔여(LOB·22% MISS·savepoint) → Phase 3(논문).**
+- **Phase 2 완료 ✅ (세션 11)** — **ⓠ3** 중심 헤드라인(in-middle deadzone이 LLT 하 tail-only 압도)이 **실 InnoDB
+  write-heavy+LLT+HTAP에서 생존·확정**(캐시 bounded ~6–9k, HLL은 LLT에 선형 → **비율 20×/40×/63×@15/30/60s**, 승리는
+  동시 read-view 리더 gap 요구=대조군 0.9×, 5-3 후퇴 트리거 안 됨) + **ⓠ5**(effective ~34× I/O-bound) + **ⓝ6**(LOB 안전
+  제외=Limitation) + **키 일반화·savepoint·full-mysqld ASan** 전부 construct_BAD=0. 상세 [phase2-q3-llt.md](phase2-q3-llt.md).
+  **다음 = Phase 3(논문 한글+영문·multi-run/error-bar·로그 보존·패치 vendor·cold-key 결정).**
   세션별 [progress-log.md](progress-log.md), 마스터 트래커 [open-items.md](open-items.md) §0d.
 
 | 트랙 | 상태 |
@@ -102,13 +103,20 @@ flowchart TD
   (held-reader deep read 64M 98s→0.16s[GC-off]/0.45s[GC-on], ~190~775×). 상세 [design-D.md](design-D.md)·
   [design-D4b-shadow.md](design-D4b-shadow.md).
 
-### ⑤ purge-view GC + serve under GC (진행 중)
+### ⑤ purge-view GC + serve under GC ✅ (GC-side 완료)
 - **목표**: 캐시 메모리를 working-set으로 유계(GC) + 그 위에서 정확하게 서빙. 설계 [design-D5-gc.md](design-D5-gc.md).
-- **⑤a-2 ✅**: deadzone GC를 InnoDB read-view(pushed clock + registry)로 구동 — 통합서 정확·효율·메모리 유계.
-- **5-2b 진행**: serve under GC — C1(interior-over-prune 오라클) ✅ · C2(mode-2 verify-serve 정확) ✅ ·
-  C3(mode-1 출하 hardening) 남음.
-- **남은 것**: ⑤b(0.16s 회복, FG+BG 트랙) · 워크로드 폭(LOB·write-heavy+LLT) · 논문(한글+영문). 마스터
-  트래커 [open-items.md](open-items.md).
+- **⑤a-2 ✅** deadzone GC를 InnoDB read-view로 구동(통합서 정확·효율·메모리 유계) · **5-2b ✅** C1(over-prune 오라클)·
+  C2(mode-2 verify-serve)·**C3(mode-1 안전 출하: gen-gate+walk-audit)** 완료 · **⑤b-lite ✅** · **FG+BG 스테이지 ✅**
+  (α 측정상 null · drain-cap이 ⑥ stabilizer; β 구조적 불가). 상세 [design-D5-gc.md](design-D5-gc.md) §9~§13.
+
+### Phase 2 — 워크로드 폭·correctness breadth ✅ (세션 11)
+- **ⓠ3** in-middle 헤드라인 실 InnoDB 생존(20×/40×/63×@LLT) · **ⓠ5** effective speedup(~34× I/O-bound, held reader HIT
+  ~100%) · **ⓝ6** LOB/off-page/virtual 안전 제외(Limitation) · **composite/string-PK·secondary-index·savepoint**
+  correctness · **full-mysqld ASan CLEAN**. 전부 construct_BAD=0. 상세 [phase2-q3-llt.md](phase2-q3-llt.md).
+
+### 남은 것 = Phase 3 (논문)
+- **논문 한글본+영문본**(최종 산출물) · multi-run/error-bar · raw 로그 보존 · InnoDB 패치 vendor · REPORT Limitations
+  · cold-key 회수 결정(구현 or 스코핑). 마스터 트래커 [open-items.md](open-items.md) §0d.
 
 ---
 

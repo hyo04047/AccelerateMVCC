@@ -7,6 +7,12 @@
 > **분류**: ⓠ 조용히 버려질 위험이 있는 목표 / ⓝ 논문 전 필요 / ⓣ 명시 추적(future work 가능) / ⓞ 진짜 optional.
 
 ## 0. 한 줄 진단
+> ⚠️ **아래 원본 진단(세션 8)은 대부분 해소됨 — 현재 진실은 §0d(세션 11) + §0c(세션 10).** GC는 통합서 ON·실제
+> sweep(⑤a-2), ⑥는 GC-on 생존+drain-cap 안정화, Phase 2(ⓠ3/ⓠ5/ⓝ6/키/savepoint/ASan) 완료. **현재 남은 진짜
+> 게이트(논문 신뢰성) = ① multi-run/error-bar 데이터 전무(⑥는 non-deterministic인데 단일-run) · ② raw 로그 미보존(repo
+> 단독 재현 불가) · ③ cold-key 미회수(ⓝ9)로 "memory ∝ live-txn window" 주장이 dataset 스코프선 미성립(스코핑 or 구현
+> 필요) · ④ 논문(한글+영문)·REPORT Limitations 부재.** 아래는 세션 8 원본(역사 보존):
+
 ⑥ 성능 payoff는 **GC-OFF 전제** 위에 있고, ⑤ bounded-memory는 **통합에서 한 번도 미실증**(GC 미기동). 측정된 성능
 기여(FG cooperative +30%)가 "optional"로 강등돼 계획에서 빠짐. 메모리 무한성장 구멍 2개가 "fix later/문서화"로
 방치. 정확성·커버리지는 **쉬운 단일-lineage 워크로드에서만** 측정. **논문 draft·분산(multi-run) 데이터는 어디에도
@@ -104,14 +110,16 @@
 
 ## ⓝ 논문 전 필요 (claim 뒷받침)
 
-1. **[blocker] ⑤ GC가 통합에서 한 번도 안 돌아 'bounded working-set memory' 전체 미실증** — `accel_hook.cc`(BG GC
-   NOT started); 5-2/5-2b/5-3 전부 미착수. 캐시는 설계상 무한 성장 중. **메모리 절반은 측정된 결과로서 아직 존재하지 않음.**
+1. **[CLOSED 세션 9~11] ⑤ GC가 통합에서 한 번도 안 돌아 'bounded working-set memory' 전체 미실증** — → **GC ON·통합
+   sweep(⑤a-2)**, ⓠ3서 캐시 live_versions bounded(~6–9k)·∝LLT window 실증. 잔여: cold-key(ⓝ9)로 dataset 스코프 무한성장은
+   별개(스코핑/구현 필요). (원본: BG GC NOT started, 캐시 무한 성장 중.)
 2. **[blocker] M2 interior-over-prune wrong-serve oracle 미구축; serve+GC 동시 미검증** — `design-D5-gc §6 M2 / §7 5-2b`.
    GC+serve에서 중간-과회수가 fallback 없이 틀린 older image 서빙(유일한 비-perf-only 과회수). serve는 그래서 OFF 유지 중.
    → directed oracle(known-live view 누락 → wrong-HIT 검출) 구축 + adjacency 재검증/contiguity 무효화.
 3. **serve(ACCEL_AUTHORITATIVE) 기본 OFF; perf를 내는 mode-1의 GC-on correctness 미검증** — 출하 기본은 speedup 0(shadow).
-4. **serve correctness가 sysbench 2종에서만 입증 — 새 워크로드마다 새 결함 발견 이력**(oltp_read_write서 construct_BAD=18625
-   터짐). FTS/spatial/partition/composite-PK/secondary-index/savepoint 미검증.
+4. **[부분 CLOSED 세션 11] serve correctness가 sysbench 2종에서만 입증** — → **composite-PK(a,b)·string-PK·secondary-index·
+   savepoint 전부 construct_BAD=0**(세션 11, §0d). **잔여 = FTS/spatial/partition 미검증**(Phase 3). (원본: 새 워크로드마다
+   새 결함 발견 이력, oltp_read_write construct_BAD=18625 터짐.)
 5. **[부분 CLOSED 세션 11] 최종검증 매트릭스(full mysqld ASan+TSan)** — → **full-mysqld ASan CLEAN**(drainer‖consult‖
    reader‖GC‖teardown, 리포트 0·construct_BAD=0·GC 작동, `build_q9_asan.sh`). 잔여: full-mysqld **TSan**(documented
    residual, standalone TSan이 race 표면 덮음)·LOB-heavy/FTS/spatial은 ⓝ6서 LOB 안전 실증(FTS/spatial 별도).
@@ -147,7 +155,8 @@
 5. reinsert false-link(리뷰 A7)·same-trx tie-break는 **경험적(construct_BAD=0)으로만** 닫힘, 구조적 증명 아님.
 6. oltp_read_write delete+reinsert full-PK FNV byte-identity(populate↔consult) — cross-gen 오염의 근원, 78% HIT의 이유.
 7. instant-DDL: 거친 whole-table 게이트; cross-era byte-risk negative control은 "best-effort"(결정적 아님).
-8. FG cooperative 토글 기본 ON이나 "Stage C-2 ablation isolator"로 기술 — 출하 컴포넌트인지 ablation knob인지 모호.
+8. FG 토글 2개 구분(명확화 세션 11): **standalone `fg_unlink_enabled_` 기본 ON**(Stage C-2 ablation isolator) vs **integration
+   `ACCEL_CONSULT_FG`/`consult_fg_reclaim_` 기본 OFF**(§0c서 측정상 이득 0 → ablation knob). 둘 다 ablation knob, 출하 경로 아님.
 9. Stage-C 헤드라인은 controlled threading(스레드≤코어) 필요 — oversubscribe(실서버 상시)서 약함, 벤치 제약으로 우회.
 10. InnoDB 소스 패치(row0vers/read0types/trx0rec)가 레포 밖 빌드스크립트로만 적용, vendor 안 됨 → 레포만으로 재현/감사 불가. 적대적-리뷰 종합본도 레포 밖.
 11. changes_visible 미러가 check_trx_id_sanity 생략 — release 동치 "주장"만, vanilla와 differential 테스트 없음.
@@ -173,7 +182,8 @@
 ## ⚠️ sweeper가 놓쳤을 수 있는 곳 (추가 점검 대상)
 - progress-log.md 301줄 line-by-line(초기 증분 deferral이 design 문서에 미전파).
 - design-D §0/§4 Stage-D DoD vs ⑥ 실측(⑥-latency 외에 silent rescope된 DoD 항목 가능 — 동시 HTAP, 60s LLT).
-- accel_hook 종료 순서 vs in-flight consult(teardown-vs-consult window, 통합 ASan/TSan 미실행).
+- accel_hook 종료 순서 vs in-flight consult(teardown-vs-consult window) → **[세션 11] full-mysqld ASan서 clean
+  shutdown 포함 스트레스 통과(`build_q9_asan.sh`), 리포트 0.** 잔여: full-mysqld TSan(residual).
 - epoch_reclaimer retire/Guard 전문을 roll_pred multi-hop chase에 직접 대조(0.16s-under-GC가 이 메커니즘에 의존).
 - 빌드 플래그: 우리 소스 `-w`로 **모든 경고 억제**(통합), standalone detect_leaks=0.
 - trxManager가 통합서 GC 입력에 vacuously-passing assertion 만드는지 end-to-end.
