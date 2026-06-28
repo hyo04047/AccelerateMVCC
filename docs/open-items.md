@@ -65,6 +65,7 @@
 - **ⓠ3 부산물**: ① in-process tail-only 캐시 모드(`ACCEL_TAIL_ONLY`)는 throughput을 ~5× 떨어뜨려(시간에 따라 악화) apples-to-apples baseline 부적합 → **실 InnoDB HLL을 baseline으로**(더 정직). ② metric 단위 교훈: `drained−epochs_retired`는 version과 epoch를 섞어 승리를 ~2×로 가렸음 → `drained−entries_retired`(version 단위)로 63× 회복.
 - **ⓠ5(22% MISS effective speedup) CLOSED — 긍정 해소** — held analytic reader(캐시의 실 타깃)는 write-heavy+delete/insert churn에서도 **HIT ~99.8–100%**(held snapshot이 churn 전이라 reader는 원본 행만 필요=캐시됨; 22% MISS는 head 근처 *짧은 reader*의 workload-wide 수치로 캐시 불필요 대상). effective speedup: resident ~3×, **I/O-bound(64M) ~34×**(undo I/O 23,783→352), construct_BAD=0 전부. oltp_read_write workload-wide HIT도 78%→94%(세션8 수정). 재현 `build_q5_writeonly.sh`. 상세 phase2-q3-llt.md ⓠ5 섹션.
 - **ⓝ6(LOB/off-page/virtual 커버리지) CLOSED — 정직한 limitation** — LOB/off-page(`rec_offs_any_extern`)/virtual(`n_v_cols`)/>512B 행은 캡처 시 img_len=0 → **MISS_INELIGIBLE → vanilla walk**. 4 변형 실측(small/big-in-page/off-page-LOB/virtual): 제외 행 **ineligible 100%·construct_BAD=0·served=0**(off-page LOB도 부분 image 안 서빙=안전 핵심 실증), small 대조군 HIT 100%. 커버리지는 LOB-heavy서 ~0 붕괴하나 **무해**(graceful vanilla degrade). big-row vanilla deep read 82.7s=캐시가 가장 필요한데 cap이 막음 → **캐시 scope=small-row OLTP**(논문 Limitation). future-work=configurable cap/in-page prefix. 재현 `build_q6_coverage.sh`. 상세 phase2-q3-llt.md ⓝ6 섹션.
+- **composite-PK/string-PK/secondary-index(ⓝ4 일부) + savepoint(ⓝ15) CLOSED — 전부 안전** — mode-2 verify-serve(4G resident): composite PK(a,b)+secondary-index 읽기 **HIT 2000/2000·construct_BAD=0**, VARCHAR string PK **HIT 1000/1000·construct_BAD=0**(full-PK FNV가 multi-col·string 일반화). savepoint rollback: ground truth rolled-back +1000 누출 0·held reader snapshot invariant·**construct_BAD=0**(rolled-back 버전 절대 미서빙; 보수적 noncontig MISS→vanilla로 degrade, ~50% MISS는 coverage 비용). 재현 `build_q7_keys.sh`·`build_q8_savepoint.sh`. **방법론 교훈: correctness 체크는 4G resident+짧은 churn(깊은 체인 불필요)**; 64M+깊은 churn+secondary 간접참조는 병리적으로 느림(16분 hang 1회). 상세 phase2-q3-llt.md.
 
 **진행/부분(세션 11):**
 - ⓠ4(⑥ realistic) 부분 보강 — held-reader 체인 깊이 flat(~90 epochs) 재확인. 동시 HTAP latency 별도.
@@ -127,8 +128,9 @@
     동시-purge stress 미실행.** push-buffer seqlock·generate_dead_zone sort/assert도 must-fix 미적용.
 13. **view-reuse ADD-on-open 완결성(superset 정리의 경험적 다리, hit_MISMATCH=0 under GC) 미입증** — GC-on(5-2) 필요.
 14. **REPORT.md가 Stage C에 frozen, Stage-D Limitations/Threats 섹션 없음** — 보고서만 읽으면 위 리스크를 전혀 모름.
-15. **savepoint-rollback false-HIT가 serve서 미봉합** — contiguity가 MISS 못 시킴; pre-4d committed-only/re-anchor 게이트
-    미확정. shadow byte-compare가 잡지만 serve는 net 없음.
+15. **[CLOSED 세션 11] savepoint-rollback false-HIT** — → **측정 완료(mode-2 verify-serve): construct_BAD=0**.
+    consult가 rolled-back(미커밋) 버전을 절대 안 서빙 — savepoint가 contiguity 깨면 보수적 noncontig MISS→vanilla로
+    degrade(~50% MISS=coverage 비용, correctness 보존). 재현 `build_q8_savepoint.sh`. 상세 phase2-q3-llt.md, §0d.
 
 ---
 

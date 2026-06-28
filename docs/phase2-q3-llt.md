@@ -164,6 +164,42 @@ is double-gated on `n_v_cols == 0`.
 - Future work (optional): a configurable cap, or caching the in-page prefix + a locator for the off-page
   part. Full-LOB caching contradicts the compact-cache design and is not planned.
 
+---
+
+# Phase 2 / correctness breadth — composite PK, string PK, secondary-index, savepoint (2026-06-28)
+
+> **Result: all safe (construct_BAD=0).** The cache was validated only on a single INT PK; here it
+> generalizes — a 2-column composite PK, a VARCHAR string PK, and secondary-index-driven reads all HIT 100%
+> and serve byte-correct. Savepoint rollback (a partial rollback whose undone version was never committed but
+> WAS captured) never produces a false-HIT — consult either finds the correct version or conservatively
+> MISSes (noncontig) to the vanilla walk. mode-2 verify-serve, 4G resident, GC off.
+
+## Composite / string PK + secondary-index (light config: correctness, not latency)
+| variant | consult HIT | construct_BAD | served |
+|---|---|---|---|
+| composite PK `(a,b)` + secondary-index read (`FORCE INDEX`) | 2000 (100%) | 0 | 2000 |
+| string PK `VARCHAR(40)` | 1000 (100%) | 0 | 1000 |
+
+The cache keys on FNV(full-PK bytes) from the first `n_unique` fields, so multi-column and string PKs are
+captured and matched correctly. Secondary-index reads hit the same consult — the MVCC walk happens on the
+clustered record regardless of access path. (Repro `integration/scripts/build_q7_keys.sh`.)
+
+## Savepoint rollback (ⓝ15)
+Churn = txns that commit a `+1` to one row but `ROLLBACK TO SAVEPOINT` a `+1000` to another. Ground truth
+after churn: `MAX(k)=916, rows_with_leak=0` — every `+1000` was rolled back (never committed). Held reader:
+snapshot-invariant (`MAX(k)=0 < 1000`, no rolled-back value visible). consult: **construct_BAD=0** (hit=491,
+noncontig MISS=509, served=491) — the rolled-back versions, captured before the rollback, are NEVER served:
+consult either serves the correct committed version or, where the savepoint structure breaks contiguity,
+conservatively MISSes to the vanilla walk. ~50% MISS is a coverage cost on savepoint-heavy txns; correctness
+is preserved. (Repro `integration/scripts/build_q8_savepoint.sh`.)
+
+## Methodology note (latency vs correctness configs)
+A correctness check (construct_BAD=0) needs neither deep chains nor a small BP — run it RESIDENT (4G) with a
+short churn so the held deep read is fast. A composite-PK + secondary-index deep read at 64M with a long
+churn is pathologically slow (the FORCE INDEX scan walks every row's deep chain via the secondary index,
+×2 under mode-2) and is the wrong tool for a correctness gate. Reserve small-BP / deep-churn for explicit
+latency measurements (ⓠ3/ⓠ5/⑥).
+
 ## What this closes / what remains
 - **Closes ⓠ3** (the central 5-3 retreat worry): the in-middle headline survives in real InnoDB and scales
   with LLT, given the HTAP gap.
@@ -171,5 +207,6 @@ is double-gated on `n_v_cols == 0`.
   and correct. The MISS worry was a misframing (short readers the cache doesn't target).
 - **Closes ⓝ6**: LOB/off-page/virtual/>512B rows are safely excluded (construct_BAD=0); coverage collapses
   on LOB-heavy but degrades gracefully to vanilla. Documented Limitation; cache scope = small-row OLTP.
-- Remaining Phase 2: savepoint (ⓝ15), secondary-index/composite-PK, full-mysqld ASan/TSan (ⓝ5). Then Phase 3
-  (paper, incl. this Limitation).
+- **Closes composite-PK / string-PK / secondary-index (part of ⓝ4) + savepoint (ⓝ15)**: all construct_BAD=0;
+  the cache generalizes past single-INT-PK and degrades safely on savepoint complexity.
+- Remaining Phase 2: full-mysqld ASan/TSan (ⓝ5). Then Phase 3 (paper, incl. the ⓝ6 Limitation).

@@ -20,7 +20,11 @@
 - **Phase 2 ⓝ6 CLOSED (세션 11)** — LOB/off-page/virtual/>512B 행은 캡처 시 제외(`trx0rec.cc` 게이트 +512B cap)
   → MISS_INELIGIBLE→vanilla. 4 변형 실측: 제외 행 **ineligible 100%·construct_BAD=0**(off-page LOB 부분 image
   안 서빙=안전 핵심)·small HIT 100%. 커버리지 LOB-heavy서 ~0 붕괴하나 무해 → **캐시 scope=small-row OLTP**(정직한
-  Limitation). 재현 `build_q6_coverage.sh`. **다음 = Phase 2 잔여**(savepoint ⓝ15·secondary-index/composite-PK·full-mysqld ASan/TSan ⓝ5) → Phase 3(논문).
+  Limitation). 재현 `build_q6_coverage.sh`.
+- **Phase 2 correctness breadth CLOSED (세션 11)** — composite-PK(a,b)+secondary-index·string-PK·savepoint
+  전부 **construct_BAD=0**(mode-2 verify-serve, 4G resident). 캐시가 single-INT-PK 너머 일반화·savepoint는 graceful
+  MISS로 안전. 재현 `build_q7_keys.sh`·`build_q8_savepoint.sh`. **Phase 2 잔여 = full-mysqld ASan/TSan(ⓝ5) 하나** → Phase 3(논문).
+  ⚠️ 방법론: correctness 체크는 4G resident+짧은 churn(64M+깊은 churn+secondary는 병리적 느림).
 - **1차 목표 A+B+C 완료**, **최종 D 완료** (populate → consult → authoritative serve → ⑥ 성능 payoff).
 - **⑤a-2 완료** — deadzone GC가 통합 mysqld 안에서 실제로 돈다(pushed InnoDB clock + active-view registry,
   amortized windowed sweep, construct_BAD=0·race/UAF 0·메모리 유계). **5-2b C1·C2 완료**(mode-2 verify-serve가
