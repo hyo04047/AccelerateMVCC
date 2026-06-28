@@ -314,16 +314,19 @@ void retention_loop() {
     size_t p50 = 0;
     if (m > 0) { std::sort(lens, lens + m); p50 = lens[m / 2]; }
     uint64_t drained = g_drained.load(std::memory_order_relaxed);
-    uint64_t ent_ret = g_accel->entries_retired();   // VERSIONS freed (clean unit)
+    uint64_t ent_ret = g_accel->entries_retired();   // VERSIONS freed via GC retire
+    uint64_t dropped = g_accel->versions_dropped();   // ⓝ9: versions NOT cached (table full) -> freed immediately
     long tms = (long)std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - g_t0).count();
-    // live_versions = versions inserted (drained) - versions freed (entries_retired): the cache's retained
-    // version count, directly comparable to InnoDB's History List Length. (max/p50 are EPOCH-chain depth.)
+    // live_versions = drained - entries_retired - versions_dropped: the cache's retained version count,
+    // comparable to InnoDB's History List Length. Subtracting dropped keeps it honest when the table is full
+    // (uncached fallback traffic is in `drained` but its node was freed immediately). (max/p50 = EPOCH depth.)
     std::fprintf(stderr,
                  "[accel] retention: t_ms=%ld max=%zu p50=%zu capped=%zu keys=%u sampled_sum=%zu "
-                 "drained=%llu entries_retired=%llu live_versions=%lld long_live=%zu\n",
+                 "drained=%llu entries_retired=%llu dropped=%llu live_versions=%lld headers=%llu long_live=%zu\n",
                  tms, mx, p50, n_capped, m, ssum, (unsigned long long)drained,
-                 (unsigned long long)ent_ret,
-                 (long long)((long long)drained - (long long)ent_ret), g_accel->long_live_size());
+                 (unsigned long long)ent_ret, (unsigned long long)dropped,
+                 (long long)((long long)drained - (long long)ent_ret - (long long)dropped),
+                 (unsigned long long)g_accel->headers_created(), g_accel->long_live_size());
   }
 }
 }  // namespace

@@ -134,21 +134,42 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
             header->note_newest(version_trx_id, wtrx);   // D-4 4b-2: contiguity bookkeeping
         }
     } else {
-        auto *epoch = new epoch_node(epoch_num, version_trx_id, undo_entry, nullptr);
+        // NEW KEY. ⓝ9 graceful non-admission: the cuckoo table has a fixed capacity (bin count = kuku_log2).
+        // Once it is full, admit no more keys -- the key is simply not cached (consult MISS -> InnoDB vanilla
+        // walk, correct, no benefit). The old code new'd a header, registered its epoch, then let a FAILED
+        // kuku insert leak both AND re-fire on every later update of that key -> unbounded churn (200k-key
+        // run: 2.6M headers) + corruption. Two rules make this safe + bounded:
+        //   (1) if we already know the table is full, skip BEFORE touching Kuku (free only the version node);
+        //   (2) on the FIRST failing insert, set kuku_full_ and do NOT delete the header -- a failed cuckoo
+        //       path may have already published the header pointer into a slot, so deleting it would dangle
+        //       that slot (UAF). That one header is the bounded residual; rule (1) blocks all further keys.
+        // Capacity is sizable (kuku_log2=16 in integration); size it >= the hot working set. (True cold-key
+        // EVICTION -- freeing cold headers to admit new hot keys under lock-free readers -- is deferred.)
+        if (kuku_full_.load(std::memory_order_relaxed)) {
+            delete undo_entry;   // never reached Kuku; owns its img/pk, frees them
+            versions_dropped_.fetch_add(1, std::memory_order_relaxed);  // ⓝ9: uncached fallback (keep live_versions honest)
+            return false;
+        }
         auto *header = new interval_list_header();
+        auto value = reinterpret_cast<std::uint64_t>(header);
+        kuku::set_value(value, item);
+        if (!kuku_table->insert(item)) {
+            kuku_full_.store(true, std::memory_order_relaxed);   // stop admitting
+            delete undo_entry;   // SAFE: only the header pointer can be in Kuku, never undo_entry
+            versions_dropped_.fetch_add(1, std::memory_order_relaxed);
+            return false;        // header intentionally NOT deleted (failed cuckoo path may hold its ptr)
+        }
+        headers_created_.fetch_add(1, std::memory_order_relaxed);  // ⓝ9: footprint (one per ADMITTED key)
+        auto *epoch = new epoch_node(epoch_num, version_trx_id, undo_entry, nullptr);
         epoch->header = header;
         header->next_epoch_num = epoch_num;
         header->next.store(epoch, false);
-        auto value = reinterpret_cast<std::uint64_t>(header);
-
-        kuku::set_value(value, item);
-
         epoch_table->insert(epoch);
         undo_entry->roll_pred = header->newest_node.load(std::memory_order_relaxed);  // D-5: nullptr (first version for this new header)
         header->newest_node.store(undo_entry, std::memory_order_release);
         header->node_count.fetch_add(1, std::memory_order_relaxed);
         header->note_newest(version_trx_id, wtrx);   // D-4 4b-2: contiguity bookkeeping
-        return kuku_table->insert(item);
+        return true;
     }
 
     return false;

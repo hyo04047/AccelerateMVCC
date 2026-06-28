@@ -131,8 +131,13 @@
    비교는 ⑤(GC-off). → 통합은 read-latency(⑥)만 증명, 메모리/체인 우위는 실 InnoDB서 미증명.
 8. **[memory 무한성장] overflow reservation floor가 monotone-down·never reset → >256 reader가 reclaim 영구 pin** —
    `active_view_registry.h:133-148`, `epoch_reclaimer.h`. fix(count 0이면 reset / MAX>max_connections) 미적용.
-9. **[memory 무한성장] cold-key header + Kuku slot 영구 미회수 → O(distinct keys) 성장** — `design-D5-gc §6`.
-   "memory ∝ live-txn window, not dataset"(One-shot-GC 대비 차별점)와 직접 모순. Kuku erase + head-skip 완화 필요.
+9. **[부분 CLOSED 세션 11(2026-06-29)] cold-key header + Kuku slot 미회수** — → **측정+graceful fix**: `headers_created`
+   카운터로 footprint=admitted distinct 키 수(헤더 ~72B, GC 무관) 정량화. **용량 아래선 plateau**(40k 키→headers 40,534·
+   live_versions GC-bounded ~42k). **용량 초과(>Kuku ~0.66×2^kuku_log2)서 old churn(2.6M headers)/crash를 graceful
+   non-admission으로 fix**(`kuku_full_` 세팅·실패 header 미삭제[UAF 회피]·초과 키는 vanilla fallback): 200k 키→headers
+   43,432 plateau·live_versions bounded·dropped 1.75M·**construct_BAD=0·crash 없음**. **"memory ∝ working set" 주장은
+   이제 Kuku 용량 안에서 defensible**(kuku_log2를 hot working set≥로 sizing). **잔여 = 진짜 cold-key EVICTION**(LRU,
+   shifting working set 추적; Kuku erase+EBR=lock-free race, 별도 스테이지로 deferral, 사용자 합의). standalone 40+ASan/TSan 29 green.
 10. **EPOCH_SIZE=100 등 blind 상수 — sparse 실 DB_TRX_ID에선 head-prepend가 per-version 발화, epoch batching 무력화** —
     `common.h:9-10`. rank-map 재척도(5-1로 이연, 5-2 미착수라 사실상 미적용).
 11. **signal B publish 비용(B-vs-D 결정) 1개 thread count에서만 측정** — 32/64/128 sweep + view_open 발화율 미측정(§8 open Q).

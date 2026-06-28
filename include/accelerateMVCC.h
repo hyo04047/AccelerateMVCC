@@ -287,6 +287,29 @@ namespace mvcc
         uint64_t epochs_retired_dummy()    const { return epoch_table->epochs_retired_dummy(); }
         // ⓠ3: VERSIONS freed (clean live-version count = drained - entries_retired, comparable to HLL).
         uint64_t entries_retired() const { return epoch_table->entries_retired(); }
+
+        // ⓝ9 (cold-key footprint): distinct keys that ever got an interval_list_header (bumped once, the
+        // first time a key is seen). Headers + their Kuku slots are NEVER reclaimed (no erase / head-skip),
+        // so this == the LIVE header count = the O(distinct-keys-ever-touched) memory that the "memory ∝
+        // live-txn window, not dataset" claim does NOT cover. A workload that touches ever-new keys uses this
+        // to quantify the cold-key growth (vs live_versions, which GC keeps bounded).
+        std::atomic<uint64_t> headers_created_{0};
+        uint64_t headers_created() const { return headers_created_.load(std::memory_order_relaxed); }
+
+        // ⓝ9 graceful non-admission: set once a cuckoo insert fails (the Kuku table is full). After that,
+        // new keys are skipped cheaply (consult MISS -> vanilla walk, correct) instead of the old unbounded
+        // header churn. We do NOT delete a header whose insert failed -- a failed cuckoo path may have
+        // already published its pointer into a slot, so a delete would dangle it (UAF). One leaked header
+        // (the failing one) is the bounded residual; kuku_full_ then blocks all further attempts.
+        std::atomic<bool> kuku_full_{false};
+        bool kuku_full() const { return kuku_full_.load(std::memory_order_relaxed); }
+
+        // ⓝ9: versions dropped on non-admission (the key wasn't cached because the table is full). Their
+        // undo_entry is freed immediately (NOT via the GC retire path), so they land in `drained` but not in
+        // entries_retired -- subtract them to keep live_versions = drained - entries_retired - versions_dropped
+        // accurate (else the uncached fallback traffic inflates it). 0 below capacity, so ⓠ3 is unaffected.
+        std::atomic<uint64_t> versions_dropped_{0};
+        uint64_t versions_dropped() const { return versions_dropped_.load(std::memory_order_relaxed); }
         // Stage 1c-3: orphan wrappers pending in the dummy-overflow stack (test-only).
         size_t dummy_pending() const { return epoch_table->dummy_pending(); }
         // Stage 1c-6: GC long-lived-bucket vector size (test-only; bounded by compaction).

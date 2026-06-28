@@ -261,6 +261,49 @@ Full-mysqld TSan is a documented residual: the standalone TSan already exercises
 drainer, read-only EBR-guarded consult), and MySQL-under-TSan needs the upstream suppression file and a
 5–10× slowdown for low marginal value over the standalone result.
 
+---
+
+# Phase 2 / ⓝ9 — cold-key footprint: measured, and the overflow "blow-up" fixed (2026-06-29)
+
+> **Result: the cache footprint is BOUNDED, and exceeding the cuckoo table's capacity now degrades
+> GRACEFULLY (it used to churn/crash).** A per-key `headers_created` counter shows the cold-key footprint =
+> the number of distinct keys ever admitted (an `interval_list_header` + Kuku slot per key, ~72 B, never
+> freed). Below the cuckoo capacity it plateaus at the touched key set while the GC keeps live VERSIONS
+> bounded; above capacity, a new graceful non-admission path caps it cleanly instead of leaking unboundedly.
+
+## What we measured (new `headers` / `dropped` / `versions_dropped` counters)
+- **Below capacity (40k-key table, GC on, uniform):** `headers` rises to **40,534 and PLATEAUS** (= distinct
+  keys touched, never more); `live_versions` holds at **~42k** (GC-bounded) while `drained` reaches 2.8 M. So
+  for a fixed key set the cache is bounded on BOTH axes — versions (GC) and headers (= the key set).
+- **The cold-key footprint is small + capacity-bounded:** ~72 B/key × (≤ cuckoo capacity). It is NOT the
+  version memory (GC bounds that); it is the per-key header that is never reclaimed.
+
+## The real limit found + fixed: cuckoo capacity + graceful non-admission
+The integration sizes Kuku at `kuku_log2 = 16` (65,536 bins, 2 hash funcs). A 200k-key table exceeds it:
+- **Before:** a failed cuckoo insert leaked the just-`new`'d header AND re-fired on every later update of that
+  key → **unbounded churn** (`headers` → **2.6 M** for a 200k-key table) + corruption. (A naive "free the
+  header on insert-failure" fix CRASHED — a failed cuckoo path may have already published the header pointer
+  into a slot, so deleting it dangles that slot = UAF.)
+- **After (graceful non-admission, `accelerateMVCC.cpp`):** once an insert fails, set `kuku_full_` and admit
+  no more keys; skip them cheaply (free only the version node, never the header — UAF-safe) so the uncached
+  key falls back to the InnoDB vanilla walk. **Measured (200k-key table):** `headers` plateaus at **43,432**
+  (cuckoo effective capacity ≈ 0.66 load), `live_versions` bounded at **~43,800**, `dropped` (uncached
+  fallback) grows to **1.75 M** (≈ 77% of updates — keys beyond capacity), **construct_BAD = 0** (admitted
+  keys serve correctly; non-admitted MISS → vanilla), **no crash**. (`versions_dropped` is subtracted from
+  `live_versions` so the uncached fallback traffic — in `drained` but freed immediately — doesn't inflate it.)
+  Standalone 40 green + ASan/TSan (the change is behaviour-neutral below capacity, which standalone never
+  exceeds). Repro `integration/scripts/build_q3_realistic.sh`-style with a >`kuku_log2` table + `ACCEL_GC=1`.
+
+## Honest claim + what remains
+- **"memory ∝ live working set"** is now defensible *within the cuckoo capacity*: live versions are GC-bounded
+  and headers are bounded by the admitted key set (≤ ~0.66 × 2^`kuku_log2`). Size `kuku_log2` ≥ the hot
+  working set.
+- **Deferred (decided with the user): true cold-key EVICTION.** The cache still has no LRU — once full it
+  keeps the first-come keys and falls back the rest (no admission of newer hot keys until restart). Freeing
+  cold headers + Kuku slots under lock-free readers is a real concurrency feature (Kuku erase + EBR, UAF
+  risk) and is scoped as its own stage. The graceful fix removes the "blow-up"; eviction would let the cache
+  track a *shifting* working set within a fixed capacity.
+
 ## What this closes / what remains
 - **Closes ⓠ3** (the central 5-3 retreat worry): the in-middle headline survives in real InnoDB and scales
   with LLT, given the HTAP gap.
