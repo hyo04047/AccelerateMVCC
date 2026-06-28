@@ -272,6 +272,8 @@ namespace mvcc {
         deadzone *published_deadzone() const {
             return published_deadzone_.load(std::memory_order_acquire);
         }
+        // D-5 GC-tuning: set the per-cycle dummy-drain reclaim cap (0 = unlimited). See drain_dummy.
+        void set_dummy_drain_cap(uint64_t c) { dummy_drain_cap_.store(c, std::memory_order_relaxed); }
 
 // TODO : when this function is called ?? - every 25(EPOCH_TABLE_SIZE/4) times! 50, 75, 100 …
         //  -> do not start at 25!
@@ -584,6 +586,15 @@ namespace mvcc {
         // a concurrent insert_to_dummy pusher may hold its Guard.
         void drain_dummy(deadzone *dz) {
             epoch_node_wrapper *w = dummy_head_.exchange(nullptr, std::memory_order_acq_rel);
+            // D-5 GC-tuning: cap the number of orphan epochs RECLAIMED per drain call (0 = unlimited = the
+            // original behavior). Under small-BP purge starvation a huge interior run overflows to the dummy
+            // stack and the uncapped drain reclaims it ALL in one burst -- the reclaim STORM that severs a
+            // held reader's navigation chain in one shot (design-D5-gc §12.2). Capping spreads the reclaim
+            // over many GC cycles (dead-but-over-cap orphans are re-queued and reclaimed next cycle), so the
+            // held reader's lineage is cut gradually -- it can finish its deep scan before the cut completes,
+            // stabilizing the ⑥ payoff. Cost: a looser, transiently-larger working set (memory-vs-payoff dial).
+            const uint64_t cap = dummy_drain_cap_.load(std::memory_order_relaxed);
+            uint64_t reclaimed = 0;
             while (w != nullptr) {
                 epoch_node_wrapper *next = w->next.ptr();    // save before we free/re-push w
                 epoch_node *en = w->epoch;
@@ -592,10 +603,11 @@ namespace mvcc {
                              en->state.load(std::memory_order_acquire) == EPOCH_CHAIN_DETACHED);
                 bool is_head = en != nullptr && en->header != nullptr &&
                                en->header->next.ptr() == en;
-                if (dead && !is_head) {
+                if (dead && !is_head && (cap == 0 || reclaimed < cap)) {
                     epochs_retired_dummy_.fetch_add(1, std::memory_order_relaxed);  // D-5 ⑤a-2: source split
                     detach_and_retire_epoch(en);
                     reclaimer_.retire([w] { delete w; });
+                    ++reclaimed;
                 } else {
                     epoch_node_wrapper *head = dummy_head_.load(std::memory_order_acquire);
                     while (true) {                            // re-queue onto the (live) stack
@@ -651,6 +663,9 @@ namespace mvcc {
         // one leaks at shutdown by design (no next cycle to supersede+retire it), matching
         // the index's existing intended-leak posture; superseded ones are EBR-reclaimed.
         std::atomic<deadzone *> published_deadzone_{nullptr};
+        // D-5 GC-tuning: max orphan epochs the dummy drain reclaims per cycle (0 = unlimited). Caps the
+        // small-BP reclaim storm so a held reader's chain is severed gradually, not in one shot. See drain_dummy.
+        std::atomic<uint64_t> dummy_drain_cap_{0};
         // Stage 1c retire-once conservation counters (see epochs_detached()/epochs_retired()).
         std::atomic<uint64_t> epochs_detached_{0};
         std::atomic<uint64_t> epochs_retired_{0};

@@ -330,6 +330,11 @@ TEST(Consult, CutsGcConcurrencyDrainerConsultGc) {
     ins.join();
     gc.join();
     for (auto& t : cs) t.join();
+    // deterministic finalization: drive a few GC cycles single-threaded so retired>0 is not timing-flaky (the
+    // GC thread may not have reached a PERIOD boundary before the run ended; bad/hits reflect the concurrent run).
+    { std::vector<ViewCut> fcuts = { {BASE + 1 + NV, BASE + 1 + NV} };
+      for (int c = 1; c <= 40; ++c)
+        m.run_gc_cycle_from_cuts(BASE + 1 + (uint64_t)c * 2500, fcuts, ActiveViewRegistry<>::NO_FLOOR); }
     EXPECT_FALSE(bad.load()) << "a HIT returned a torn / cross-key / too-new image under concurrent cuts-GC";
     EXPECT_GT(hits.load(), 0u) << "readers never HIT the live head -> the concurrency edge was not exercised";
     EXPECT_GT(m.epochs_retired(), 0u) << "GC reclaimed nothing -> the reclaim || insert || consult edge was vacuous";
@@ -545,6 +550,11 @@ TEST(Consult, GenGateConcurrentRetireNoWrongServe) {
     for (int i = 0; i < 4; ++i) cs.emplace_back(consultor, i);
     ins.join(); gc.join();
     for (auto& t : cs) t.join();
+    // deterministic finalization: the concurrent run can end before the GC retired anything, so drive a few GC
+    // cycles single-threaded -> retired>0 / gen bumps are not timing-flaky (bad still reflects the concurrent phase).
+    { std::vector<ViewCut> fcuts = { {BASE + 1 + NV, BASE + 1 + NV} };
+      for (int c = 1; c <= 40; ++c)
+        m.run_gc_cycle_from_cuts(BASE + 1 + (uint64_t)c * 2500, fcuts, ActiveViewRegistry<>::NO_FLOOR); }
     EXPECT_FALSE(bad.load()) << "a mode-1 (gated) HIT returned a torn / cross-key / too-new image under concurrent GC";
     EXPECT_GT(m.epochs_retired(), 0u) << "GC reclaimed nothing -> the reclaim||consult edge under the gate was vacuous";
     uint64_t gen_sum = 0;
@@ -585,7 +595,9 @@ TEST(Consult, ConsultFgReclaimRaceSafeAndPrunes) {
             head_writer[k].store(wr, std::memory_order_release);
             g_step.store((uint64_t)step, std::memory_order_release);
         }
-        stop.store(true, std::memory_order_release);
+        // NB: do NOT stop here -- let the GC drain the aged-epoch backlog and the consults FG-prune it first
+        // (deterministic engagement). Stopping the instant the inserter finishes can leave retired /
+        // coop_dead_seen at 0 if the run ended before the GC/consult reached steady state (timing-flaky).
     });
     std::thread gc([&] {
         const uint64_t PERIOD = 2500; uint64_t last_norm = 0;
@@ -624,7 +636,13 @@ TEST(Consult, ConsultFgReclaimRaceSafeAndPrunes) {
     };
     std::vector<std::thread> cs;
     for (int i = 0; i < 4; ++i) cs.emplace_back(consultor, i);
-    ins.join(); gc.join();
+    ins.join();
+    // let the GC reclaim the aged epochs and the consults FG-prune them before stopping (deterministic
+    // engagement -- otherwise retired / coop_dead_seen can be 0 if the run ends too fast).
+    for (int spin = 0; spin < 3000 && (m.epochs_retired() == 0 || m.coop_dead_seen() == 0); ++spin)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    stop.store(true, std::memory_order_release);
+    gc.join();
     for (auto& t : cs) t.join();
     EXPECT_FALSE(bad.load()) << "consult-FG served a torn/cross-key/too-new image (spliced a visible version?)";
     EXPECT_GT(hits.load(), 0u);

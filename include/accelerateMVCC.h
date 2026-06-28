@@ -274,6 +274,8 @@ namespace mvcc
         void set_consult_fg_reclaim(bool v) { consult_fg_reclaim_.store(v, std::memory_order_relaxed); }
         // Forwards to the GC: tail-only (InnoDB-style) pruning baseline vs full deadzone.
         void set_gc_tail_only(bool v) { epoch_table->set_gc_tail_only(v); }
+        // D-5 GC-tuning: cap the dummy-drain reclaim per cycle (0 = unlimited) to spread the small-BP storm.
+        void set_dummy_drain_cap(uint64_t c) { epoch_table->set_dummy_drain_cap(c); }
 
         // Stage 1c-2 retire-once conservation: epoch_nodes detached from the version chain
         // vs retired. At quiescence these must be EQUAL (each detached node retired once).

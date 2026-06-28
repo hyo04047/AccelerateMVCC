@@ -104,6 +104,10 @@ bool g_gen_gate_on = true;
 // it scans, retire stays BG-only) so the integration read path keeps chains short. Needs ACCEL_GC=1 (the GC
 // must publish a deadzone for consult to act). Default off; a measurement/ablation knob.
 bool g_consult_fg = false;
+// D-5 GC-tuning: ACCEL_DRAIN_CAP = max orphan epochs the dummy drain reclaims per GC cycle (0 = unlimited).
+// Spreads the small-BP reclaim storm over many cycles so a held reader's chain is severed gradually -> the ⑥
+// payoff is stabilized at the cost of a transiently larger working set. Read once at init.
+uint64_t g_drain_cap = 0;
 
 // D-5 5-1b: leaf-domain ACTIVE READ-VIEW REGISTRY (collection signal B). InnoDB pushes each view's
 // {low_limit_id, up_limit_id} here on view_open (piggybacking the trx_sys mutex it already holds) and
@@ -280,6 +284,9 @@ void accel_init() noexcept {
   if (const char *cf = std::getenv("ACCEL_CONSULT_FG")) {
     if (cf[0] == '1') g_consult_fg = true;     // D-5 FG-α: consult cooperative reclaim (needs ACCEL_GC=1)
   }
+  if (const char *dc = std::getenv("ACCEL_DRAIN_CAP")) {
+    g_drain_cap = std::strtoull(dc, nullptr, 10);  // D-5 GC-tuning: dummy-drain per-cycle reclaim cap (0=off)
+  }
   if (const char *pv = std::getenv("ACCEL_PUBLISH")) {
     if (pv[0] == '0') g_publish_views = false;         // baseline: OLTP without the view-registry push
   }
@@ -289,6 +296,7 @@ void accel_init() noexcept {
   try {
     g_accel = new mvcc::Accelerate_mvcc(0, 16);  // dynamic keys, 64k-bin cuckoo, BG GC NOT started
     g_accel->set_consult_fg_reclaim(g_consult_fg);  // D-5 FG-α (default off)
+    g_accel->set_dummy_drain_cap(g_drain_cap);      // D-5 GC-tuning (0 = unlimited)
     g_drainer = std::thread(drain_loop);
     g_gc = std::thread(gc_loop);  // D-5 ⑤a-2: integration GC driver (empty body in step 1)
   } catch (...) {
@@ -378,8 +386,9 @@ void accel_shutdown() noexcept {
                g_accel ? g_accel->long_live_size() : 0, (unsigned long long)g_clock.load());
   // D-5 FG-α: consult cooperative-reclaim evidence. consult_fg=1 means consult helped prune; coop_dead_seen is
   // the count of dead epochs consult marked/spliced (the FG-alpha work). 0 with consult_fg=1 => never engaged.
-  std::fprintf(stderr, "[accel] fg-alpha: consult_fg=%d coop_dead_seen=%llu\n",
-               g_consult_fg ? 1 : 0, (unsigned long long)(g_accel ? g_accel->coop_dead_seen() : 0));
+  std::fprintf(stderr, "[accel] fg-alpha: consult_fg=%d coop_dead_seen=%llu | drain_cap=%llu dummy_pending=%zu\n",
+               g_consult_fg ? 1 : 0, (unsigned long long)(g_accel ? g_accel->coop_dead_seen() : 0),
+               (unsigned long long)g_drain_cap, g_accel ? g_accel->dummy_pending() : 0);
   delete g_accel;  // GC driver + drainer already stopped+joined above -> sole owner; the object-owned
                    // standalone BG GC was never started, so the dtor's stop_background_gc is a no-op.
   g_accel = nullptr;
