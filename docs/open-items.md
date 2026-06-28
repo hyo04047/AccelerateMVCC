@@ -63,6 +63,7 @@
 **닫힘(CLOSED):**
 - **ⓠ3 in-middle 헤드라인이 실 InnoDB에서 생존·확정** — write-heavy OLTP + held LLT + 동시 HTAP 리더 하에서 캐시 live_versions는 bounded(~6–9k), InnoDB HLL은 LLT 시간에 선형 증가 → **비율이 LLT 나이에 선형 성장: 20×/40×/63×@15/30/60s**(realistic full-table). pinned hot-set도 10×/21×/42×. **5-3 후퇴 트리거 안 됨.** 승리는 동시 read-view 리더가 만드는 gap을 요구(리더0 대조군=0.9× 승리 0). magnitude는 프로토타입 5500×(고-rate 마이크로벤치)와 다르나 메커니즘·scaling·gap 요건 동일(실 InnoDB OLTP rate가 정함).
 - **ⓠ3 부산물**: ① in-process tail-only 캐시 모드(`ACCEL_TAIL_ONLY`)는 throughput을 ~5× 떨어뜨려(시간에 따라 악화) apples-to-apples baseline 부적합 → **실 InnoDB HLL을 baseline으로**(더 정직). ② metric 단위 교훈: `drained−epochs_retired`는 version과 epoch를 섞어 승리를 ~2×로 가렸음 → `drained−entries_retired`(version 단위)로 63× 회복.
+- **ⓠ5(22% MISS effective speedup) CLOSED — 긍정 해소** — held analytic reader(캐시의 실 타깃)는 write-heavy+delete/insert churn에서도 **HIT ~99.8–100%**(held snapshot이 churn 전이라 reader는 원본 행만 필요=캐시됨; 22% MISS는 head 근처 *짧은 reader*의 workload-wide 수치로 캐시 불필요 대상). effective speedup: resident ~3×, **I/O-bound(64M) ~34×**(undo I/O 23,783→352), construct_BAD=0 전부. oltp_read_write workload-wide HIT도 78%→94%(세션8 수정). 재현 `build_q5_writeonly.sh`. 상세 phase2-q3-llt.md ⓠ5 섹션.
 
 **진행/부분(세션 11):**
 - ⓠ4(⑥ realistic) 부분 보강 — held-reader 체인 깊이 flat(~90 epochs) 재확인. 동시 HTAP latency 별도.
@@ -89,9 +90,10 @@
 4. **⑥ read-latency가 단 1개 좁은 워크로드(oltp_update_non_index, 1테이블 1000행, churn 중단 후 측정)에서만** —
    `build_d6.sh`. 문서 스스로 "쉬운 단일-lineage" 케이스라 명시. realistic mixed(oltp_read_write, 동시 HTAP)에서
    ⑥ latency 미측정. Stage-D DoD는 "동시 sysbench HTAP vs vanilla"였음. → oltp_read_write(+동시 OLTP) ⑥ 재측.
-5. **consult HIT율이 oltp_read_write서 78%로 하락(구 88%) — 22% delete+reinsert MISS = full undo walk** =
-   캐시가 없애려는 바로 그 비용. `design-D4b-shadow.md §15.6 잔여①`. → realistic mix에서 22% MISS의 실 perf 영향을
-   측정(정직한 effective speedup), **또는** INSERT_OP pre-image 캡처로 커버리지 확대.
+5. **[CLOSED 세션 11] consult HIT율이 oltp_read_write서 78%로 하락 — 22% delete+reinsert MISS** —
+   `design-D4b-shadow.md §15.6 잔여①`. → **측정 완료: 캐시 타깃인 held analytic reader는 HIT ~99.8–100%**(22%는
+   head 근처 짧은 reader의 workload-wide 수치=캐시 불필요 대상). effective speedup resident ~3×·I/O-bound(64M) ~34×·
+   construct_BAD=0. workload-wide도 94%(세션8 수정). 상세 phase2-q3-llt.md ⓠ5, §0d.
 
 ---
 

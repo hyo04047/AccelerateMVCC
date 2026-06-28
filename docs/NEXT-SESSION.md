@@ -12,8 +12,11 @@
   (realistic full-table; pinned hot-set 10×/21×/42×). 프로젝트 중심 헤드라인이 실 InnoDB서 생존, **5-3 후퇴
   트리거 안 됨.** 승리는 동시 read-view 리더의 gap을 요구(리더0 대조군 0.9×=승리 0). 새 계측(retention reporter
   env `ACCEL_RETENTION_MS`·`entries_retired` version 카운터, 둘 다 read-only·기본 off). 상세 [phase2-q3-llt.md](phase2-q3-llt.md).
-  재현 `integration/scripts/build_q3_{pinned,realistic}.sh`. **다음 = Phase 2 잔여**(LOB·22% MISS·savepoint·
-  secondary-index·full-mysqld ASan/TSan) → Phase 3(논문).
+  재현 `integration/scripts/build_q3_{pinned,realistic}.sh`.
+- **Phase 2 ⓠ5 CLOSED (세션 11)** — "22% MISS effective speedup" 우려는 held analytic reader엔 해당 없음:
+  write-heavy+delete/insert churn서도 **HIT ~99.8–100%**(22%는 head 근처 짧은 reader=캐시 불필요 대상).
+  effective speedup resident ~3×·**I/O-bound(64M) ~34×**(undo I/O 23,783→352)·construct_BAD=0. 재현
+  `build_q5_writeonly.sh`. **다음 = Phase 2 잔여**(LOB ⓝ6·savepoint·secondary-index·full-mysqld ASan/TSan) → Phase 3(논문).
 - **1차 목표 A+B+C 완료**, **최종 D 완료** (populate → consult → authoritative serve → ⑥ 성능 payoff).
 - **⑤a-2 완료** — deadzone GC가 통합 mysqld 안에서 실제로 돈다(pushed InnoDB clock + active-view registry,
   amortized windowed sweep, construct_BAD=0·race/UAF 0·메모리 유계). **5-2b C1·C2 완료**(mode-2 verify-serve가

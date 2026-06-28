@@ -91,8 +91,46 @@ all headline ratios above compare deadzone-cache vs real InnoDB HLL in the SAME 
   only for the confound demonstration). Read `[accel] retention:` lines from the mysqld log; pair with
   `SHOW ENGINE INNODB STATUS` History List Length sampled near the LLT peak.
 
+---
+
+# Phase 2 / ⓠ5 — the "22% MISS effective speedup" worry (2026-06-28)
+
+> **Result: resolved, positively.** The held analytic reader — the cache's actual target — HITs ~99.8–100%
+> even on a write-heavy churn that does delete+reinsert (the MISS-generating pattern). The old "78% HIT /
+> 22% MISS" figure was a workload-WIDE consult rate dominated by SHORT readers near the chain head, which
+> do not need the cache (already fast; their MISS just means a cheap vanilla read at the head). The
+> effective speedup on the deep reader is ~3× resident (CPU-bound) and **~34× I/O-bound (64M BP)**, with
+> undo I/O eliminated, and construct_BAD=0 throughout.
+
+## Method
+⑥-style held-snapshot deep read, but churn = `oltp_write_only` (fast deep chains -> reaches the I/O-bound
+regime, AND its delete+insert produces the cross-generation rows the worry is about). Held reader does the
+deep `SUM` over the table; mode 0 = vanilla walk, mode 1 = serve (the MISS rows still walk). GC off (isolate
+the MISS effect from the ⑥ chain-sever). `integration/scripts/build_q5_writeonly.sh`.
+
+## Data (oltp_write_only churn, held deep reader, GC off)
+| BP | mode-0 vanilla | mode-1 serve | speedup | physical reads (m0→m1) | consult HIT% | construct_BAD |
+|---|---|---|---|---|---|---|
+| 4G | 0.263 s | 0.089 s | ~2.9× | 0 → 0 (resident) | 99.8% | 0 |
+| 256M | 0.288 s | 0.085 s | ~3.4× | 0 → 0 (resident) | 100% | 0 |
+| **64M** | **2.673 s** | **0.078 s** | **~34×** | **23,783 → 352** | 99.8% | 0 |
+
+## Reading it
+- **The held reader HITs ~100%** because its consistent snapshot predates the churn: it needs each row's
+  ORIGINAL version (cached), not the new generations that delete+reinsert creates. The 22% MISS was about
+  short readers near the head — a different population the cache isn't for. (Workload-wide oltp_read_write
+  HIT is also up to ~94% post the session-8 lineage-walk fixes, from 78%.)
+- **Effective speedup**: resident regime ~3× (the cache avoids the version-reconstruction CPU even with no
+  I/O); I/O-bound regime (64M) **~34×** with undo page reads cut 23,783 → 352. Smaller than the pure-write
+  ⑥ 775× only because oltp_write_only accrues fewer versions in 44 s (HLL ~80k vs millions) — same
+  mechanism, a longer LLT deepens it further.
+- construct_BAD=0 at every BP — the 22% (now ~0.2%) MISS rows fall back to the correct vanilla walk; never a
+  wrong row.
+
 ## What this closes / what remains
-- **Closes ⓠ3** (and the central 5-3 retreat worry): the in-middle headline survives in real InnoDB and
-  scales with LLT, given the HTAP gap. Open-items updated.
-- Remaining Phase 2: LOB/off-page coverage (ⓝ6), oltp_read_write 22% MISS effective speedup (ⓠ5),
-  savepoint (ⓝ15), secondary-index/composite-PK, full-mysqld ASan/TSan (ⓝ5). Then Phase 3 (paper).
+- **Closes ⓠ3** (the central 5-3 retreat worry): the in-middle headline survives in real InnoDB and scales
+  with LLT, given the HTAP gap.
+- **Closes ⓠ5**: the held reader's coverage is ~complete; effective speedup is strong (~34× I/O-bound) and
+  correct. The MISS worry was a misframing (it was about short readers the cache doesn't target).
+- Remaining Phase 2: LOB/off-page coverage (ⓝ6), savepoint (ⓝ15), secondary-index/composite-PK,
+  full-mysqld ASan/TSan (ⓝ5). Then Phase 3 (paper).
