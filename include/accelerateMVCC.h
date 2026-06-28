@@ -285,6 +285,8 @@ namespace mvcc
         // the GC-on gate can tell whether the dangerous windowed/unlink path actually ran.
         uint64_t epochs_retired_windowed() const { return epoch_table->epochs_retired_windowed(); }
         uint64_t epochs_retired_dummy()    const { return epoch_table->epochs_retired_dummy(); }
+        // ⓠ3: VERSIONS freed (clean live-version count = drained - entries_retired, comparable to HLL).
+        uint64_t entries_retired() const { return epoch_table->entries_retired(); }
         // Stage 1c-3: orphan wrappers pending in the dummy-overflow stack (test-only).
         size_t dummy_pending() const { return epoch_table->dummy_pending(); }
         // Stage 1c-6: GC long-lived-bucket vector size (test-only; bounded by compaction).
@@ -328,6 +330,33 @@ namespace mvcc
             for (epoch_node* e = header->next.ptr(); e != nullptr; ) {
                 uintptr_t word = e->next.load();
                 if (!MarkedPtr<epoch_node>::mark_of(word)) ++n;
+                e = MarkedPtr<epoch_node>::ptr_of(word);
+            }
+            return n;
+        }
+
+        // ⓠ3 (Phase 2): like chain_length_guarded but STOPS counting at `cap` (returns cap if the chain
+        // is at least cap long). Lets a periodic retention reporter sample MANY keys at a bounded cost --
+        // a tail-only chain can be 10^5+ long, and an uncapped per-key walk over every key each tick steals
+        // enough CPU to throttle the very workload being measured (a measurement confound). The cap reports
+        // "this key has >= cap versions" (which is all the headline needs: deadzone chains are short and
+        // reported exactly; tail-only ones just saturate). cap=0 means unbounded. Bench/test-only.
+        size_t chain_length_guarded_capped(uint64_t table_id, uint64_t index, size_t cap) {
+            kuku::item_type item = kuku::make_item(table_id, index);
+            kuku::QueryResult q = kuku_table->query(item);
+            if (!q.found()) return 0;
+            uint64_t value = q.in_stash()
+                ? kuku::get_value(kuku_table->stash(q.location()))
+                : kuku::get_value(kuku_table->table(q.location()));
+            auto* header = reinterpret_cast<interval_list_header*>(value);
+            EpochReclaimer::Guard guard(epoch_table->reclaimer());
+            size_t n = 0;
+            for (epoch_node* e = header->next.ptr(); e != nullptr; ) {
+                uintptr_t word = e->next.load();
+                if (!MarkedPtr<epoch_node>::mark_of(word)) {
+                    ++n;
+                    if (cap != 0 && n >= cap) return n;  // saturate (cap=0 = unbounded)
+                }
                 e = MarkedPtr<epoch_node>::ptr_of(word);
             }
             return n;

@@ -56,6 +56,19 @@
 
 **다음 = Phase 2(워크로드 폭·LOB·write-heavy+LLT in-middle·savepoint) → Phase 3(패치 vendor·Limitations·multi-run·논문 한글+영문).** ⑤b 0.16s는 안전 틀(memoized-lineage)에서만, 별 우선순위 아님(0.22s reuse 이미 있음).
 
+## 0d. 세션 11 갱신 (2026-06-28) — Phase 2 착수: ⓠ3(in-middle 헤드라인 실 InnoDB 생존) CLOSED
+> Phase 2의 최우선 ⓠ3를 통합 mysqld에서 측정. read-only retention reporter(`accel_hook.cc`, env `ACCEL_RETENTION_MS`,
+> 기본 off=중립) + 깨끗한 version-단위 카운터(`entries_retired`)를 추가. 상세 데이터·방법론 [phase2-q3-llt.md](phase2-q3-llt.md).
+
+**닫힘(CLOSED):**
+- **ⓠ3 in-middle 헤드라인이 실 InnoDB에서 생존·확정** — write-heavy OLTP + held LLT + 동시 HTAP 리더 하에서 캐시 live_versions는 bounded(~6–9k), InnoDB HLL은 LLT 시간에 선형 증가 → **비율이 LLT 나이에 선형 성장: 20×/40×/63×@15/30/60s**(realistic full-table). pinned hot-set도 10×/21×/42×. **5-3 후퇴 트리거 안 됨.** 승리는 동시 read-view 리더가 만드는 gap을 요구(리더0 대조군=0.9× 승리 0). magnitude는 프로토타입 5500×(고-rate 마이크로벤치)와 다르나 메커니즘·scaling·gap 요건 동일(실 InnoDB OLTP rate가 정함).
+- **ⓠ3 부산물**: ① in-process tail-only 캐시 모드(`ACCEL_TAIL_ONLY`)는 throughput을 ~5× 떨어뜨려(시간에 따라 악화) apples-to-apples baseline 부적합 → **실 InnoDB HLL을 baseline으로**(더 정직). ② metric 단위 교훈: `drained−epochs_retired`는 version과 epoch를 섞어 승리를 ~2×로 가렸음 → `drained−entries_retired`(version 단위)로 63× 회복.
+
+**진행/부분(세션 11):**
+- ⓠ4(⑥ realistic) 부분 보강 — held-reader 체인 깊이 flat(~90 epochs) 재확인. 동시 HTAP latency 별도.
+
+**다음 = Phase 2 잔여(LOB ⓝ6 · oltp_read_write 22% MISS ⓠ5 · savepoint ⓝ15 · secondary-index/composite-PK · full-mysqld ASan/TSan ⓝ5) → Phase 3(논문).**
+
 ---
 
 ## ⓠ 조용히 버려질 위험이 있는 목표 (최우선 — 사용자 핵심 우려)
@@ -69,9 +82,10 @@
    `design-D5-gc.md §3 C / §7`(증분 없음); Stage-C 결과 `REPORT.md §4.4`(read tput +30%, p50 15 vs 41).
    in-middle 체인 단축의 유일한 O(1) 경로. → **명시 결정**: signal C를 통합에 스케줄해 +30% 재현, **또는** 논문이
    "통합은 BG-only로 출하, Stage-C FG 이득 미포함"을 명시. 침묵으로 버리지 말 것. **(2026-06-27 사용자: 이건 '결정' 항목이 아니라 ROADMAP 항목 — perf 후퇴가 아닌 한 FG를 통합에 넣는다. ⑤b/FG+BG 트랙과 함께 진행; 유일한 gate는 "perf 후퇴 없음".)**
-3. **5-3의 사전 인가된 후퇴: "in-middle hole 밀도 부족하면 tail-only로 축소하고 LLT-claim 포기"** —
-   `design-D5-gc.md §7 5-3`. 프로젝트 **중심 헤드라인**(deadzone 155 vs tail-only 846k ≈ 5500×)이 여기서 붕괴 가능.
-   → **실제 write-heavy OLTP+LLT 프로파일을 지금 돌려** in-middle 이득이 실 InnoDB에서 살아남는지 확인. 논문 쓰기 전에.
+3. **[CLOSED 세션 11] 5-3의 사전 인가된 후퇴: "in-middle hole 밀도 부족하면 tail-only로 축소하고 LLT-claim 포기"** —
+   `design-D5-gc.md §7 5-3`. 프로젝트 **중심 헤드라인**이 여기서 붕괴 가능했음. → **실 InnoDB write-heavy OLTP+LLT+HTAP에서
+   측정 완료: 붕괴 아니라 생존.** 캐시 bounded·InnoDB HLL 선형 증가·비율 LLT에 선형(20×/40×/63×@15/30/60s), gap(동시 리더)
+   요건 확인. 후퇴 트리거 안 됨. 상세 [phase2-q3-llt.md](phase2-q3-llt.md), §0d.
 4. **⑥ read-latency가 단 1개 좁은 워크로드(oltp_update_non_index, 1테이블 1000행, churn 중단 후 측정)에서만** —
    `build_d6.sh`. 문서 스스로 "쉬운 단일-lineage" 케이스라 명시. realistic mixed(oltp_read_write, 동시 HTAP)에서
    ⑥ latency 미측정. Stage-D DoD는 "동시 sysbench HTAP vs vanilla"였음. → oltp_read_write(+동시 OLTP) ⑥ 재측.

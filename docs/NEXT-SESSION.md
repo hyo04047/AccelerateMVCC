@@ -4,9 +4,16 @@
 > [README.md](README.md), 남은 작업의 상세 트래커는 [open-items.md](open-items.md), 세션별 서사는
 > [progress-log.md](progress-log.md), 설계 근거는 `design-*.md`에 있습니다.
 >
-> 최종 갱신: **2026-06-28** (세션 10 — C3 mode-1 안전 출하 + ⑥ chain-sever 규명 + FG+BG GC 스테이지 완료: drain-cap이 ⑥ 안정화)
+> 최종 갱신: **2026-06-28** (세션 11 — Phase 2 착수: ⓠ3 in-middle 헤드라인이 실 InnoDB에서 생존·확정)
 
 ## 현재 위치 (한눈에)
+- **Phase 2 ⓠ3 CLOSED (세션 11)** — write-heavy OLTP + held LLT + 동시 HTAP 리더 하에서 캐시 보존이 bounded
+  (~6–9k versions), InnoDB HLL은 LLT 시간에 선형 증가 → **비율이 LLT 나이에 선형 성장: 20×/40×/63×@15/30/60s**
+  (realistic full-table; pinned hot-set 10×/21×/42×). 프로젝트 중심 헤드라인이 실 InnoDB서 생존, **5-3 후퇴
+  트리거 안 됨.** 승리는 동시 read-view 리더의 gap을 요구(리더0 대조군 0.9×=승리 0). 새 계측(retention reporter
+  env `ACCEL_RETENTION_MS`·`entries_retired` version 카운터, 둘 다 read-only·기본 off). 상세 [phase2-q3-llt.md](phase2-q3-llt.md).
+  재현 `integration/scripts/build_q3_{pinned,realistic}.sh`. **다음 = Phase 2 잔여**(LOB·22% MISS·savepoint·
+  secondary-index·full-mysqld ASan/TSan) → Phase 3(논문).
 - **1차 목표 A+B+C 완료**, **최종 D 완료** (populate → consult → authoritative serve → ⑥ 성능 payoff).
 - **⑤a-2 완료** — deadzone GC가 통합 mysqld 안에서 실제로 돈다(pushed InnoDB clock + active-view registry,
   amortized windowed sweep, construct_BAD=0·race/UAF 0·메모리 유계). **5-2b C1·C2 완료**(mode-2 verify-serve가

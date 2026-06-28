@@ -13,6 +13,7 @@
 #include "accelerateMVCC.h"  // D-1b-3a: pull the real accelerator into the mysqld/innobase build
 #include "active_view_registry.h"  // D-5 5-1b: leaf-domain mirror of InnoDB's active read-views
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -32,6 +33,26 @@ std::atomic<uint64_t> g_dropped{0};
 std::atomic<uint64_t> g_drained{0};
 std::atomic<uint32_t> g_pk_seen[1024];   // pk breadth proxy (drainer-only writer)
 std::thread g_drainer;
+// ⓠ3 (Phase 2): retention reporter. A held-LLT run must be sampled AT ITS PEAK -- the shutdown dump is
+// post-LLT-release, after GC has reclaimed everything the LLT was pinning, so it reads ~empty. This
+// read-only periodic reporter logs the cache-vs-InnoDB retention while the LLT still holds: the O(1)
+// aggregate "live cache versions" (drained - retired, compared against InnoDB's History List Length read
+// separately via SQL) plus the freshest drained key's Guard-safe chain length (the hot key under a skewed
+// churn = the integration analog of the Stage-C "hot-chain max"; one key, so cheap even when a tail-only
+// chain is huge). Gated by ACCEL_RETENTION_MS (0/unset = reporter not started = behavior-neutral). A
+// SEPARATE leaf-domain thread, never on the hot path.
+// Per-bucket representative key (table_id, pk_hash), written by the drainer the first time it touches a
+// pk-breadth bucket. Gives the reporter an UNBIASED key set to sample (~one per occupied bucket, covering
+// hot AND cold keys). The earlier recent-drained ring was biased toward hot keys -- which the deadzone
+// reclaims BEST (dense trx-ids -> narrow intervals that fit the dead zones) -- so it missed the long chains
+// that accumulate on cold/medium keys (sparse updates -> wide intervals that straddle active cuts).
+std::atomic<uint64_t> g_key_rep_table[1024];
+std::atomic<uint64_t> g_key_rep_pk[1024];
+unsigned g_retention_cap = 512;          // ACCEL_RETENTION_CAP: bound the per-key chain walk (0 = unbounded)
+std::thread g_reporter;
+std::atomic<bool> g_rep_stop{false};
+unsigned g_retention_ms = 0;             // ACCEL_RETENTION_MS; 0 = reporter off
+std::chrono::steady_clock::time_point g_t0;  // set once at accel_init (before the reporter starts) for t_ms
 // D-5 ⑤a-2: the integration deadzone-GC driver. It is a SEPARATE leaf-domain thread, NOT the
 // object-owned standalone BG GC (Accelerate_mvcc::start_background_gc) -- that one drives off the
 // standalone trx manager, which the drainer's low-level insert never advances (M4). This driver
@@ -108,6 +129,12 @@ bool g_consult_fg = false;
 // Spreads the small-BP reclaim storm over many cycles so a held reader's chain is severed gradually -> the ⑥
 // payoff is stabilized at the cost of a transiently larger working set. Read once at init.
 uint64_t g_drain_cap = 0;
+// ⓠ3 (Phase 2): ACCEL_TAIL_ONLY=1 forces the GC to prune ONLY the below-floor tail (zone 0), skipping the
+// in-middle holes between active-view cuts -- faithfully modeling InnoDB-style tail purge, which an LLT
+// stalls by pinning the floor. This is the apples-to-apples baseline for the deadzone (default off): the
+// SAME real-InnoDB run, cache in tail-only mode, should track InnoDB's History List Length, while deadzone
+// mode reclaims the in-middle gaps. Default off = full deadzone (in-middle reclaim).
+bool g_tail_only = false;
 
 // D-5 5-1b: leaf-domain ACTIVE READ-VIEW REGISTRY (collection signal B). InnoDB pushes each view's
 // {low_limit_id, up_limit_id} here on view_open (piggybacking the trx_sys mutex it already holds) and
@@ -149,7 +176,17 @@ int pk_buckets() {
 }
 
 void consume(const accel::UndoRec &r) {
-  g_pk_seen[r.pk_hash & 1023u].fetch_or(1u, std::memory_order_relaxed);
+  // pk-breadth bucket + ⓠ3 first-touch representative-key capture. The drainer is the SOLE writer, so the
+  // plain load/store is race-free between drainers; the rep is written BEFORE the bit is published (release)
+  // so a reader that sees the bit set also sees the rep.
+  {
+    unsigned b = r.pk_hash & 1023u;
+    if (g_pk_seen[b].load(std::memory_order_relaxed) == 0u) {
+      g_key_rep_table[b].store(r.table_id, std::memory_order_relaxed);
+      g_key_rep_pk[b].store(r.pk_hash, std::memory_order_relaxed);
+      g_pk_seen[b].store(1u, std::memory_order_release);
+    }
+  }
   // D-5 ⑤a-2 step 3: capture the epoch base from the first version's trx id (idempotent set-once; the
   // drainer is the only caller). Numbers epochs relative to the InnoDB id space so versions land in the
   // bucket ring and the amortized windowed sweep engages instead of everything overflowing to the drain.
@@ -242,6 +279,53 @@ void gc_loop() {
     }
   }
 }
+
+// ⓠ3 (Phase 2): retention reporter loop. Periodically (ACCEL_RETENTION_MS) logs the cache's retained
+// version volume and a hot key's chain depth WHILE a held LLT is still pinning them -- the only point
+// the deadzone's in-middle reclaim can be compared against InnoDB's tail-blocked retention. Read-only:
+// chain_length_guarded holds a per-traversal EBR Guard (safe to walk a live chain under concurrent GC),
+// and the aggregates are plain counter reads. Started only when ACCEL_RETENTION_MS > 0; stopped+joined
+// in accel_shutdown BEFORE delete g_accel (it dereferences g_accel).
+void retention_loop() {
+  using clock = std::chrono::steady_clock;
+  const unsigned period = g_retention_ms ? g_retention_ms : 1000;
+  while (!g_rep_stop.load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(period));
+    if (g_accel == nullptr || !g_ready.load(std::memory_order_acquire)) continue;
+    // Sample EVERY occupied pk bucket's representative key (unbiased over hot+cold), each chain walk
+    // bounded to g_retention_cap so a tail-only run's huge chains cannot steal enough CPU to throttle the
+    // workload. max = worst-case chain a reader might walk; capped = how many keys saturated (the long-chain
+    // population); sampled_sum = lower-bound retained over the rep keys (the true total is live).
+    const size_t cap = g_retention_cap;
+    size_t lens[1024];
+    unsigned m = 0;
+    size_t mx = 0, n_capped = 0, ssum = 0;
+    for (unsigned b = 0; b < 1024; ++b) {
+      if (g_pk_seen[b].load(std::memory_order_acquire) == 0u) continue;
+      uint64_t kt = g_key_rep_table[b].load(std::memory_order_relaxed);
+      uint64_t kpk = g_key_rep_pk[b].load(std::memory_order_relaxed);
+      if (kt == 0 && kpk == 0) continue;
+      size_t cl = g_accel->chain_length_guarded_capped(kt, kpk, cap);
+      lens[m++] = cl;
+      if (cl > mx) mx = cl;
+      if (cap != 0 && cl >= cap) ++n_capped;
+      ssum += cl;
+    }
+    size_t p50 = 0;
+    if (m > 0) { std::sort(lens, lens + m); p50 = lens[m / 2]; }
+    uint64_t drained = g_drained.load(std::memory_order_relaxed);
+    uint64_t ent_ret = g_accel->entries_retired();   // VERSIONS freed (clean unit)
+    long tms = (long)std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - g_t0).count();
+    // live_versions = versions inserted (drained) - versions freed (entries_retired): the cache's retained
+    // version count, directly comparable to InnoDB's History List Length. (max/p50 are EPOCH-chain depth.)
+    std::fprintf(stderr,
+                 "[accel] retention: t_ms=%ld max=%zu p50=%zu capped=%zu keys=%u sampled_sum=%zu "
+                 "drained=%llu entries_retired=%llu live_versions=%lld long_live=%zu\n",
+                 tms, mx, p50, n_capped, m, ssum, (unsigned long long)drained,
+                 (unsigned long long)ent_ret,
+                 (long long)((long long)drained - (long long)ent_ret), g_accel->long_live_size());
+  }
+}
 }  // namespace
 
 void accel_init() noexcept {
@@ -249,6 +333,7 @@ void accel_init() noexcept {
   if (!g_started.compare_exchange_strong(expected, true)) return;  // already inited
   g_stop.store(false, std::memory_order_relaxed);
   g_gc_stop.store(false, std::memory_order_relaxed);
+  g_rep_stop.store(false, std::memory_order_relaxed);
   // D-4 4b-3c test toggles (read before g_ready is released below).
   if (const char *mb = std::getenv("ACCEL_PK_MASK_BITS")) {
     unsigned long bits = std::strtoul(mb, nullptr, 10);
@@ -293,14 +378,30 @@ void accel_init() noexcept {
   if (const char *gc = std::getenv("ACCEL_GC")) {
     if (gc[0] == '1') g_gc_enabled = true;             // D-5 ⑤a-2: drive the deadzone GC (pushed clock + registry)
   }
+  if (const char *rm = std::getenv("ACCEL_RETENTION_MS")) {
+    long v = std::strtol(rm, nullptr, 10);
+    if (v > 0) g_retention_ms = (unsigned)v;           // ⓠ3: held-LLT retention reporter cadence (0 = off)
+  }
+  if (const char *rc = std::getenv("ACCEL_RETENTION_CAP")) {
+    long v = std::strtol(rc, nullptr, 10);
+    if (v >= 0) g_retention_cap = (unsigned)v;          // ⓠ3: per-key chain-walk cap (0 = unbounded)
+  }
+  if (const char *to = std::getenv("ACCEL_TAIL_ONLY")) {
+    if (to[0] == '1') g_tail_only = true;              // ⓠ3: tail-only GC baseline (models InnoDB purge)
+  }
   try {
     g_accel = new mvcc::Accelerate_mvcc(0, 16);  // dynamic keys, 64k-bin cuckoo, BG GC NOT started
     g_accel->set_consult_fg_reclaim(g_consult_fg);  // D-5 FG-α (default off)
     g_accel->set_dummy_drain_cap(g_drain_cap);      // D-5 GC-tuning (0 = unlimited)
+    g_accel->set_gc_tail_only(g_tail_only);         // ⓠ3: tail-only baseline (default off = deadzone)
     g_drainer = std::thread(drain_loop);
     g_gc = std::thread(gc_loop);  // D-5 ⑤a-2: integration GC driver (empty body in step 1)
+    g_t0 = std::chrono::steady_clock::now();           // ⓠ3: reporter t_ms origin (set before it starts)
+    if (g_retention_ms) g_reporter = std::thread(retention_loop);  // ⓠ3: read-only retention reporter
   } catch (...) {
-    // unwind in the same order accel_shutdown uses: stop+join GC, then the drainer, then drop accel.
+    // unwind in the same order accel_shutdown uses: stop+join reporter, GC, then the drainer, then drop accel.
+    g_rep_stop.store(true, std::memory_order_release);
+    if (g_reporter.joinable()) g_reporter.join();
     g_gc_stop.store(true, std::memory_order_release);
     if (g_gc.joinable()) g_gc.join();
     g_stop.store(true, std::memory_order_release);
@@ -311,12 +412,17 @@ void accel_init() noexcept {
     return;
   }
   g_ready.store(true, std::memory_order_release);
-  std::fprintf(stderr, "[accel] init: drainer started, accelerator constructed\n");
+  std::fprintf(stderr, "[accel] init: drainer started, accelerator constructed (gc=%d tail_only=%d retention_ms=%u)\n",
+               g_gc_enabled ? 1 : 0, g_tail_only ? 1 : 0, g_retention_ms);
 }
 
 void accel_shutdown() noexcept {
   if (!g_started.load(std::memory_order_acquire)) return;
   g_ready.store(false, std::memory_order_release);  // hook + consult stop entering the live window
+  // ⓠ3: quiesce the read-only retention reporter FIRST -- it dereferences g_accel, so it must stop
+  // before the GC/drainer teardown and the delete below. No-op if it was never started.
+  g_rep_stop.store(true, std::memory_order_release);
+  if (g_reporter.joinable()) g_reporter.join();
   // D-5 ⑤a-2 (review must-fix 1): stop the GC driver FIRST and join it, BEFORE the drainer and BEFORE
   // delete g_accel. The GC actor mutates g_accel's epoch_table (reclaim/sweep) and is NOT reaped by
   // g_accel's dtor (it is the integration driver, not the object-owned standalone BG GC), so it must

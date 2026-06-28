@@ -3,7 +3,7 @@
 > 디스크 기반 DBMS(InnoDB/MySQL)의 MVCC를 가속하는 **인메모리 보조 인덱스**.
 > 하태성의 2023년 졸업프로젝트를 **단독으로** 재개 (현재는 졸업용이 아닌 **개인 프로젝트**). 이 문서는 진행과 함께 갱신되는 **리빙 도큐먼트**입니다.
 
-- 최종 수정: **2026-06-27** (세션 9 — Stage D + ⑤a-2 GC-on + 5-2b serve(C1·C2) + ⑥ GC-on 재측)
+- 최종 수정: **2026-06-28** (세션 11 — Phase 2 착수: ⓠ3 in-middle 헤드라인이 실 InnoDB에서 생존·확정)
 - 상세 포렌식·이슈 트래커 → [findings.md](findings.md)
 - 세션별 진행 로그 → [progress-log.md](progress-log.md)
 
@@ -62,8 +62,12 @@ flowchart TD
   + 1-in-N walk-audit(observe-only). construct_BAD=0 도처(mode-2 soak 100만+ · mode-1 ship 4-way AND green).
 - **⑥ chain-sever → drain-cap으로 안정화** — GC storm이 navigation 경로 회수 시 consult가 정답 walk로 degrade였으나
   (construct_BAD=0 항상), **GC-tuning drain-cap(`ACCEL_DRAIN_CAP`≈1000)이 ⑥를 fragile(1/4 붕괴)→stable(0 붕괴)로**
-  (design-D5-gc §13). α(FG cooperative reclaim)는 측정상 이득 0. **다음 = Phase 2**(워크로드 폭·LOB).
-  세션별 [progress-log.md](progress-log.md), 마스터 트래커 [open-items.md](open-items.md) §0c.
+  (design-D5-gc §13). α(FG cooperative reclaim)는 측정상 이득 0.
+- **Phase 2 ⓠ3 ✅ (세션 11)** — 프로젝트 중심 헤드라인(in-middle deadzone이 LLT 하 tail-only 압도)이 **실 InnoDB
+  write-heavy+LLT+HTAP에서 생존·확정**: 캐시 보존 bounded(~6–9k versions), InnoDB HLL은 LLT에 선형 증가 → **비율이
+  LLT 나이에 선형(20×/40×/63×@15/30/60s)**. 승리는 동시 read-view 리더의 gap을 요구(대조군 0.9×). 5-3 후퇴 트리거
+  안 됨. 상세 [phase2-q3-llt.md](phase2-q3-llt.md). **다음 = Phase 2 잔여(LOB·22% MISS·savepoint) → Phase 3(논문).**
+  세션별 [progress-log.md](progress-log.md), 마스터 트래커 [open-items.md](open-items.md) §0d.
 
 | 트랙 | 상태 |
 |---|---|

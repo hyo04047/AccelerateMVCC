@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-06-28 — 세션 11: Phase 2 착수 — ⓠ3(in-middle 헤드라인 실 InnoDB 생존) CLOSED
+
+> Phase 2의 최우선 ⓠ3(프로젝트 중심 헤드라인이 실 InnoDB write-heavy+LLT서 살아남나)를 통합 mysqld에서 측정.
+> **결과: 붕괴 아니라 생존 — 캐시 bounded, InnoDB HLL은 LLT에 선형 증가, 비율이 LLT 나이에 선형 성장.** 5-3
+> 사전 인가 후퇴는 트리거 안 됨. 상세·데이터 [phase2-q3-llt.md](phase2-q3-llt.md), 트래커 [open-items.md](open-items.md) §0d.
+
+**계측 추가 (read-only·env-gated·기본 off=동작 중립):**
+- **retention reporter**(`accel_hook.cc`, env `ACCEL_RETENTION_MS`) — held LLT가 아직 다 pin하고 있는 동안 캐시 보존을 찍는 별도 leaf-domain 스레드(shutdown 덤프는 LLT 해제 후라 ~빈값). 모든 점유 pk 버킷의 대표 키를 unbiased 샘플(hot+cold), 체인 walk는 `ACCEL_RETENTION_CAP`로 bound(tail-only 거대 체인이 CPU 훔쳐 측정 confound 내는 것 차단).
+- **`entries_retired` 카운터**(`epoch_table.h`) — free된 undo_entry(=VERSION) 수. `live_versions = drained − entries_retired`가 깨끗한 **version 단위** 보존량 → InnoDB HLL과 직접 비교 가능. (옛 `drained − epochs_retired`는 version과 EPOCH를 섞어[~100 version이 1 epoch] 승리를 ~2×로 가렸던 아티팩트, 수정.)
+- `ACCEL_TAIL_ONLY` 토글 추가(in-process tail-only baseline) — but 아래 confound로 헤드라인엔 미사용.
+
+**ⓠ3 메커니즘 규명:** in-middle 회수 = 연속한 active read-view cut **사이의 gap** 회수. 가장 큰 gap = 오래된 LLT(floor 고정)와 최근 리더 사이 = 전체 history(purge가 막은 바로 그 영역). **그래서 승리는 동시 read-view 리더(HTAP gap)를 요구** — write-churn+LLT만 있고 리더 없으면 cut 1개라 gap 없음 → tail-only로 degenerate(리더0 대조군 0.9×=승리 0으로 실증).
+
+**데이터 (256M BP, deadzone GC, 8 writer + 8 reader):**
+- **realistic full-table(1000키, pareto)**: HLL/cache_live_versions = 130k/6.4k=**20.4×**@15s · 278k/7.1k=**39.4×**@30s · 573k/9.0k=**63.4×**@60s. 리더0 대조군 696k/743k=**0.9×**(승리 0).
+- **pinned hot-set(10키)**: **10×/21×/42×**@15/30/60s.
+- 캐시 live_versions는 bounded(~6–9k)·LLT에 ~flat, InnoDB HLL은 선형 증가 → **비율이 LLT 나이에 선형**(무한 성장). held-reader 체인 깊이도 flat(~80–92 epochs)=⑥ read-latency(~190×) 일관. magnitude는 프로토타입 5500×(고-rate 마이크로벤치)와 다르나 실 InnoDB OLTP rate(~4,200 versions/s)가 정한 정직한 값, 메커니즘·scaling·gap 요건 동일.
+
+**부산물:** in-process tail-only 캐시 모드는 throughput을 ~5× 떨어뜨림(시간에 악화·reporter on/off 동일로 reporter 아닌 GC 재스캔 추정) → apples-to-apples baseline 부적합, **실 InnoDB HLL을 baseline으로**(더 정직). core 헤더(epoch_table.h·accelerateMVCC.h) 변경 후 **standalone 39 green 유지** 확인. 재현 `integration/scripts/build_q3_{pinned,realistic}.sh`. **→ 다음 = Phase 2 잔여**(LOB·22% MISS·savepoint·secondary-index·full-mysqld ASan/TSan) → Phase 3(논문).
+
+---
+
 ## 2026-06-28 — 세션 10: C3(mode-1 serve-only 안전 출하) + ⑥ chain-sever 특성화 + GC-쪽 완성 deferral
 
 > C3로 mode-1(serve-only, walk-skip = perf 경로)을 안전하게 출하 가능하게 만들고, ⑥ 재측에서 GC chain-sever를

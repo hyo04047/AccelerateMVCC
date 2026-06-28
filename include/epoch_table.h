@@ -439,6 +439,8 @@ namespace mvcc {
         // path is unexercised and a green construct_BAD=0 gate is hollow (review critic M-D-ii).
         uint64_t epochs_retired_windowed() const { return epochs_retired_windowed_.load(std::memory_order_relaxed); }
         uint64_t epochs_retired_dummy()    const { return epochs_retired_dummy_.load(std::memory_order_relaxed); }
+        // ⓠ3: VERSIONS (undo_entry_nodes) freed -- clean live-version count vs InnoDB HLL (see field decl).
+        uint64_t entries_retired() const { return entries_retired_.load(std::memory_order_relaxed); }
 
         // Stage 1c-3: orphan wrappers currently queued in the dummy-overflow stack (meaningful
         // only when quiescent -- for tests). Trends to a small bound (live un-demoted heads) as
@@ -479,12 +481,15 @@ namespace mvcc {
         void retire_epoch_once(epoch_node *en) {
             if (en->state.exchange(EPOCH_RETIRED, std::memory_order_acq_rel) != EPOCH_RETIRED) {
                 epochs_retired_.fetch_add(1, std::memory_order_relaxed);
-                reclaimer_.retire([en] {
+                reclaimer_.retire([this, en] {
+                    uint64_t freed = 0;
                     for (undo_entry_node *e = en->first_entry; e != nullptr; ) {
                         undo_entry_node *nx = e->next_entry.load();
                         delete e;
                         e = nx;
+                        ++freed;
                     }
+                    entries_retired_.fetch_add(freed, std::memory_order_relaxed);  // ⓠ3: versions freed
                     delete en;
                 });
             }
@@ -672,6 +677,11 @@ namespace mvcc {
         // D-5 ⑤a-2: retire source split (windowed bucket sweep vs dummy-overflow drain).
         std::atomic<uint64_t> epochs_retired_windowed_{0};
         std::atomic<uint64_t> epochs_retired_dummy_{0};
+        // ⓠ3 (Phase 2): undo_entry_nodes (= VERSIONS) actually freed. epochs_retired_ counts EPOCH nodes,
+        // but each epoch batches up to EPOCH_SIZE versions, so (drained - epochs_retired) mixes units. This
+        // counts versions freed, so (versions inserted - versions_retired) is a clean live-version count
+        // directly comparable to InnoDB's History List Length.
+        std::atomic<uint64_t> entries_retired_{0};
         // Dummy-overflow list: a lock-free Treiber stack (nullptr = empty). Inserters push
         // orphan wrappers (bucket-swap race); the BG GC drains it (drain_dummy). backstop_counter_
         // paces the low-cadence full-bucket sweep; both are BG-only.
