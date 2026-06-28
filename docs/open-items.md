@@ -66,6 +66,9 @@
 - **ⓠ5(22% MISS effective speedup) CLOSED — 긍정 해소** — held analytic reader(캐시의 실 타깃)는 write-heavy+delete/insert churn에서도 **HIT ~99.8–100%**(held snapshot이 churn 전이라 reader는 원본 행만 필요=캐시됨; 22% MISS는 head 근처 *짧은 reader*의 workload-wide 수치로 캐시 불필요 대상). effective speedup: resident ~3×, **I/O-bound(64M) ~34×**(undo I/O 23,783→352), construct_BAD=0 전부. oltp_read_write workload-wide HIT도 78%→94%(세션8 수정). 재현 `build_q5_writeonly.sh`. 상세 phase2-q3-llt.md ⓠ5 섹션.
 - **ⓝ6(LOB/off-page/virtual 커버리지) CLOSED — 정직한 limitation** — LOB/off-page(`rec_offs_any_extern`)/virtual(`n_v_cols`)/>512B 행은 캡처 시 img_len=0 → **MISS_INELIGIBLE → vanilla walk**. 4 변형 실측(small/big-in-page/off-page-LOB/virtual): 제외 행 **ineligible 100%·construct_BAD=0·served=0**(off-page LOB도 부분 image 안 서빙=안전 핵심 실증), small 대조군 HIT 100%. 커버리지는 LOB-heavy서 ~0 붕괴하나 **무해**(graceful vanilla degrade). big-row vanilla deep read 82.7s=캐시가 가장 필요한데 cap이 막음 → **캐시 scope=small-row OLTP**(논문 Limitation). future-work=configurable cap/in-page prefix. 재현 `build_q6_coverage.sh`. 상세 phase2-q3-llt.md ⓝ6 섹션.
 - **composite-PK/string-PK/secondary-index(ⓝ4 일부) + savepoint(ⓝ15) CLOSED — 전부 안전** — mode-2 verify-serve(4G resident): composite PK(a,b)+secondary-index 읽기 **HIT 2000/2000·construct_BAD=0**, VARCHAR string PK **HIT 1000/1000·construct_BAD=0**(full-PK FNV가 multi-col·string 일반화). savepoint rollback: ground truth rolled-back +1000 누출 0·held reader snapshot invariant·**construct_BAD=0**(rolled-back 버전 절대 미서빙; 보수적 noncontig MISS→vanilla로 degrade, ~50% MISS는 coverage 비용). 재현 `build_q7_keys.sh`·`build_q8_savepoint.sh`. **방법론 교훈: correctness 체크는 4G resident+짧은 churn(깊은 체인 불필요)**; 64M+깊은 churn+secondary 간접참조는 병리적으로 느림(16분 hang 1회). 상세 phase2-q3-llt.md.
+- **ⓝ5(full-mysqld ASan) CLOSED — CLEAN** — `-DWITH_ASAN=ON` mysqld(15m 빌드)서 drainer‖consult‖held reader(serve)‖GC‖teardown 동시 스트레스 → **AddressSanitizer 리포트 0**(UAF/overflow/SEGV 없음). 빈 게이트 아님: consult 251k·serve 243,803·**construct_BAD=0**·GC retired 9,114·clean shutdown. detect_leaks=0(dummy-list 의도적 누수). **gold-standard 통합 memory-safety 첫 실증**(이전 standalone만). full-mysqld **TSan은 documented residual**(standalone TSan이 accel race 표면 덮음·MySQL TSan suppression 무거움·marginal value 낮음). 재현 `build_q9_asan.sh`. 상세 phase2-q3-llt.md ⓝ5.
+
+**→ Phase 2 사실상 완료(ⓠ3·ⓠ5·ⓝ6·composite/string-PK·secondary-index·savepoint·ASan). 다음 = Phase 3(논문 한글+영문·multi-run/error-bar·패치 vendor·Limitations[ⓝ6·TSan residual]).**
 
 **진행/부분(세션 11):**
 - ⓠ4(⑥ realistic) 부분 보강 — held-reader 체인 깊이 flat(~90 epochs) 재확인. 동시 HTAP latency 별도.
@@ -109,8 +112,9 @@
 3. **serve(ACCEL_AUTHORITATIVE) 기본 OFF; perf를 내는 mode-1의 GC-on correctness 미검증** — 출하 기본은 speedup 0(shadow).
 4. **serve correctness가 sysbench 2종에서만 입증 — 새 워크로드마다 새 결함 발견 이력**(oltp_read_write서 construct_BAD=18625
    터짐). FTS/spatial/partition/composite-PK/secondary-index/savepoint 미검증.
-5. **최종검증 매트릭스(LOB/FTS/spatial/큰 비-resident 테이블/full mysqld ASan+TSan) 매 세션 약속·미실행** — **현재 모든
-   sanitizer 증거는 standalone뿐**; 통합 경로(드레이너‖consult‖동시 reader‖미래 GC)는 ASan/TSan 한 번도 안 돔.
+5. **[부분 CLOSED 세션 11] 최종검증 매트릭스(full mysqld ASan+TSan)** — → **full-mysqld ASan CLEAN**(drainer‖consult‖
+   reader‖GC‖teardown, 리포트 0·construct_BAD=0·GC 작동, `build_q9_asan.sh`). 잔여: full-mysqld **TSan**(documented
+   residual, standalone TSan이 race 표면 덮음)·LOB-heavy/FTS/spatial은 ⓝ6서 LOB 안전 실증(FTS/spatial 별도).
 6. **[CLOSED 세션 11] LOB/off-page/virtual-column/>512B 행 캐싱 제외 — 커버리지 붕괴** —
    `accel_ring.h ACCEL_IMG_MAX=512` + `trx0rec.cc` 캡처 게이트(`rec_offs_any_extern || n_v_cols`). → **측정 완료:
    4 변형서 제외 행 ineligible 100%·construct_BAD=0**(off-page LOB 부분 image 안 서빙 실증)·small HIT 100%. 커버리지는

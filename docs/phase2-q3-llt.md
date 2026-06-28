@@ -200,6 +200,36 @@ churn is pathologically slow (the FORCE INDEX scan walks every row's deep chain 
 ×2 under mode-2) and is the wrong tool for a correctness gate. Reserve small-BP / deep-churn for explicit
 latency measurements (ⓠ3/ⓠ5/⑥).
 
+---
+
+# Phase 2 / ⓝ5 — full-mysqld AddressSanitizer (2026-06-28)
+
+> **Result: CLEAN.** A mysqld built with `-DWITH_ASAN=ON` (15 min) ran the full integration path —
+> hook-under-latch ‖ off-latch drainer ‖ consult ‖ a held analytic reader (serve) ‖ deadzone GC ‖ clean
+> teardown — under concurrent oltp_read_write + oltp_read_only churn, and the server log had **zero
+> AddressSanitizer reports** (no use-after-free, heap-buffer-overflow, or SEGV). Until now all sanitizer
+> evidence was standalone only; this is the gold-standard integration check.
+
+## Method
+`integration/scripts/build_q9_asan.sh`: configure + build the ASan mysqld in a separate dir, then boot it
+with `ACCEL_GC=1 ACCEL_AUTHORITATIVE=2` (GC on + verify-serve, so consult/serve/walk-compare/drainer/GC are
+all live), run an 8-thread oltp_read_write + 4-thread oltp_read_only churn plus a held reader doing repeated
+deep reads, then `SHUTDOWN` (exercising teardown vs in-flight consult/GC/drainer). `ASAN_OPTIONS` had
+`detect_leaks=0` (the dummy-overflow list leaks by design, docs ⓣ18 — focus ASan on the correctness-critical
+UAF / overflow class). The mysql client reused the existing non-ASan build (protocol-compatible).
+
+## Evidence the gate was not hollow
+The run did real work under ASan: consult calls=251,150, hit=243,803, **construct_BAD=0** (byte-correct
+serves under ASan), served=243,803; GC retired 9,114 (windowed 8,716 + dummy 398), live_buckets bounded;
+clean shutdown. So the drainer, consult, serve, GC, and teardown all executed under ASan and the integration
+path is memory-clean.
+
+## TSan
+Full-mysqld TSan is a documented residual: the standalone TSan already exercises the accel race surface
+(drainer ‖ consult ‖ cuts-GC, the same structure — single-producer enqueue-under-latch, single-consumer
+drainer, read-only EBR-guarded consult), and MySQL-under-TSan needs the upstream suppression file and a
+5–10× slowdown for low marginal value over the standalone result.
+
 ## What this closes / what remains
 - **Closes ⓠ3** (the central 5-3 retreat worry): the in-middle headline survives in real InnoDB and scales
   with LLT, given the HTAP gap.
@@ -209,4 +239,7 @@ latency measurements (ⓠ3/ⓠ5/⑥).
   on LOB-heavy but degrades gracefully to vanilla. Documented Limitation; cache scope = small-row OLTP.
 - **Closes composite-PK / string-PK / secondary-index (part of ⓝ4) + savepoint (ⓝ15)**: all construct_BAD=0;
   the cache generalizes past single-INT-PK and degrades safely on savepoint complexity.
-- Remaining Phase 2: full-mysqld ASan/TSan (ⓝ5). Then Phase 3 (paper, incl. the ⓝ6 Limitation).
+- **Closes ⓝ5 (ASan)**: full-mysqld integration path is AddressSanitizer-clean; full-mysqld TSan is a
+  documented residual (standalone TSan covers the accel race surface).
+- **Phase 2 essentially complete.** Next: Phase 3 (paper — Korean + English — incl. the ⓝ6 Limitation and
+  the TSan residual; multi-run/error-bars; patch vendoring).

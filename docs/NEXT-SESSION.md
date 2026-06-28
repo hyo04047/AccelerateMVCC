@@ -23,8 +23,12 @@
   Limitation). 재현 `build_q6_coverage.sh`.
 - **Phase 2 correctness breadth CLOSED (세션 11)** — composite-PK(a,b)+secondary-index·string-PK·savepoint
   전부 **construct_BAD=0**(mode-2 verify-serve, 4G resident). 캐시가 single-INT-PK 너머 일반화·savepoint는 graceful
-  MISS로 안전. 재현 `build_q7_keys.sh`·`build_q8_savepoint.sh`. **Phase 2 잔여 = full-mysqld ASan/TSan(ⓝ5) 하나** → Phase 3(논문).
+  MISS로 안전. 재현 `build_q7_keys.sh`·`build_q8_savepoint.sh`.
   ⚠️ 방법론: correctness 체크는 4G resident+짧은 churn(64M+깊은 churn+secondary는 병리적 느림).
+- **Phase 2 ⓝ5 full-mysqld ASan CLOSED — CLEAN (세션 11)** — `-DWITH_ASAN=ON` mysqld서 drainer‖consult‖held
+  reader(serve)‖GC‖teardown 동시 스트레스 → **AddressSanitizer 리포트 0**(consult 251k·serve 243,803·construct_BAD=0·
+  GC retired 9,114·clean shutdown). full-mysqld TSan은 documented residual. 재현 `build_q9_asan.sh`.
+  **→ Phase 2 사실상 완료. 다음 = Phase 3(논문 한글+영문·multi-run/error-bar·패치 vendor·Limitations[ⓝ6·TSan residual]).**
 - **1차 목표 A+B+C 완료**, **최종 D 완료** (populate → consult → authoritative serve → ⑥ 성능 payoff).
 - **⑤a-2 완료** — deadzone GC가 통합 mysqld 안에서 실제로 돈다(pushed InnoDB clock + active-view registry,
   amortized windowed sweep, construct_BAD=0·race/UAF 0·메모리 유계). **5-2b C1·C2 완료**(mode-2 verify-serve가
