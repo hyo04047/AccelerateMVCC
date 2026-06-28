@@ -48,8 +48,13 @@
 **특성화·문서화(PERF-only, 버그 아님):**
 - **⑥ chain-sever 긴장 확정·특성화·deferral** — GC가 navigation 경로(중간 dead 버전)를 회수하면 lineage 재구성 chase가 끊겨(chase_break, 계측 split로 확정 861/862·GC dummy-drain 486k) consult MISS→walk. **construct_BAD=0 항상**(PERF-only, 절대 틀린 답 X). 특성화(4 run): **3/4 hold(~4.7s ~19×) / 1/4 degrade(~90s walk), reclaim storm과 상관, 항상 정답.** 설계 탐색(22)→GC-side link-healing 추천→적대 리뷰(32) **NO_GO**(⑤b 긴장을 perf-collapse[안전]→correctness-race[위험]로 악화, WAF 안전변형은 ⑤b-lite로 수렴). **결정: GC-쪽 완성을 FG+BG GC 스테이지로 deferral**(체인-sever는 GC-쪽 긴장이고 FG cooperative reclaim이 reclaim dynamics를 바꿈 → 한 묶음으로 완성). 유일 sanctioned 경로 = GC-clear-tolerant memoized-lineage(⑤b-lite 진화형, live state 유도, chased mutable graph 금지). design-D5-gc §12. 진단계측 유지(`ACCEL_GEN_GATE` 토글·`gcrace`·noncontig split).
 
-**다음 = FG+BG GC 스테이지(여기서 GC-쪽 완성):**
-- ⓠ2 FG cooperative reclaim(signal C, 측정 +30%) 통합 + 위 GC-clear-tolerant memoized-lineage mitigation + ⑤b 0.16s는 이 안전 틀에서만(chased graph로 X). 그다음 Phase 2(워크로드 폭·LOB) → Phase 3(논문).
+**FG+BG GC 스테이지 ✅ 완료 (design-D5-gc §13):**
+- 설계 탐색(22+17 agents): **β(sever 살아남는 navigation 구조)는 guardrail 안에서 구조적 불가** 재확인(healing의 재탕). GO=α+GC-tuning.
+- **α(FG cooperative reclaim 통합) = 측정상 이득 0** — consult Pass-1에 splice 이식(serve-safe·construct_BAD=0·standalone Release39/ASan28/TSan28), 3 config A/B(+0.9%/+0.06%/-0.6% 노이즈). consult가 OLTP 비용의 무시할 fraction·BG가 체인 짧게 유지. Stage-C +30%는 read-only microbench 아티팩트. ablation knob(default off)로 보존.
+- **GC-tuning drain-cap = ⑥ stabilizer(스테이지 실수확)** — dummy-drain storm이 sever 주범. `ACCEL_DRAIN_CAP`로 per-cycle reclaim cap. 곡선(30+ run): cap=0 2/8·5000 1/8·**1000 0/6·500 0/6 degrade**(construct_BAD=0 전부). 메모리(dummy_pending)는 cap 무관 hold ~380k·∝window(30s 380k→60s 755k=⑤ 유지). **⑥를 fragile(1/4)→stable로.** ⑥-serving 권장 `ACCEL_DRAIN_CAP≈1000`(default 0 유지).
+- 커밋 `71f0cfd`(α)·`1f92ea2`(drain-cap+테스트하드닝). standalone 39 5/5 안정(flaky 3개 fix).
+
+**다음 = Phase 2(워크로드 폭·LOB·write-heavy+LLT in-middle·savepoint) → Phase 3(패치 vendor·Limitations·multi-run·논문 한글+영문).** ⑤b 0.16s는 안전 틀(memoized-lineage)에서만, 별 우선순위 아님(0.22s reuse 이미 있음).
 
 ---
 

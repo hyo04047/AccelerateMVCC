@@ -446,3 +446,52 @@ pressure; degrades gracefully to the correct walk under a small-BP reclaim storm
 always preserved). C3 (mode-1 SAFE serve) stands as the shipped deliverable; mode-1's perf benefit is regime-
 dependent. Diagnostics retained: `ACCEL_GEN_GATE` toggle, `gcrace` counter, `nc_headwriter_`/`nc_chasebreak_`
 split.
+
+## 13. FG+BG GC stage — outcome: α (FG cooperative reclaim) measures null, GC-tuning drain-cap STABILIZES ⑥ (2026-06-28)
+The stage deferred in §12.4 (complete the GC side) was opened. A design exploration (22-agent design panel +
+17-agent synth) confirmed **β (a navigation structure that survives the sever) is structurally impossible within
+the safety guardrails** (the navigation path IS the in-middle nodes the memory bound reclaims; a live-derived
+memo cannot hold links no longer in the live chain; the only capture mechanism is the §12.3 healing, re-NO-GO'd).
+It recommended GO on α + GC-tuning. Both were implemented and **measured** (not assumed):
+
+### 13.1 α — FG cooperative reclaim in integration consult: correct, but measured read-tput benefit ≈ 0
+α wires the standalone search()'s 1c-4 cooperative unlink into the integration consult: consult's Pass-1 helps
+prune dead non-head epochs it scans (mark + best-effort O(1) CAS-splice; retire stays BG-only). Entries are added
+to the map BEFORE the mark, so the consult's own chase keeps every link; the mark only shortens the chain for
+future scans. Gated `consult_fg_reclaim_` (env `ACCEL_CONSULT_FG`) + the published superset deadzone (so a VISIBLE
+version is never spliced -> no wrong serve). Validated: standalone Release 39 / ASan 28 / TSan 28 (new oracle
+`Consult.ConsultFgReclaimRaceSafeAndPrunes`: drainer‖consult-FG‖BG-retire, no wrong/torn serve, coop_dead_seen
+grows). **Measured (build_d5_alpha.sh, held LLT + oltp_read_write A/B), 3 configs: 1G/32thr +0.9%, 64M/32thr
++0.06%, 1G/128thr -0.6% -- all within noise**, while α engaged heavily (coop_dead_seen 192k-361k) at
+construct_BAD=0. Root cause (data-backed): consult is a negligible fraction of the OLTP transaction cost
+(I/O/lock/network dominate) and BG GC keeps chains short on its own; the Stage-C +30% was a read-only microbench
+artifact where consult/search WAS the measured cost. Kept as a validated ablation knob (default off).
+
+### 13.2 GC-tuning drain-cap — the ⑥ stabilizer (the stage's real win)
+The ⑥ collapse (§12.2, 1/4 degrade) is the small-BP dummy-drain reclaim STORM (~500k orphan epochs reclaimed in
+one burst) severing the held reader's navigation chain in one shot (windowed sweep is ~24 in both hold and degrade
+runs -- the dummy drain is the culprit). `drain_dummy` now reclaims at most `dummy_drain_cap_` dead orphans per
+cycle (env `ACCEL_DRAIN_CAP`, 0 = unlimited = unchanged), re-queuing the rest -- spreading/holding the reclaim so
+the held reader finishes its deep scan before the cut completes. **Measured curve (build_d5_gctune*.sh, lean ⑥:
+held reader + churn, 64M, mode-1+GC, 30+ runs):**
+
+| drain-cap | degrade rate | held-reader latency | construct_BAD | dummy_pending (memory) |
+|---|---|---|---|---|
+| 0 (off) | **2/8** | storm 58-88s | 0 | hold ~400k |
+| 5000 | 1/8 | partial 67s | 0 | ~380k |
+| 1000 | **0/6** | ~3.5s (HOLD) | 0 | ~380k |
+| 500 | **0/6** | ~3.5s (HOLD) | 0 | ~380k |
+
+**cap ≤ 1000 cleanly stabilizes ⑥ (0 degrade, construct_BAD=0).** Critically, the memory (`dummy_pending`) in HOLD
+runs is **~380k regardless of cap** (cap=0 holds also sit at ~400k); the cap's only marginal cost is retaining the
+orphans that the *uncapped storm would occasionally reclaim* -- and that reclaim is exactly what severs the chain.
+The retained memory grows with the held window (~380k @30s hold -> ~755k @60s hold) = **consistent with the ⑤
+"memory ∝ live-txn window" claim, NOT unbounded.** So the drain-cap is a perf-only, always-safe DIAL that turns
+the ⑥ headline from *fragile (1/4 degrade)* into *stable*, at a window-bounded memory cost.
+
+### 13.3 Net + recommendation
+The fundamental memory-vs-navigation tension remains (β impossible), but in **practice** the GC-side is complete:
+bounded memory (⑤a-2) + a SAFE held-reader fast read (⑥ ~190× when held; now STABLE under GC via the drain-cap)
++ a measured dial to trade between them. **Recommendation: an ⑥-serving deployment sets `ACCEL_DRAIN_CAP≈1000`**
+(default stays 0 = the InnoDB-faithful unlimited-reclaim baseline; operators opt in). α stays a default-off knob.
+This is a defensible, honest paper story: the tension is fundamental, characterized, and tunable.

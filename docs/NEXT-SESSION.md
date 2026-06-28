@@ -14,11 +14,13 @@
 - **C3(mode-1 serve-only 안전 출하) 완료** — gc_generation 2nd firewall(race detector·mode-1 한정) +
   1-in-N walk-audit(observe-only·N=0이면 거부) + 4-layer 분업. construct_BAD=0 도처. 커밋 `6025021`·`3b21003`.
   상세 design-D5-gc §10.1.
-- **⑥ chain-sever 발견·특성화(PERF-only)** — GC가 navigation 경로를 회수하면 consult가 MISS→walk(chase_break,
-  계측확정). **construct_BAD=0 항상**(틀린 답 X). 특성화: 3/4 hold(~4.7s ~19×)/1/4 degrade(~90s walk). "재봉합"
-  fix는 적대 리뷰(32) **NO_GO**. **GC-쪽 완성을 FG+BG GC 스테이지로 deferral.** 상세 design-D5-gc §12.
-- **다음 = FG+BG GC 스테이지**(여기서 GC-쪽 완성: ⓠ2 FG cooperative reclaim +30% 통합 + GC-clear-tolerant
-  memoized-lineage mitigation). 상세 [open-items.md](open-items.md) §0c.
+- **⑥ chain-sever → drain-cap으로 안정화 (FG+BG 스테이지 완료, design-D5-gc §13)** — GC storm이 navigation
+  경로 회수 시 consult가 MISS→정답 walk로 degrade(construct_BAD=0 항상)였으나, **GC-tuning drain-cap이 ⑥를
+  stable로**: cap=0 2/8 → **cap≤1000 0/6 degrade**(30+ run·construct_BAD=0·메모리 ∝window=⑤ 유지). ⑥-serving
+  권장 `ACCEL_DRAIN_CAP≈1000`(default 0). **β(navigation 구조)는 구조적 불가 재확인, α(FG reclaim 통합)는 측정상
+  이득 0**(consult가 OLTP 비용의 무시할 fraction). 커밋 `71f0cfd`·`1f92ea2`, standalone 39 5/5 안정.
+- **다음 = Phase 2**(워크로드 폭: write-heavy+LLT in-middle 이득·LOB·savepoint·22% MISS effective speedup)
+  → Phase 3(InnoDB 패치 vendor·REPORT Limitations·multi-run/error-bar·논문 한글+영문). 상세 [open-items.md](open-items.md) §0c.
 
 ## 새 세션 시작 절차
 1. **맥락**: [README.md](README.md) §현황 → [open-items.md](open-items.md) §0b(남은 작업) → 필요 시

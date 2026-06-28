@@ -60,9 +60,10 @@ flowchart TD
   실제로 회수(정확·효율·race/UAF 0·메모리 유계). serve는 안전망(5-2b C1·C2) 위에서 GC와 함께 정확.
 - **⑤b-lite ✅ · C3(mode-1 serve-only 안전 출하) ✅** — gc_generation 2nd firewall(race detector·mode-1 한정)
   + 1-in-N walk-audit(observe-only). construct_BAD=0 도처(mode-2 soak 100만+ · mode-1 ship 4-way AND green).
-- **⑥ chain-sever 특성화(PERF-only)** — GC가 navigation 경로를 회수하면 consult가 정답 walk로 degrade
-  (construct_BAD=0 항상, 틀린 답 X). "재봉합" fix는 적대 리뷰 NO-GO → **GC-쪽 완성을 FG+BG GC 스테이지로 deferral**.
-  **다음 = FG+BG GC 스테이지.** 세션별 [progress-log.md](progress-log.md), 마스터 트래커 [open-items.md](open-items.md) §0c.
+- **⑥ chain-sever → drain-cap으로 안정화** — GC storm이 navigation 경로 회수 시 consult가 정답 walk로 degrade였으나
+  (construct_BAD=0 항상), **GC-tuning drain-cap(`ACCEL_DRAIN_CAP`≈1000)이 ⑥를 fragile(1/4 붕괴)→stable(0 붕괴)로**
+  (design-D5-gc §13). α(FG cooperative reclaim)는 측정상 이득 0. **다음 = Phase 2**(워크로드 폭·LOB).
+  세션별 [progress-log.md](progress-log.md), 마스터 트래커 [open-items.md](open-items.md) §0c.
 
 | 트랙 | 상태 |
 |---|---|
@@ -71,8 +72,8 @@ flowchart TD
 | D-populate (쓰기) | ✅ off-latch drainer가 InnoDB undo를 캐시로 적재 (write tput = vanilla) |
 | D-consult (읽기) | ✅ GC-safe lineage walk — 가시 버전 byte-정확 (construct_BAD=0) |
 | D-serve (authoritative) | ✅ mode-2 verify-serve(GC 위 49만 construct_BAD=0) + **C3 mode-1 안전 출하**(gen-gate+audit) |
-| ⑥ 성능 payoff | ✅ moderate GC선 hold(64M ~4.7s ~19×·4G 0.27s); ⚠️ reclaim storm선 chain-sever로 정답 walk degrade(PERF-only) |
-| ⑤ purge-view GC (메모리 유계) | ✅ ⑤a-2 통합 GC-on. **GC-쪽 완성(FG+BG + chain-sever mitigation)은 FG+BG 스테이지로 deferral** ([design-D5-gc.md](design-D5-gc.md) §12) |
+| ⑥ 성능 payoff | ✅ held-reader deep read ~190× (64M ~4.7s·4G 0.27s); **drain-cap(cap≤1000)으로 GC-on서 stable**(0 degrade·construct_BAD=0·메모리 ∝window) |
+| ⑤ purge-view GC (메모리 유계) | ✅ ⑤a-2 통합 GC-on + FG+BG 스테이지 완료(α null·drain-cap stabilizer; β navigation은 구조적 불가) ([design-D5-gc.md](design-D5-gc.md) §13) |
 
 ---
 

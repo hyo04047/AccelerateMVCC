@@ -23,7 +23,7 @@
 - 노드 free하되 lineage 재봉합(GC가 끊긴 자리 re-stitch)으로 chase가 O(surviving-depth)로 boundary 도달 — but ⑤b 긴장을 "truncate→MISS→walk(안전·느림)"에서 **"heal-race→MISS or wrong-serve(correctness-critical)"로 악화**. WAF 안전변형은 결국 live-chain scan=⑤b-lite로 수렴(더 싸고 안전한 inverse-edge 변형 없음). gen-gate는 healing 하에 더 load-bearing(self-defeating).
 - **결정**: chain-sever는 GC-쪽 긴장이고 FG cooperative reclaim이 reclaim dynamics를 바꾸므로 **GC-쪽 완성을 FG+BG GC 스테이지로 묶어 deferral**. 유일 sanctioned 경로 = GC-clear-tolerant memoized-lineage(⑤b-lite 진화, live state 유도). C3(mode-1 SAFE serve)은 출하 deliverable로 유지, mode-1 perf 이득은 regime-dependent.
 
-**→ 다음 = FG+BG GC 스테이지** — ⓠ2 FG cooperative reclaim(+30%) 통합 + 위 GC-clear-tolerant mitigation을 한 묶음으로. 상세 [open-items.md](open-items.md) §0c.
+**FG+BG GC 스테이지 ✅(이어서, design-D5-gc §13)** — 설계 탐색(22+17 agents)으로 **β(sever 살아남는 navigation 구조)는 guardrail 안 구조적 불가** 재확인 → GO=α+GC-tuning. **α(FG cooperative reclaim 통합)**: consult Pass-1에 dead non-head epoch splice 이식(serve-safe, map에 먼저 담고 mark, retire BG단독), standalone Release39/ASan28/TSan28 + 새 오라클, **3 config A/B 측정 = read-tput 이득 0(노이즈)** — consult가 OLTP 비용의 무시할 fraction·BG가 체인 짧게 유지(Stage-C +30%는 read-only microbench 아티팩트), ablation knob 보존. **GC-tuning drain-cap = ⑥ stabilizer**: ⑥ 붕괴는 dummy-drain storm이 held-reader 체인을 한 번에 sever. `ACCEL_DRAIN_CAP` per-cycle cap으로 분산 → 곡선 30+ run: cap=0 **2/8**·5000 1/8·**1000 0/6·500 0/6 degrade**(construct_BAD=0 전부)·메모리 cap무관 hold~380k·∝window(⑤ 유지). **⑥를 fragile(1/4)→stable로** = 헤드라인이 GC-on서 안정. 커밋 `71f0cfd`·`1f92ea2`. flaky 동시성 테스트 3개 finalization/spin-wait로 fix(39 5/5 안정). **→ 다음 = Phase 2**(워크로드 폭·LOB·write-heavy+LLT·savepoint) → Phase 3(논문). 상세 [open-items.md](open-items.md) §0c.
 
 ---
 
