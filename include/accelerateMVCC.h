@@ -264,6 +264,14 @@ namespace mvcc
         // contribution (BG-only vs BG+FG) at a fixed reader load.
         std::atomic<bool> fg_unlink_enabled_{true};
         void set_fg_unlink_enabled(bool v) { fg_unlink_enabled_.store(v, std::memory_order_relaxed); }
+        // D-5 FG-α (integration FG cooperative reclaim): when true, consult's Pass-1 traversal also helps prune
+        // dead non-head epochs it scans (mark + best-effort O(1) CAS-splice, like search()'s 1c-4 cooperative
+        // unlink; retire stays BG-only) -- so the integration read path (not just the standalone search) keeps
+        // chains short. It adds an epoch's entries to THIS build's map BEFORE marking, so the current consult's
+        // own chase keeps every link; the mark only shortens the chain for FUTURE Pass-1 scans + lets BG retire.
+        // Default OFF so existing consult oracles are unaffected (FG also needs a published deadzone to act).
+        std::atomic<bool> consult_fg_reclaim_{false};
+        void set_consult_fg_reclaim(bool v) { consult_fg_reclaim_.store(v, std::memory_order_relaxed); }
         // Forwards to the GC: tail-only (InnoDB-style) pruning baseline vs full deadzone.
         void set_gc_tail_only(bool v) { epoch_table->set_gc_tail_only(v); }
 

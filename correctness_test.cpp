@@ -552,6 +552,86 @@ TEST(Consult, GenGateConcurrentRetireNoWrongServe) {
     EXPECT_GT(gen_sum, 0u) << "the GC retire path never bumped gc_generation -> the 2nd firewall is dead code";
 }
 
+// D-5 FG-α: consult cooperative reclaim (set_consult_fg_reclaim) under drainer||consult-FG||BG-retire. consult
+// now MARKS+best-effort-splices dead non-head epochs it scans (retire stays BG-only). Asserts: (1) no wrong /
+// torn / too-new serve -- consult must NEVER splice a VISIBLE version (can_prune_epoch uses the SAME superset
+// deadzone as BG, so a version a live view sees is never prunable); (2) GC retires the FG-marked epochs;
+// (3) consult actually pruned (coop_dead_seen grows = the FG-α path is exercised). Mirror of CutsGc... with FG
+// ON -- the new surface is consult being a mark/splice MUTATOR. Run under ASan + TSan (multi-unlinker chain).
+TEST(Consult, ConsultFgReclaimRaceSafeAndPrunes) {
+    Accelerate_mvcc m(0, 14);
+    m.set_consult_fg_reclaim(true);              // the FG-alpha path under test
+    const uint64_t BASE = 1000000;
+    m.set_epoch_base(BASE + 1);
+    const int KEYS = 8, NV = 20000;
+    const uint64_t KEEP = 4000;
+    auto pk_of = [](int k){ return std::vector<unsigned char>{(unsigned char)k, 0xCC, (unsigned char)(k ^ 0x5A)}; };
+    auto hash_of = [](int k){ return (uint64_t)(5000 + k); };
+    std::array<std::atomic<uint64_t>, 8> head_writer{};
+    std::atomic<uint64_t> g_step{0};
+    std::atomic<bool> stop{false}, bad{false};
+    std::atomic<uint64_t> hits{0};
+
+    std::thread ins([&] {
+        for (int step = 1; step <= NV; ++step) {
+            int k = (step - 1) % KEYS;
+            uint64_t ver = BASE + (uint64_t)step, wr = ver + KEYS;
+            unsigned char img[10]; img[0] = (unsigned char)k;
+            for (int b = 0; b < 8; ++b) img[1 + b] = (unsigned char)((ver >> (8 * b)) & 0xFF);
+            img[9] = 0xED;
+            std::vector<unsigned char> pk = pk_of(k);
+            m.insert(1, hash_of(k), ver, ver * 10ull, ver * 100ull, ver * 1000ull,
+                     img, 10u, wr, pk.data(), (uint32_t)pk.size(), 0);
+            head_writer[k].store(wr, std::memory_order_release);
+            g_step.store((uint64_t)step, std::memory_order_release);
+        }
+        stop.store(true, std::memory_order_release);
+    });
+    std::thread gc([&] {
+        const uint64_t PERIOD = 2500; uint64_t last_norm = 0;
+        while (!stop.load(std::memory_order_acquire)) {
+            uint64_t s = g_step.load(std::memory_order_acquire);
+            uint64_t base = m.epoch_base(); uint64_t cur = BASE + 1 + s;
+            if (cur <= base + PERIOD) { std::this_thread::yield(); continue; }
+            uint64_t norm = cur - base, nb_top = (norm / PERIOD) * PERIOD;
+            for (uint64_t nb = last_norm + PERIOD; nb <= nb_top; nb += PERIOD) {
+                if (stop.load(std::memory_order_acquire)) break;
+                uint64_t cut_id = (cur > KEEP) ? cur - KEEP : 1;
+                std::vector<ViewCut> cuts = { {cut_id, cut_id} };
+                m.run_gc_cycle_from_cuts(nb + base, cuts, ActiveViewRegistry<>::NO_FLOOR);
+            }
+            if (nb_top > last_norm) last_norm = nb_top;
+            std::this_thread::yield();
+        }
+    });
+    auto consultor = [&](int seed) {
+        unsigned char buf[64]; uint32_t bl = 0; int k = seed;
+        while (!stop.load(std::memory_order_acquire)) {
+            k = (k + 1) % KEYS;
+            uint64_t lw = head_writer[k].load(std::memory_order_acquire);
+            if (lw == 0) { std::this_thread::yield(); continue; }
+            std::vector<unsigned char> pk = pk_of(k);
+            CO o = m.consult(1, hash_of(k), pk.data(), (uint32_t)pk.size(), 0, lw, 0,
+                             nullptr, 0, lw, buf, sizeof(buf), &bl);
+            if (o == CO::HIT) {
+                hits.fetch_add(1, std::memory_order_relaxed);
+                if (bl != 10 || buf[0] != (unsigned char)k || buf[9] != 0xED) { bad.store(true); continue; }
+                uint64_t ver = 0;
+                for (int b = 0; b < 8; ++b) ver |= (uint64_t)buf[1 + b] << (8 * b);
+                if (ver >= lw || ver < BASE) bad.store(true);
+            }
+        }
+    };
+    std::vector<std::thread> cs;
+    for (int i = 0; i < 4; ++i) cs.emplace_back(consultor, i);
+    ins.join(); gc.join();
+    for (auto& t : cs) t.join();
+    EXPECT_FALSE(bad.load()) << "consult-FG served a torn/cross-key/too-new image (spliced a visible version?)";
+    EXPECT_GT(hits.load(), 0u);
+    EXPECT_GT(m.epochs_retired(), 0u) << "GC never retired the FG-marked epochs";
+    EXPECT_GT(m.coop_dead_seen(), 0u) << "consult-FG never pruned -> the FG-alpha path was not exercised";
+}
+
 // ---------------------------------------------------------------------------
 // (a) MVCC visibility: search must return the LATEST committed version that is
 //     visible to the read view (trx_id < snapshot AND not in active list).

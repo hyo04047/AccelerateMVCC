@@ -371,31 +371,64 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
         nc->require_full_pk = require_full_pk;
         if (require_full_pk && pk != nullptr && pk_len > 0) nc->pk.assign(pk, pk + pk_len);
         bool apm = false;
+        // D-5 FG-α (integration FG cooperative reclaim): consult helps prune dead non-head epochs it scans
+        // (mark + best-effort O(1) CAS-splice, like search()'s 1c-4; retire stays BG-only), so the integration
+        // read path keeps chains short. Gated by consult_fg_reclaim_ + a published deadzone (the SAME superset
+        // the BG GC uses, so can_prune_epoch returns false for any version a live view sees -> a VISIBLE version
+        // is never spliced -> no wrong serve). Entries are added to THIS build's map BEFORE the mark, so the
+        // current consult's own chase keeps every link; the mark only shortens the chain for FUTURE Pass-1 scans.
+        Epoch_table::deadzone *dz = consult_fg_reclaim_.load(std::memory_order_relaxed)
+            ? epoch_table->published_deadzone() : nullptr;
+        MarkedPtr<epoch_node> *pred_next = &header->next;
         for (epoch_node *epoch = header->next.ptr(); epoch != nullptr; ) {
             uintptr_t w = epoch->next.load();
             epoch_node *succ = MarkedPtr<epoch_node>::ptr_of(w);
-            if (!MarkedPtr<epoch_node>::mark_of(w)) {   // skip logically-deleted epochs
-                for (undo_entry_node *u = epoch->first_entry; u != nullptr; u = u->next_entry.load()) {
-                    if (require_full_pk) {              // full-PK identity (pk_hash is only a bucket hint)
-                        if (u->pk_len == 0 || u->pk_len != pk_len) continue;
-                        bool pk_eq = true;
-                        for (uint32_t i = 0; i < pk_len; ++i)
-                            if (u->pk[i] != pk[i]) { pk_eq = false; break; }
-                        if (!pk_eq) continue;
-                    }
-                    apm = true;
-                    if (changes_visible(u->version_trx_id, up_limit_id, low_limit_id, creator_trx_id,
-                                        m_ids, m_ids_n))
-                        any_visible = true;
-                    if (u->version_trx_id != u->writer_trx_id) {
-                        auto it = nc->link.find(u->writer_trx_id);
-                        if (it == nc->link.end())
-                            nc->link.emplace(u->writer_trx_id, ConsultLink{u->version_trx_id, u, false});
-                        else if (it->second.version != u->version_trx_id)
-                            it->second.ambiguous = true;
-                    }
+            if (MarkedPtr<epoch_node>::mark_of(w)) {
+                // already logically deleted: best-effort help-splice (Harris), skip its dead entries. Its links
+                // are absent from this map -> a chase needing them MISSes (the existing chain-sever, PERF-only).
+                uintptr_t exp = MarkedPtr<epoch_node>::pack(epoch, false);
+                pred_next->cas(exp, MarkedPtr<epoch_node>::pack(succ, false));
+                epoch = succ;
+                continue;
+            }
+            for (undo_entry_node *u = epoch->first_entry; u != nullptr; u = u->next_entry.load()) {
+                if (require_full_pk) {              // full-PK identity (pk_hash is only a bucket hint)
+                    if (u->pk_len == 0 || u->pk_len != pk_len) continue;
+                    bool pk_eq = true;
+                    for (uint32_t i = 0; i < pk_len; ++i)
+                        if (u->pk[i] != pk[i]) { pk_eq = false; break; }
+                    if (!pk_eq) continue;
+                }
+                apm = true;
+                if (changes_visible(u->version_trx_id, up_limit_id, low_limit_id, creator_trx_id,
+                                    m_ids, m_ids_n))
+                    any_visible = true;
+                if (u->version_trx_id != u->writer_trx_id) {
+                    auto it = nc->link.find(u->writer_trx_id);
+                    if (it == nc->link.end())
+                        nc->link.emplace(u->writer_trx_id, ConsultLink{u->version_trx_id, u, false});
+                    else if (it->second.version != u->version_trx_id)
+                        it->second.ambiguous = true;
                 }
             }
+            // FG-α: entries now in the map -> prune this epoch if dead non-head (mark + best-effort splice for
+            // future consults + BG retire). NEVER the head (pred_next == &header->next). Mirrors search() 1c-4;
+            // re-read epoch->next after the mark so we splice to the frozen successor, never a stale one.
+            if (dz != nullptr && pred_next != &header->next && epoch_table->can_prune_epoch(epoch, dz)) {
+                coop_dead_seen_.fetch_add(1, std::memory_order_relaxed);
+                epoch->next.set_mark(succ);
+                uintptr_t mw = epoch->next.load();
+                if (MarkedPtr<epoch_node>::mark_of(mw)) {
+                    epoch_node *msucc = MarkedPtr<epoch_node>::ptr_of(mw);
+                    uintptr_t exp = MarkedPtr<epoch_node>::pack(epoch, false);
+                    pred_next->cas(exp, MarkedPtr<epoch_node>::pack(msucc, false));  // best-effort, no retry
+                    epoch = msucc;
+                } else {
+                    epoch = MarkedPtr<epoch_node>::ptr_of(mw);   // next moved w/o mark -> advance, no splice
+                }
+                continue;   // pruned: do NOT advance pred
+            }
+            pred_next = &epoch->next;   // kept -> advance pred over it
             epoch = succ;
         }
         nc->any_pk_match = apm;
