@@ -7,7 +7,8 @@
 > **분류**: ⓠ 조용히 버려질 위험이 있는 목표 / ⓝ 논문 전 필요 / ⓣ 명시 추적(future work 가능) / ⓞ 진짜 optional.
 
 ## 0. 한 줄 진단
-> ⚠️ **아래 원본 진단(세션 8)은 대부분 해소됨 — 현재 진실은 §0d(세션 11) + §0c(세션 10).** GC는 통합서 ON·실제
+> ⚠️ **아래 원본 진단(세션 8)은 대부분 해소됨 — 현재 진실은 §0f(세션 13, 최신) ← §0e(세션 12) ← §0d(세션 11).**
+> 세션 13서 개발 완전 완료 확정(동시-HTAP ⑥/⑤까지 실측, construct_BAD=0 도처). 남은 건 Phase 3(테스트·정리·논문)뿐. 그 아래로: GC는 통합서 ON·실제
 > sweep(⑤a-2), ⑥는 GC-on 생존+drain-cap 안정화, Phase 2(ⓠ3/ⓠ5/ⓝ6/키/savepoint/ASan) 완료. **현재 남은 진짜
 > 게이트(논문 신뢰성) = ① multi-run/error-bar 데이터 전무(⑥는 non-deterministic인데 단일-run) · ② raw 로그 미보존(repo
 > 단독 재현 불가) · ③ cold-key 미회수(ⓝ9)로 "memory ∝ live-txn window" 주장이 dataset 스코프선 미성립(스코핑 or 구현
@@ -121,6 +122,46 @@
 **ⓝ10·ⓠ2 정정:**
 - **ⓝ10**(EPOCH_SIZE) §0b "CLOSED"는 boot-offset 절반만 — within-window sparsity(rank-map 재척도)는 여전히 deferred(5-2 미착수). tag를 "boot offset only"로 스코프.
 - **ⓠ2**(FG +30%) → **CLOSED/REFUTED-by-measurement**: 통합 §13.1서 +0.9%/노이즈(+30%는 read-only microbench 아티팩트). ablation knob(default off).
+
+## 0f. 세션 13 갱신 (2026-06-29) — Phase-3 전 최종 검토 + 잔여 dev 완료 + future-work 재분류
+> 사용자 지시: Phase 3(테스트·정리·논문) 전에 개선/개발은 전부 완료. 멀티에이전트 검토(6차원 38 findings) →
+> 각 finding을 사용자 원칙(개선=지금·"새 설계=다음 논문급 연구방향"만 향후연구)으로 전수 triage. review-quality 유지.
+
+**핵심 — 동시-HTAP ⑥/⑤ 확인 (DoD 원문 config, `build_q15_concurrent.sh`):**
+- 직전까지 모든 ⑥/⑤가 **churn 멈춘 뒤** 측정됐음(DoD는 "동시 HTAP"). 처음으로 **churn 도는 중** held deep read 측정.
+- GC-on/off 모두: 64M mode-1 serve **0.2~3.9s vs vanilla walk 60~66s (~16–300×)**, 4G ~0.2~0.34s, mode-2 verify-serve
+  **served 3000/3000 byte-동일·construct_BAD=0**. **동시성에서도 헤드라인 생존 = 숨은 dev 갭 없음.** (단일 held-reader
+  regime이라 GC 회수 적음(~24); multi-reader chain-sever/degrade는 §0c·design-D5-gc §12/§13.2에 이미 특성화.)
+
+**닫힘(CLOSED) — 잔여 dev:**
+- **correctness surface 검증**(`b9924b6`): DDL straddle(instant→게이트 MISS, rebuild/truncate→새 table_id fresh HIT,
+  `build_q13_ddl.sh`) + 적대적 same-row savepoint rollback(3 staggered readers, `build_q14_savepoint.sh`) = construct_BAD=0.
+- **hardening 4건**(`acd6461`·`6618760`): ① m_ids sorted **release-active fail-closed**(changes_visible binary_search
+  게이트가 NDEBUG서 assert 컴파일아웃 → 미정렬 시 MISS-degrade) ② seqlock `begin!=0` precondition assert ③ ConsultCache
+  reuse sharp-edge 주석(firewall lock 의존) ④ **mode-1 serve 게이트 `vrow==nullptr`**(vrow 요청 시 walk fallback; live
+  tree+vendored diff, q15 재빌드 바이너리서 serve 정상=회귀 없음).
+- **firewall doc-code 정합**(`b9924b6`): 실효 firewall = full-PK·contiguity(head_writer)·link-gap·changes_visible
+  (suffix_min은 vestigial, consult 미참조) · node_count 역할 정정(monotonic reuse 카운터) · dead `last_node` 제거 ·
+  design-D4b §7#2(secondary-index) q7 증거로 닫음.
+- **512B(A) wide-in-page**(`4809081`): `ACCEL_IMG_MAX` build-overridable(`-DACCEL_IMG_MAX_BYTES`, 기본 512=메모리 회귀 0)
+  + serve 버퍼 `accel_cbuf`/out_cap lockstep. `build_q16_widerow.sh`: ~1.35KB all-in-page 행 cap=2048서 **HIT 1000/1000·
+  construct_BAD=0**, cap=512 대조 ineligible. → 캐시 scope = small-row → **in-page row**로 확장(REPORT §6).
+
+**코드로 SAFE 확정 (dev 불필요):** seqlock {begin,up} tear(seqlock이 구조적 차단) · pk_len 256-truncation(`u->pk_len==0`
+→ skip, 서빙 안 됨) · ambiguity-guard(head_writer anchor가 chase-start 고정) · head-prepend(wrapper_prunable head-skip이
+실 가드, assert 아님) · secondary-index(공유 clustered builder 경유+q7 HIT 2000/2000).
+
+**재분류 (사용자 교정 — "향후연구 ≠ 구현 주제"):**
+- **off-page LOB(구 512B B)** → future-work 아니라 **scope Limitation**: LOB가 MVCC하 자체 버전 → cached reference 추적이
+  wrong-serve 위험, LOB-version-safe 재구성 선결. 구현 확장 주제이지 다음-논문 연구 아님(design-D6 (B), REPORT §6).
+- **shared cross-reader nav cache** → future-work 아니라 **measured-negative**(consult 비병목, §14.2상 이득~0; FG-α 동형). discussion.
+- **진짜 향후연구(다음 논문 방향)** = superset-safe derived-served 캐시를 다른 엔진/index/isolation·분산 MVCC·persistent
+  memory로 일반화, no-wrong-serve 형식검증(TLA+). (REPORT §8.)
+
+**Phase 3 게이트 (남은 것, 테스트·정리·논문):** ① multi-run/error-bar(⑥ non-deterministic·단일-run) · ② raw-log 아카이빙
+(⚠️ `*.log`이 `.gitignore`라 컨벤션 결정 필요 — `git add -f` or non-.log 확장자 or results/ 예외) · ③ cold-key 스코핑 vs
+eviction · ④ CH-benCHmark/TPC-C 평가 · ⑤ no-wrong-serve **semi-formal 논증**(형식모델은 향후연구) · ⑥ **논문 한/영**. vDriver
+직접 재구현은 SKIP(이미 git, related-work 참조). 커밋 `b9924b6`·`acd6461`·`6618760`·`4809081`.
 
 **잔여(낮은 우선순위):** roll_pred/newest_node 필드가 이제 dead(fast path NO-GO) → 제거 후보 · FTS/spatial/partition correctness · full-mysqld TSan(documented residual).
 

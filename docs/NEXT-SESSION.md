@@ -4,9 +4,19 @@
 > [README.md](README.md), 남은 작업의 상세 트래커는 [open-items.md](open-items.md), 세션별 서사는
 > [progress-log.md](progress-log.md), 설계 근거는 `design-*.md`에 있습니다.
 >
-> 최종 갱신: **2026-06-29** (세션 12 — dev-completeness pass: 하드닝·crash-recovery·vendoring·dedup·hygiene + 큰 레버 2개 NO-GO + drift 정정. **개발 완전 완료, 다음 = Phase 3 논문**)
+> 최종 갱신: **2026-06-29** (세션 13 — Phase-3 전 최종 검토: 멀티에이전트 review→triage, **동시-HTAP ⑥/⑤ 확인(DoD config)**, hardening 4건 + 512B(A) wide-in-page 구현·실증, future-work 재분류. **개발 완전 완료(동시성까지 실측), 다음 = Phase 3**)
 
 ## 현재 위치 (한눈에)
+- **세션 13 — Phase-3 전 최종 검토 + 잔여 dev 완료.** 멀티에이전트 검토(38 findings)→사용자 원칙(개선=지금·새설계만
+  향후연구)으로 전수 triage. **핵심: DoD 원문 config(churn 도는 중 held read)를 처음 측정(`build_q15_concurrent.sh`)** —
+  GC-on/off 모두 64M serve 0.2~3.9s vs vanilla 60s(~16–300×)·mode-2 construct_BAD=0 → **동시성에서도 헤드라인 생존,
+  새 dev 갭 없음.** 잔여 dev 완료: hardening 4건(`acd6461` mids-sorted release fail-closed·seqlock begin!=0 assert·
+  reuse sharp-edge / `6618760` mode1-vrow 게이트) + DDL straddle·적대적 savepoint 검증(`b9924b6`, construct_BAD=0) +
+  **512B(A) wide-in-page**(`4809081`: cap build-overridable[기본 512=회귀0]+`build_q16_widerow.sh` cap2048서 HIT1000/1000
+  construct_BAD=0). 코드로 SAFE 확정(dev 불필요): seqlock tear·pk_len 256-truncation·ambiguity-guard·head-prepend·
+  secondary-index(공유 builder+q7). **재분류**: off-page LOB(512B B)·shared-nav는 future-work 아니라 **scope Limitation/
+  measured-negative**(구현 주제); 진짜 향후연구=연구방향(다른 엔진/isolation/분산 MVCC/형식검증). standalone Release40/
+  ASan29/TSan29 green·mysqld 재빌드(hardening+vrow) rc=0·construct_BAD=0 도처. **다음 = Phase 3(테스트·정리·논문).**
 - **세션 12 — dev-completeness pass DONE (개발 완전 완료).** 전수 감사(14 task)로 코드 hygiene·crash-recovery(ⓣ17)·
   vendoring(ⓣ10)·GC/splice dedup·하드닝·관측성을 닫고, 큰 레버 둘(roll_pred chase·DIVA interval tree)은 적대 리뷰서
   **NO-GO**(design-D5-gc §14), pool allocator는 데이터 근거로 보류. construct_BAD=0 도처·Release 40/ASan 29/TSan 29 green.
@@ -62,7 +72,7 @@
 1. **맥락**: [README.md](README.md) §현황 → [open-items.md](open-items.md) §0b(남은 작업) → 필요 시
    [progress-log.md](progress-log.md) 최신 엔트리.
 2. **검증(맹신 금지)**: `git log --oneline -5` + `git status`(clean) → standalone `build_d5_walk_std.sh`로
-   **36 green** 1회 → 필요 시 `build_d5_walk_san.sh`(ASan/TSan 25).
+   **40 green** 1회 → 필요 시 `build_d5_walk_san.sh`(ASan/TSan 29).
 3. **작업 방식**: 작게 + 중간 체크포인트(brief→사인→재진입). correctness-critical 큰 단계는 **적대적
    설계 리뷰 먼저**(⑤a-2·5-2b가 그렇게 진행됨). 답변은 한국어 존댓말·동작 레벨(symbol 덤프 X), technical
    용어는 영어. **성능이 목적, correctness는 전제.**
@@ -99,6 +109,9 @@
   `build_q8_savepoint.sh`(savepoint)·`build_q9_asan.sh`(full-mysqld ASan, ⚠️ mode-2; mode-1 ASan은 별도 필요).
   C3 = `build_d5_c3.sh`·`build_d5_c3c.sh`·`build_d5_c3c_char.sh`(⑥ 특성화). FG+BG = `build_d5_alpha.sh`·
   `build_d5_gctune{,2,3}.sh`. 그 외 `build_d5_c2.sh`·`build_d5_d6_gc.sh`·`build_d6.sh`(원본 ⑥).
+  **세션 13** = `build_q13_ddl.sh`(DDL straddle)·`build_q14_savepoint.sh`(적대적 savepoint)·`build_q15_concurrent.sh`
+  (**동시-HTAP ⑥/⑤, DoD config**; `ACCEL_GC=1 Q15LOG=q15_gc_concurrent`로 GC-on variant)·`build_q16_widerow.sh`
+  (512B(A) wide-in-page; rebuild가 `ACCEL_IMG_MAX_BYTES`+`accel_cbuf`를 lockstep으로 올림, 끝에 512 복원).
 
 ## 로드맵 (다음 작업) — GC-side ✅ + Phase 2 ✅, 다음은 Phase 3
 [open-items.md](open-items.md) §0d가 마스터 트래커. **GC-side perf 완료**(C3 출하·⑥ drain-cap·β 불가·α null) +

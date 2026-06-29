@@ -162,9 +162,13 @@ construct_BAD=0(full-PK FNV 일반화·savepoint rollback 버전 미서빙). ful
 - **measurement variance (다음 작업).** 통합 헤드라인 다수가 **단일 run**이다 — 특히 ⑥는 non-deterministic
   (reclaim storm 하 3/4 hold·1/4 degrade; `ACCEL_DRAIN_CAP≈1000`이 stable로 안정화). 헤드라인 config는
   N≥3–5 재측·median+min/max로 격상 필요(Phase 3). drain-cap "X/N degrade" 표는 이미 그 규율을 따른다.
-- **cache scope = small-row OLTP (정직한 scope 한계).** LOB/off-page/virtual/>512B 행은 캡처서 제외
-  (construct_BAD=0·안전하나 가속 0). big-row deep read(82.7s)가 캐시가 가장 필요한 곳인데 512B cap이 막는다.
-  future-work = configurable cap / in-page prefix + off-page locator.
+- **cache scope = in-page row (정직한 scope 한계).** 이미지 cap(`ACCEL_IMG_MAX`, 기본 512B)을 build-time으로
+  올리면 >512B여도 **전부 in-page인 wide row는 안전하게 캐시·서빙**된다(in-page=byte-identical 캡처; design-D6 (A),
+  `build_q16_widerow.sh`서 ~1.35KB 행 cap=2048 빌드 HIT 1000/1000·construct_BAD=0, cap=512 대조 ineligible로
+  실증; 비용=ring N×cap 메모리라 shipped 기본은 512). **off-page LOB·virtual 행만 제외**(construct_BAD=0·안전하나
+  가속 0): off-page LOB는 MVCC하 자체 버전이 있어 cached reference 추적이 틀린 LOB 버전을 서빙할 위험이라
+  LOB-version-safe 재구성(or purge 시 MISS-degrade)이 선결 — 이는 **구현 확장 주제이지 별도 연구가 아니므로
+  scope Limitation으로 명시**(design-D6 (B)). big-row deep read(82.7s)가 캐시가 가장 필요한 곳이나 현 scope 밖.
 - **cold-key footprint = capacity-bounded, not adaptive.** per-key header + Kuku slot은 회수 안 됨(~72B/키).
   용량 초과 시 graceful non-admission(vanilla fallback·construct_BAD=0·crash 없음)이나, *이동하는* working
   set 추적용 LRU eviction은 미구현 — "memory ∝ working set"은 **Kuku 용량(kuku_log2) 안에서** defensible
@@ -172,9 +176,9 @@ construct_BAD=0(full-PK FNV 일반화·savepoint rollback 버전 미서빙). ful
 - **full-mysqld TSan = documented residual.** standalone TSan이 accel race 표면(drainer‖consult‖cuts-GC)을
   덮고, MySQL-under-TSan은 무거운 suppression + 5–10× 둔화 대비 marginal value가 낮아 미실행.
 - **in-memory navigation은 최적화 대상이 아니다.** consult 비용은 OLTP 트랜잭션 비용(I/O·lock)의 무시할
-  fraction(FG-α 측정 +0.9%/노이즈; pool allocator도 측정 0). roll_pred fast chase와 DIVA interval tree 둘 다
-  GC-safety/worth-it에서 NO-GO(design-D5-gc §14) — ⑤b-lite(~0.22s reuse)가 출하 fast consult. ⑥ 이득은 undo
-  I/O 절벽 제거에서 온다.
+  fraction(FG-α 측정 +0.9%/노이즈; pool allocator도 측정 0; **shared cross-reader nav cache도 같은 이유로 이득
+  ~0 예상이라 미구현** = 고려·측정상 negative). roll_pred fast chase와 DIVA interval tree 둘 다 GC-safety/worth-it에서
+  NO-GO(design-D5-gc §14) — ⑤b-lite(~0.22s reuse)가 출하 fast consult. ⑥ 이득은 undo I/O 절벽 제거에서 온다.
 - **재현성.** InnoDB 소스 패치는 `integration/innodb/innodb-8.4.10-accel.diff`로 vendor(+ build_d1b3a.sh가
   CMakeLists/컴파일 플래그 생성); standalone 러너도 in-repo. raw run 로그 아카이빙은 Phase 3 작업.
 - **Stage-C 헤드라인(~5500×)은 프로토타입 내 self-modeled tail-only baseline**(고-rate 마이크로벤치)이며, 실
@@ -197,9 +201,11 @@ construct_BAD=0(full-PK FNV 일반화·savepoint rollback 버전 미서빙). ful
 
 **결론.** LLT가 존재하는 HTAP에서 InnoDB식 tail-only purge는 version chain을 통제하지 못하지만, deadzone의 in-middle reclaim은 chain을 유계로 유지한다(max ~155 vs ~846k, read throughput ~2,800× 우위). 이 효과는 skew 전반에서 견고하며, lock-free 동시성(marked pointer + EBR + FG/BG)이 정확성을 보존한다. 즉 본 구조는 standalone 프로토타입 수준에서 **HTAP/LLT 성능 향상이라는 목표를 정량적으로 입증**한다.
 
-**Stage D 완료 (§5).** 가속 인덱스를 실 InnoDB에 연결해(undo 메타데이터/소형 image 캡처, read-view cuts로 GC 재구동, consistent-read serve) ⑥ read-latency payoff(~190×/775×)·⑤ 통합 GC(LLT에 선형 20×/40×/63×)·serve construct_BAD=0·crash-recovery·워크로드 폭·full-mysqld ASan을 실증했다. 추가 perf 레버 두 개(roll_pred fast chase·DIVA interval tree)는 적대 리뷰서 NO-GO(GC-safety/worth-it; design-D5-gc §14) — ⑤b-lite가 출하 fast consult.
+**Stage D 완료 (§5).** 가속 인덱스를 실 InnoDB에 연결해(undo 메타데이터/소형 image 캡처, read-view cuts로 GC 재구동, consistent-read serve) ⑥ read-latency payoff(~190×/775×)·⑤ 통합 GC(LLT에 선형 20×/40×/63×)·serve construct_BAD=0·crash-recovery·워크로드 폭·full-mysqld ASan을 실증했다. **DoD 원문 config(churn이 도는 중 held read)도 측정**: 동시 OLTP churn 하에서도 ⑥ serve가 vanilla 60s 대비 0.2~3.9s(~16–300×)로 유지되고 mode-2 verify-serve가 construct_BAD=0(GC-on/off 모두, `build_q15_concurrent.sh`) — 헤드라인이 동시성에서 생존. 추가 perf 레버 두 개(roll_pred fast chase·DIVA interval tree)는 적대 리뷰서 NO-GO(GC-safety/worth-it; design-D5-gc §14) — ⑤b-lite가 출하 fast consult.
 
-**향후 (Phase 3).** 헤드라인 config의 multi-run/error-bar 재측 + raw 로그 아카이빙 + **논문(한글·영문)** 작성. 한계·위협 요인은 §6.
+**Phase 3 (마무리 — 테스트·정리·집필).** 헤드라인 config multi-run/error-bar 재측 + raw 로그 아카이빙 + CH-benCHmark/TPC-C 평가 + no-wrong-serve semi-formal 불변식 논증 + **논문(한글·영문)** 작성. 한계·위협 요인은 §6.
+
+**향후 연구 (다음 논문 방향).** superset-safe *derived-and-served* 캐시 아이디어를 다른 storage 엔진/index 타입·isolation level로, 분산/다노드 MVCC로, persistent memory 상 deadzone으로 일반화; no-wrong-serve 불변식의 형식검증(TLA+/모델체크). (off-page LOB 서빙·shared cross-reader nav cache 등은 *구현* 확장/최적화 주제이지 별도 연구 방향이 아니다 — 전자는 §6 scope Limitation, 후자는 측정상 이득 ~0.)
 
 ---
 

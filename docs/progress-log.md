@@ -4,6 +4,43 @@
 
 ---
 
+## 2026-06-29 — 세션 13: Phase-3 전 최종 검토 + 잔여 dev 완료 + future-work 재분류
+
+> 사용자 지시: Phase 3(테스트·정리·논문) 전에 **개선/개발은 전부 완료**, "새 설계(다음 논문급 연구방향)"만 향후연구로.
+> 멀티에이전트 검토(6차원 38 findings)를 그 원칙으로 전수 triage. **심사 제출은 아니나 review-quality 기준 유지.**
+
+**핵심 — 동시-HTAP ⑥/⑤ 확인 (DoD 원문 config, `build_q15_concurrent.sh`):** 직전까지 ⑥/⑤가 전부 churn 멈춘 뒤
+측정됐는데(DoD는 "동시 HTAP"), 처음으로 **churn 도는 중** held deep read를 측정. GC-on/off 모두 64M mode-1 serve
+**0.2~3.9s vs vanilla 60~66s(~16–300×)**, 4G ~0.2~0.34s, **mode-2 verify-serve served 3000/3000 byte-동일·construct_BAD=0**.
+→ 동시성에서도 헤드라인 생존 = **숨은 dev 갭 없음, 개발 완전 완료 확정.** (단일 held-reader라 GC 회수 적음(~24); multi-reader
+chain-sever degrade는 §0c·design-D5-gc §12/§13.2 기존 특성화.)
+
+**코드(커밋):**
+- `b9924b6` correctness surface 검증 + firewall doc-code 정합: DDL straddle(instant/rebuild/truncate, construct_BAD=0,
+  `build_q13_ddl.sh`)·적대적 same-row savepoint(3 staggered readers, `build_q14_savepoint.sh`) / suffix_min은 vestigial로
+  주석 정정(실효 firewall=full-PK·head_writer·link-gap·changes_visible)·node_count 역할 정정·dead `last_node` 제거·
+  design-D4b §7#2(secondary) q7 증거로 닫음.
+- `acd6461` hardening: m_ids sorted **release-active fail-closed**(binary_search 게이트가 NDEBUG서 assert 컴파일아웃)·
+  seqlock `begin!=0` precondition assert·ConsultCache reuse sharp-edge 주석.
+- `6618760` **동시 ⑥/⑤ 확인 + mode-1 serve 게이트 `vrow==nullptr`**(vrow 요청 시 walk fallback; live tree+vendored diff;
+  재빌드 바이너리서 serve 정상=회귀 없음) + design-D6.
+- `4809081` **512B(A) wide-in-page**: `ACCEL_IMG_MAX` build-overridable(`-DACCEL_IMG_MAX_BYTES`, 기본 512=회귀0) +
+  `accel_cbuf`/out_cap lockstep. `build_q16_widerow.sh`: ~1.35KB all-in-page 행 cap=2048서 **HIT 1000/1000·construct_BAD=0**,
+  cap=512 대조 ineligible. → 캐시 scope small-row → in-page row로 확장.
+
+**코드로 SAFE 확정(dev 불필요):** seqlock tear(seqlock 차단)·pk_len 256-truncation(`u->pk_len==0`→skip)·ambiguity-guard
+(head_writer anchor)·head-prepend(wrapper_prunable head-skip이 실 가드)·secondary-index(공유 builder+q7 HIT 2000/2000).
+
+**future-work 재분류 (사용자 교정: "향후연구 ≠ 구현 주제"):** off-page LOB(구 512B B)→**scope Limitation**(LOB MVCC
+versioning wrong-serve 위험; 구현 확장 주제) · shared cross-reader nav cache→**measured-negative**(consult 비병목, §14.2
+이득~0). **진짜 향후연구** = 다른 엔진/isolation/분산 MVCC/persistent memory 일반화·no-wrong-serve 형식검증(REPORT §8).
+
+**검증**: standalone Release 40 / ASan 29 / TSan 29 green(2회)·mysqld 재빌드(hardening+vrow) rc=0·construct_BAD=0 도처.
+**다음 = Phase 3**(multi-run/error-bar·raw-log 아카이빙[*.log이 .gitignore라 컨벤션 결정]·CH-benCHmark/TPC-C·semi-formal
+no-wrong-serve 논증·논문 한/영). 상세 open-items §0f.
+
+---
+
 ## 2026-06-29 — 세션 12: dev-completeness pass (Phase 3 전 개발 완전 완료)
 
 > 사용자 지시: Phase 3(논문) 전에 **개발을 완전히 완료**. 멀티에이전트 전수 감사(survey 8 → ideate 5 → triage)로
