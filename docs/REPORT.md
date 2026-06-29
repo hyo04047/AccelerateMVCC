@@ -169,10 +169,13 @@ construct_BAD=0(full-PK FNV 일반화·savepoint rollback 버전 미서빙). ful
   가속 0): off-page LOB는 MVCC하 자체 버전이 있어 cached reference 추적이 틀린 LOB 버전을 서빙할 위험이라
   LOB-version-safe 재구성(or purge 시 MISS-degrade)이 선결 — 이는 **구현 확장 주제이지 별도 연구가 아니므로
   scope Limitation으로 명시**(design-D6 (B)). big-row deep read(82.7s)가 캐시가 가장 필요한 곳이나 현 scope 밖.
-- **cold-key footprint = capacity-bounded, not adaptive.** per-key header + Kuku slot은 회수 안 됨(~72B/키).
-  용량 초과 시 graceful non-admission(vanilla fallback·construct_BAD=0·crash 없음)이나, *이동하는* working
-  set 추적용 LRU eviction은 미구현 — "memory ∝ working set"은 **Kuku 용량(kuku_log2) 안에서** defensible
-  (hot set ≥로 sizing). 진짜 eviction(lock-free Kuku erase + EBR)은 적대 리뷰서 cost≫payoff로 보류.
+- **cold-key footprint = capacity-bounded, not adaptive.** 메모리는 2-term: **(A) version 항 ∝ live-txn window**
+  (deadzone GC로 bounded, dataset 무관) **+ (B) per-key floor ∝ admit된 distinct keys**(~72B/키 = header+Kuku
+  slot+pinned head epoch+memoized ConsultCache, GC-무관). (B)는 Kuku 용량 N(`kuku_log2`)에서 cap되고, 초과 시
+  graceful non-admission(vanilla fallback·construct_BAD=0·crash 없음). 따라서 "memory ∝ working set"은 **working
+  set이 용량 N에 드는 한** defensible — *이동하는* working set 추적용 LRU eviction은 lock-free 안전성 cost≫payoff
+  (적대 리뷰)로 **미구현, 스코프로 처리**. 정밀 bound·sizing 공식(`kuku_log2 ≥ ceil(log2(hot keys/load factor))`)은
+  **`docs/design-D8-memory-scope.md`**.
 - **full-mysqld TSan = documented residual.** standalone TSan이 accel race 표면(drainer‖consult‖cuts-GC)을
   덮고, MySQL-under-TSan은 무거운 suppression + 5–10× 둔화 대비 marginal value가 낮아 미실행.
 - **in-memory navigation은 최적화 대상이 아니다.** consult 비용은 OLTP 트랜잭션 비용(I/O·lock)의 무시할

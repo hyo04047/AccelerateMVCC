@@ -16,7 +16,12 @@
   construct_BAD=0). 코드로 SAFE 확정(dev 불필요): seqlock tear·pk_len 256-truncation·ambiguity-guard·head-prepend·
   secondary-index(공유 builder+q7). **재분류**: off-page LOB(512B B)·shared-nav는 future-work 아니라 **scope Limitation/
   measured-negative**(구현 주제); 진짜 향후연구=연구방향(다른 엔진/isolation/분산 MVCC/형식검증). standalone Release40/
-  ASan29/TSan29 green·mysqld 재빌드(hardening+vrow) rc=0·construct_BAD=0 도처. **다음 = Phase 3(테스트·정리·논문).**
+  ASan29/TSan29 green·mysqld 재빌드(hardening+vrow) rc=0·construct_BAD=0 도처. **이어서 Phase 3 일부 진행(빌드-무관 묶음)**:
+  gate ② raw-log 아카이빙 해결(`.gitignore` `!integration/results/*.log` + 세션 로그 18개 커밋 `40bbf06`) · gate ⑤
+  no-wrong-serve **semi-formal 논증** 초안(`docs/design-D7-no-wrong-serve.md`, 커밋 `c4a845b`) · gate ③ cold-key **스코핑
+  결정**(`docs/design-D8-memory-scope.md`: 2-term 메모리 bound·eviction NO-GO·"용량 N 안 working set" 스코프+sizing).
+  **남은 Phase 3 = ① multi-run/error-bar(빌드-heavy) · CH-benCHmark/TPC-C(빌드-heavy) · 논문 한/영.** 빌드-heavy는 세션
+  안정적일 때 권장. push 완료.
 - **세션 12 — dev-completeness pass DONE (개발 완전 완료).** 전수 감사(14 task)로 코드 hygiene·crash-recovery(ⓣ17)·
   vendoring(ⓣ10)·GC/splice dedup·하드닝·관측성을 닫고, 큰 레버 둘(roll_pred chase·DIVA interval tree)은 적대 리뷰서
   **NO-GO**(design-D5-gc §14), pool allocator는 데이터 근거로 보류. construct_BAD=0 도처·Release 40/ASan 29/TSan 29 green.

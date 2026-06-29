@@ -36,8 +36,11 @@ versioning wrong-serve 위험; 구현 확장 주제) · shared cross-reader nav 
 이득~0). **진짜 향후연구** = 다른 엔진/isolation/분산 MVCC/persistent memory 일반화·no-wrong-serve 형식검증(REPORT §8).
 
 **검증**: standalone Release 40 / ASan 29 / TSan 29 green(2회)·mysqld 재빌드(hardening+vrow) rc=0·construct_BAD=0 도처.
-**다음 = Phase 3**(multi-run/error-bar·raw-log 아카이빙[*.log이 .gitignore라 컨벤션 결정]·CH-benCHmark/TPC-C·semi-formal
-no-wrong-serve 논증·논문 한/영). 상세 open-items §0f.
+**이어서 Phase 3 일부 진행(빌드-무관 묶음, 한 묶음씩)**: gate ② raw-log 아카이빙 해결(`.gitignore`에 `!integration/
+results/*.log` negation + 세션 로그 18개 커밋 `40bbf06`) · gate ⑤ no-wrong-serve **semi-formal 논증** 초안(`design-D7-no-
+wrong-serve.md`, F1–F4 jointly 닫음·HIT⟹byte==vanilla·¬HIT⟹MISS⟹vanilla, 커밋 `c4a845b`) · gate ③ cold-key **스코핑
+결정**(`design-D8-memory-scope.md`, 2-term 메모리 bound·eviction NO-GO·"용량 N 안 working set"+sizing). **남은 Phase 3 =
+① multi-run/error-bar · CH-benCHmark/TPC-C · 논문 한/영**(빌드-heavy는 세션 안정 시). 상세 open-items §0f.
 
 ---
 

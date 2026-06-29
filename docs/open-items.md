@@ -161,7 +161,9 @@
 **Phase 3 게이트 (남은 것, 테스트·정리·논문):** ① multi-run/error-bar(⑥ non-deterministic·단일-run) · ② raw-log 아카이빙
 **[컨벤션 해결]** = `.gitignore`에 `!integration/results/*.log` negation 추가(전역 `*.log` 무시를 results/ 한정 override),
 이번 세션 result 로그(q13/q14/q15/q15_gc/q16 + 세션12 d6/q11/q12/s5) 커밋. 이후 측정 로그는 results/에 떨궈 추적 · ③ cold-key 스코핑 vs
-eviction · ④ CH-benCHmark/TPC-C 평가 · ⑤ no-wrong-serve **semi-formal 논증 [초안 완료 → `docs/design-D7-no-wrong-serve.md`]**
+eviction **[해결 → `docs/design-D8-memory-scope.md`]**: 메모리 2-term((A) version ∝ live-txn window GC-bounded + (B)
+per-key floor ∝ admit keys ~72B, Kuku 용량 N서 cap)·eviction NO-GO 재확인·"working set within N"으로 스코프+sizing
+공식. 초과는 vanilla fallback(construct_BAD=0) · ④ CH-benCHmark/TPC-C 평가 · ⑤ no-wrong-serve **semi-formal 논증 [초안 완료 → `docs/design-D7-no-wrong-serve.md`]**
 (4-firewall F1–F4가 wrong-serve 공간 jointly 닫음: lineage 유일성 L0 + over-approx-only L2 → HIT⟹byte==vanilla·¬HIT⟹MISS⟹vanilla;
 형식모델 TLA+는 향후연구) · ⑥ **논문 한/영**. vDriver 직접 재구현은 SKIP(이미 git, related-work 참조).
 커밋 `b9924b6`·`acd6461`·`6618760`·`4809081`·`3022ed9`(docs)·`40bbf06`(raw-log gate②).
