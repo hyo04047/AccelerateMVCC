@@ -1,0 +1,33 @@
+=== copy accel sources + rebuild mysqld (picks up repo/include Step 1+2 edits via recompile) ===
+build rc=0
+
+############## BOOT 1 (populate + in-flight uncommitted insert, mode-2 + GC) ##############
+Creating a secondary index on 'sbtest1'...
+--- pre-crash: sentinel row 999999 count (expect 0) ---
+0
+--- in-flight session sees its own uncommitted row (expect 1) ---
+0
+--- pre-crash [accel] populate evidence ---
+############## CRASH: kill -9 mysqld mid-churn ##############
+/mnt/c/Users/USER/projects/AccelerateMVCC/integration/scripts/build_q12_crash_recovery.sh: line 71:  1824 Killed                     ACCEL_AUTHORITATIVE=2 ACCEL_GC=1 "$MYSQLD" "${COMMON[@]}" > "$MLOG1" 2>&1
+
+############## RESTART (InnoDB crash recovery; SAME datadir, NO --initialize) ##############
+--- crash recovery completed, server is up ---
+2026-06-29T03:19:32.682774Z 0 [System] [MY-010116] [Server] /root/mysql-build/runtime_output_directory/mysqld (mysqld 8.4.10) starting as process 1918
+--- POST-RECOVERY: sentinel row 999999 count (MUST be 0 = uncommitted insert rolled back) ---
+sentinel_count=0  (0 = rolled back OK; 1 = LEAK)
+--- table sanity (row count ~1000) ---
+1000
+
+############## POST-RECOVERY mode-2 verify-serve workload (rebuilt ephemeral cache) ##############
+--- held-snapshot reader SUMs (must ALL be identical = snapshot invariant on rebuilt cache) ---
+      1 1000
+     10 679715
+
+=== [accel] consult on the RESTARTED (rebuilt-cache) server ===
+[accel] consult: calls=9887 hit=9886 miss{absent=0 novisible=0 noncontig=1 ineligible=0 gcrace=0} | construct_ok=9886 construct_BAD=0 | auth_mode=2 served=9886 gen_gate=1
+
+=== VERDICT ===
+rolled_back_sentinel=PASS  rebuilt_cache_hit=9886 served=9886 construct_BAD=0
+RESULT: PASS (crash recovery + ephemeral rebuild safe: rollback honored, served==vanilla)
+=== DONE ===

@@ -1,0 +1,4 @@
+=== ⑥ MULTI-RUN (ship setting: mode-1 serve, GC on, DRAIN_CAP=1000). N(serve,64M)=8 ===
+Mon Jun 29 02:07:39 KST 2026
+
+########## bp64M_m0_cap1000_i1 (N=8) ##########

@@ -1,0 +1,12 @@
+2026-06-28T17:07:44.495374Z 0 [System] [MY-015015] [Server] MySQL Server - start.
+2026-06-28T17:07:44.761483Z 0 [System] [MY-010116] [Server] /root/mysql-build/runtime_output_directory/mysqld (mysqld 8.4.10) starting as process 482
+2026-06-28T17:07:44.787393Z 1 [System] [MY-013576] [InnoDB] InnoDB initialization has started.
+[accel] init: drainer started, accelerator constructed (gc=1 tail_only=0 retention_ms=0)
+2026-06-28T17:07:45.070960Z 1 [System] [MY-013577] [InnoDB] InnoDB initialization has ended.
+2026-06-28T17:07:45.277423Z 0 [Warning] [MY-010068] [Server] CA certificate ca.pem is self signed.
+2026-06-28T17:07:45.277962Z 0 [System] [MY-013602] [Server] Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.
+2026-06-28T17:07:45.299144Z 0 [System] [MY-010931] [Server] /root/mysql-build/runtime_output_directory/mysqld: ready for connections. Version: '8.4.10'  socket: '/root/mysql.sock'  port: 3309  Source distribution.
+2026-06-28T17:07:45.492572Z 8 [Warning] [MY-013360] [Server] Plugin mysql_native_password reported: ''mysql_native_password' is deprecated and will be removed in a future release. Please use caching_sha2_password instead'
+[accel] drained=500000 enq=500073 dropped=0 pk_buckets=676/1024 cur_key_chain_len=9989 last_pk_len=6 last_del=0
+[accel] drained=1000000 enq=1000013 dropped=0 pk_buckets=676/1024 cur_key_chain_len=618 last_pk_len=6 last_del=0
+2026-06-28T17:08:27.070244Z 0 [Warning] [MY-014084] [InnoDB] Threads are unable to reserve space in redo log which can't be reclaimed due to the 'log_checkpointer' consumer still lagging behind at LSN = 564338057. Consider increasing innodb_redo_log_capacity.

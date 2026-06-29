@@ -1,0 +1,25 @@
+host cores=16 (drainer is a SINGLE consumer thread regardless)
+
+########## oltp_write_only threads=16, 15s (push the version-generation rate) ##########
+    transactions:                        457091 (30464.55 per sec.)
+    queries:                             2742546 (182787.30 per sec.)
+    ignored errors:                      0      (0.00 per sec.)
+[accel] drained=1500000 enq=1500013 dropped=0 pk_buckets=1024/1024 cur_key_chain_len=119 last_pk_len=6 last_del=0
+
+########## oltp_write_only threads=32, 15s (push the version-generation rate) ##########
+    transactions:                        447899 (29843.27 per sec.)
+    queries:                             2687397 (179059.80 per sec.)
+    ignored errors:                      1      (0.07 per sec.)
+[accel] drained=3500000 enq=3500199 dropped=0 pk_buckets=1024/1024 cur_key_chain_len=260 last_pk_len=6 last_del=1
+
+########## oltp_write_only threads=64, 15s (push the version-generation rate) ##########
+    transactions:                        408136 (27182.84 per sec.)
+    queries:                             2448821 (163097.37 per sec.)
+    ignored errors:                      2      (0.13 per sec.)
+[accel] drained=5000000 enq=5000150 dropped=0 pk_buckets=1024/1024 cur_key_chain_len=376 last_pk_len=6 last_del=0
+
+=== VERDICT (drainer keep-up): dropped MUST be 0 and drained==enq = drainer never fell behind ===
+[accel] shutdown: enq=5253145 drained=5253145 dropped=0 pk_buckets=1024/1024 live_epoch_buckets=0
+enq=5253145 drained=5253145 dropped=0
+RESULT: drainer KEPT UP at max load (dropped=0, drained==enq) -> alloc is NOT a throughput bottleneck -> pool gives ~0 gain
+=== DONE ===

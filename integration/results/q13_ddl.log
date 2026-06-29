@@ -1,0 +1,23 @@
+=== Phase 3 pre-flight: DDL straddle (4G, mode-2). Gate = construct_BAD=0 in every variant ===
+table_id	name
+1064	db/t
+===== variant: instant_addcol (instant) =====
+  reader: warm	341534
+  reader: deep	341534
+  [accel] consult: calls=1000 hit=0 miss{absent=0 novisible=0 noncontig=0 ineligible=1000 gcrace=0} | construct_ok=0 construct_BAD=0 | auth_mode=2 served=0 gen_gate=1
+  GATE: PASS (construct_BAD=0)
+table_id	name
+1065	db/t
+===== variant: rebuild_force (rebuild) =====
+  reader: warm	243715
+  reader: deep	243715
+  [accel] consult: calls=1000 hit=1000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=1000 construct_BAD=0 | auth_mode=2 served=1000 gen_gate=1
+  GATE: PASS (construct_BAD=0)
+table_id	name
+1065	db/t
+===== variant: truncate_recreate (truncate) =====
+  reader: warm	0
+  reader: deep	0
+  [accel] consult: calls=1000 hit=1000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=1000 construct_BAD=0 | auth_mode=2 served=1000 gen_gate=1
+  GATE: PASS (construct_BAD=0)
+=== DONE ===

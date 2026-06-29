@@ -1,0 +1,7 @@
+tag	s
+scan_warm	679715
+SLEEP(48)
+0
+tag	s
+scan_deep1	679715
+Terminal close -- query aborted

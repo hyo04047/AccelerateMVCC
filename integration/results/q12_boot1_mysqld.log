@@ -1,0 +1,9 @@
+2026-06-29T03:19:19.292757Z 0 [System] [MY-015015] [Server] MySQL Server - start.
+2026-06-29T03:19:19.503063Z 0 [System] [MY-010116] [Server] /root/mysql-build/runtime_output_directory/mysqld (mysqld 8.4.10) starting as process 1824
+2026-06-29T03:19:19.511715Z 1 [System] [MY-013576] [InnoDB] InnoDB initialization has started.
+[accel] init: drainer started, accelerator constructed (gc=1 tail_only=0 retention_ms=0)
+2026-06-29T03:19:19.826473Z 1 [System] [MY-013577] [InnoDB] InnoDB initialization has ended.
+2026-06-29T03:19:20.026571Z 0 [Warning] [MY-010068] [Server] CA certificate ca.pem is self signed.
+2026-06-29T03:19:20.027147Z 0 [System] [MY-013602] [Server] Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.
+2026-06-29T03:19:20.047421Z 0 [System] [MY-010931] [Server] /root/mysql-build/runtime_output_directory/mysqld: ready for connections. Version: '8.4.10'  socket: '/root/mysql.sock'  port: 3309  Source distribution.
+2026-06-29T03:19:20.291751Z 8 [Warning] [MY-013360] [Server] Plugin mysql_native_password reported: ''mysql_native_password' is deprecated and will be removed in a future release. Please use caching_sha2_password instead'

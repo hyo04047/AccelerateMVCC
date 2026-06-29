@@ -1,0 +1,97 @@
+=== Phase-3 confirm: ⑥/⑤ under CONCURRENT churn. Gate (mode 2) construct_BAD=0; headline = mode-1 deep latency stays flat ===
+
+########## BP=64M MODE=0 DRAIN_CAP=0 (bp64M_m0) -- deep scans CONCURRENT with churn ##########
+Creating a secondary index on 'sbtest1'...
+History list length 669497
+--- scan SUMs (all identical within run = snapshot invariant held under concurrency) ---
+scan_warm	679715
+scan_deep1	679715
+scan_deep2	679715
+scan_deep3	679715
+3	0.00032725	SELECT 'scan_warm' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+5	61.54526825	SELECT 'scan_deep1' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+6	59.98538900	SELECT 'scan_deep2' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+7	60.49358175	SELECT 'scan_deep3' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+--- per-scan latency (SHOW PROFILES Duration, sec) -- deep scans were CONCURRENT with churn ---
+3	0.00032725	SELECT 'scan_warm' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+5	61.54526825	SELECT 'scan_deep1' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+6	59.98538900	SELECT 'scan_deep2' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+7	60.49358175	SELECT 'scan_deep3' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+physical-read delta during concurrent window (R2-R1, CONFOUNDED by churn) = 1002654
+--- churn tps (ran throughout the deep scans) ---
+    transactions:                        669493 (11372.02 per sec.)
+--- [accel] (bp64M_m0): consult line = HIT/MISS + construct_BAD; gc line = retire evidence ---
+[accel] consult: calls=3000 hit=2999 miss{absent=0 novisible=0 noncontig=1 ineligible=0 gcrace=0} | construct_ok=2999 construct_BAD=0 | auth_mode=0 served=0 gen_gate=1
+[accel] gc: enabled=0 retired{total=0 windowed=0 dummy=0} live_buckets=0 clock=1340306
+
+########## BP=64M MODE=1 DRAIN_CAP=1000 (bp64M_m1) -- deep scans CONCURRENT with churn ##########
+Creating a secondary index on 'sbtest1'...
+History list length 697952
+--- scan SUMs (all identical within run = snapshot invariant held under concurrency) ---
+scan_warm	679715
+scan_deep1	679715
+scan_deep2	679715
+scan_deep3	679715
+3	0.00032425	SELECT 'scan_warm' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+5	3.56526375	SELECT 'scan_deep1' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+6	0.52729025	SELECT 'scan_deep2' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+7	3.40859375	SELECT 'scan_deep3' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+--- per-scan latency (SHOW PROFILES Duration, sec) -- deep scans were CONCURRENT with churn ---
+3	0.00032425	SELECT 'scan_warm' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+5	3.56526375	SELECT 'scan_deep1' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+6	0.52729025	SELECT 'scan_deep2' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+7	3.40859375	SELECT 'scan_deep3' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+physical-read delta during concurrent window (R2-R1, CONFOUNDED by churn) = 40049
+--- churn tps (ran throughout the deep scans) ---
+--- [accel] (bp64M_m1): consult line = HIT/MISS + construct_BAD; gc line = retire evidence ---
+[accel] consult: calls=3000 hit=2998 miss{absent=0 novisible=0 noncontig=2 ineligible=0 gcrace=0} | construct_ok=2 construct_BAD=0 | auth_mode=1 served=2996 gen_gate=1
+[accel] gc: enabled=0 retired{total=0 windowed=0 dummy=0} live_buckets=0 clock=1395769
+
+########## BP=64M MODE=2 DRAIN_CAP=1000 (bp64M_m2) -- deep scans CONCURRENT with churn ##########
+Creating a secondary index on 'sbtest1'...
+History list length 699511
+--- scan SUMs (all identical within run = snapshot invariant held under concurrency) ---
+scan_warm	679715
+scan_deep1	679715
+scan_deep2	679715
+scan_deep3	679715
+3	0.00033600	SELECT 'scan_warm' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+5	63.69945925	SELECT 'scan_deep1' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+6	62.90433050	SELECT 'scan_deep2' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+7	66.90532150	SELECT 'scan_deep3' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+--- per-scan latency (SHOW PROFILES Duration, sec) -- deep scans were CONCURRENT with churn ---
+3	0.00033600	SELECT 'scan_warm' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+5	63.69945925	SELECT 'scan_deep1' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+6	62.90433050	SELECT 'scan_deep2' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+7	66.90532150	SELECT 'scan_deep3' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+physical-read delta during concurrent window (R2-R1, CONFOUNDED by churn) = 1062828
+--- churn tps (ran throughout the deep scans) ---
+    transactions:                        699507 (11700.21 per sec.)
+--- [accel] (bp64M_m2): consult line = HIT/MISS + construct_BAD; gc line = retire evidence ---
+[accel] consult: calls=3000 hit=2999 miss{absent=0 novisible=0 noncontig=1 ineligible=0 gcrace=0} | construct_ok=2999 construct_BAD=0 | auth_mode=2 served=2999 gen_gate=1
+[accel] gc: enabled=0 retired{total=0 windowed=0 dummy=0} live_buckets=0 clock=1400334
+
+########## BP=4G MODE=1 DRAIN_CAP=1000 (bp4G_m1) -- deep scans CONCURRENT with churn ##########
+Creating a secondary index on 'sbtest1'...
+History list length 720872
+--- scan SUMs (all identical within run = snapshot invariant held under concurrency) ---
+scan_warm	679715
+scan_deep1	679715
+scan_deep2	679715
+scan_deep3	679715
+3	0.00035100	SELECT 'scan_warm' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+5	0.31567900	SELECT 'scan_deep1' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+6	0.24199625	SELECT 'scan_deep2' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+7	0.23819700	SELECT 'scan_deep3' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+--- per-scan latency (SHOW PROFILES Duration, sec) -- deep scans were CONCURRENT with churn ---
+3	0.00035100	SELECT 'scan_warm' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+5	0.31567900	SELECT 'scan_deep1' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+6	0.24199625	SELECT 'scan_deep2' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+7	0.23819700	SELECT 'scan_deep3' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+physical-read delta during concurrent window (R2-R1, CONFOUNDED by churn) = 2
+--- churn tps (ran throughout the deep scans) ---
+--- [accel] (bp4G_m1): consult line = HIT/MISS + construct_BAD; gc line = retire evidence ---
+[accel] consult: calls=3000 hit=2998 miss{absent=0 novisible=0 noncontig=2 ineligible=0 gcrace=0} | construct_ok=2 construct_BAD=0 | auth_mode=1 served=2996 gen_gate=1
+[accel] gc: enabled=0 retired{total=0 windowed=0 dummy=0} live_buckets=0 clock=1126686
+
+=== ALL DONE ===

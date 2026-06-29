@@ -1,0 +1,98 @@
+[1/9] Building CXX object storage/innobase/CMakeFiles/innobase.dir/mnt/c/Users/USER/projects/AccelerateMVCC/include/epoch_table.cpp.o
+[2/9] Building CXX object storage/innobase/CMakeFiles/innobase.dir/mnt/c/Users/USER/projects/AccelerateMVCC/include/accelerateMVCC.cpp.o
+[3/9] Building CXX object storage/innobase/CMakeFiles/innobase.dir/accel/accel_hook.cc.o
+[4/9] Building CXX object storage/innobase/CMakeFiles/innobase.dir/read/read0read.cc.o
+[5/9] Building CXX object storage/innobase/CMakeFiles/innobase.dir/row/row0vers.cc.o
+[6/9] Building CXX object storage/innobase/CMakeFiles/innobase.dir/trx/trx0rec.cc.o
+[7/9] Building CXX object storage/innobase/CMakeFiles/innobase.dir/srv/srv0start.cc.o
+[8/9] Linking CXX static library storage/innobase/libinnobase.a
+[9/9] Linking CXX executable runtime_output_directory/mysqld
+In function ‘parse’,
+    inlined from ‘parse’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/spirit/home/qi/numeric/real.hpp:168:34,
+    inlined from ‘call’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/spirit/home/qi/nonterminal/detail/parser_binder.hpp:42:27,
+    inlined from ‘operator()’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/spirit/home/qi/nonterminal/detail/parser_binder.hpp:53:24,
+    inlined from ‘invoke’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/function/function_template.hpp:137:22:
+/root/mysql-server/extra/boost/boost_1_84_0/boost/spirit/home/qi/numeric/detail/real_impl.hpp:337:45: warning: ‘n’ may be used uninitialized [-Wmaybe-uninitialized]
+  337 |             traits::assign_to(traits::negate(neg, n), attr);
+      |                                             ^
+/root/mysql-server/extra/boost/boost_1_84_0/boost/spirit/home/qi/numeric/detail/real_impl.hpp: In function ‘invoke’:
+/root/mysql-server/extra/boost/boost_1_84_0/boost/spirit/home/qi/numeric/detail/real_impl.hpp:209:15: note: ‘n’ declared here
+  209 |             T n;
+      |               ^
+In function ‘apply’,
+    inlined from ‘apply’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:97:25,
+    inlined from ‘apply’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:129:21,
+    inlined from ‘disjoint’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:231:21,
+    inlined from ‘intersects’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/intersects/interface.hpp:108:32,
+    inlined from ‘eval’ at /root/mysql-server/sql/gis/intersects.cc:394:24:
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/multirange_geometry.hpp:84:21: warning: ‘<anonymous>’ may be used uninitialized [-Wmaybe-uninitialized]
+   84 |         return apply(multirange, constant_size_geometry, strategy);
+      |                     ^
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/multirange_geometry.hpp: In member function ‘eval’:
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/multirange_geometry.hpp:59: note: by argument 3 of type ‘const struct geographic &’ to ‘apply.constprop’ declared here
+   59 |     static inline bool apply(MultiRange const& multirange,
+      | 
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:97:48: note: ‘<anonymous>’ declared here
+   97 |                 >::apply(geometry1, geometry2, strategy_type());
+      |                                                ^
+In function ‘apply’,
+    inlined from ‘apply’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/dispatch/disjoint.hpp:82:21,
+    inlined from ‘apply’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:97:25,
+    inlined from ‘apply’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:129:21,
+    inlined from ‘disjoint’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:231:21,
+    inlined from ‘intersects’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/intersects/interface.hpp:108:32,
+    inlined from ‘eval’ at /root/mysql-server/sql/gis/intersects.cc:506:24:
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/multirange_geometry.hpp:84:21: warning: ‘<anonymous>’ may be used uninitialized [-Wmaybe-uninitialized]
+   84 |         return apply(multirange, constant_size_geometry, strategy);
+      |                     ^
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/multirange_geometry.hpp: In member function ‘eval’:
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/multirange_geometry.hpp:59: note: by argument 3 of type ‘const struct geographic &’ to ‘apply.constprop’ declared here
+   59 |     static inline bool apply(MultiRange const& multirange,
+      | 
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:97:48: note: ‘<anonymous>’ declared here
+   97 |                 >::apply(geometry1, geometry2, strategy_type());
+      |                                                ^
+In member function ‘__ct ’,
+    inlined from ‘__ct ’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/srs/projections/proj/ob_tran.hpp:409:23,
+    inlined from ‘__ct ’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/srs/projections/proj/ob_tran.hpp:548:80,
+    inlined from ‘__ct ’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/srs/projections/impl/base_dynamic.hpp:116:38,
+    inlined from ‘__ct ’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/srs/projections/impl/base_dynamic.hpp:147:33,
+    inlined from ‘create_new’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/srs/projections/proj/ob_tran.hpp:617:24:
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/srs/projections/proj/ob_tran.hpp:181:20: warning: ‘proj_parm.sphip’ may be used uninitialized [-Wmaybe-uninitialized]
+  181 |             struct par_ob_tran
+      |                    ^
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/srs/projections/proj/ob_tran.hpp: In member function ‘create_new’:
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/srs/projections/proj/ob_tran.hpp:611:57: note: ‘proj_parm.sphip’ was declared here
+  611 |             detail::ob_tran::par_ob_tran<T, Parameters> proj_parm(params, parameters_copy);
+      |                                                         ^
+In function ‘apply’,
+    inlined from ‘apply’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:97:25,
+    inlined from ‘apply’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:129:21,
+    inlined from ‘disjoint’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:231:21,
+    inlined from ‘eval’ at /root/mysql-server/sql/gis/disjoint.cc:397:22:
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/multirange_geometry.hpp:84:21: warning: ‘<anonymous>’ may be used uninitialized [-Wmaybe-uninitialized]
+   84 |         return apply(multirange, constant_size_geometry, strategy);
+      |                     ^
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/multirange_geometry.hpp: In member function ‘eval’:
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/multirange_geometry.hpp:59: note: by argument 3 of type ‘const struct geographic &’ to ‘apply.constprop’ declared here
+   59 |     static inline bool apply(MultiRange const& multirange,
+      | 
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:97:48: note: ‘<anonymous>’ declared here
+   97 |                 >::apply(geometry1, geometry2, strategy_type());
+      |                                                ^
+In function ‘apply’,
+    inlined from ‘apply’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/dispatch/disjoint.hpp:82:21,
+    inlined from ‘apply’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:97:25,
+    inlined from ‘apply’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:129:21,
+    inlined from ‘disjoint’ at /root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:231:21,
+    inlined from ‘eval’ at /root/mysql-server/sql/gis/disjoint.cc:508:22:
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/multirange_geometry.hpp:84:21: warning: ‘<anonymous>’ may be used uninitialized [-Wmaybe-uninitialized]
+   84 |         return apply(multirange, constant_size_geometry, strategy);
+      |                     ^
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/multirange_geometry.hpp: In member function ‘eval’:
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/multirange_geometry.hpp:59: note: by argument 3 of type ‘const struct geographic &’ to ‘apply.constprop’ declared here
+   59 |     static inline bool apply(MultiRange const& multirange,
+      | 
+/root/mysql-server/extra/boost/boost_1_84_0/boost/geometry/algorithms/detail/disjoint/interface.hpp:97:48: note: ‘<anonymous>’ declared here
+   97 |                 >::apply(geometry1, geometry2, strategy_type());
+      |                                                ^

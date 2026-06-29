@@ -1,0 +1,14 @@
+--- ground truth (committed live): MAX(k) must be < 1000000 (no rolled-back +1000000 leaked) ---
+max_k	rows_with_leak
+1264	0
+--- held readers (every mx must be < 1000000) ---
+  r0-warm	0
+  r0-deep	0
+  r1-warm	257
+  r1-deep	257
+  r2-warm	623
+  r2-deep	623
+--- gate ---
+  [accel] consult: calls=3091 hit=3089 miss{absent=0 novisible=0 noncontig=2 ineligible=0 gcrace=0} | construct_ok=3089 construct_BAD=0 | auth_mode=2 served=3089 gen_gate=1
+  GATE: PASS (construct_BAD=0)
+=== DONE ===

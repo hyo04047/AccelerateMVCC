@@ -159,7 +159,8 @@
   memory로 일반화, no-wrong-serve 형식검증(TLA+). (REPORT §8.)
 
 **Phase 3 게이트 (남은 것, 테스트·정리·논문):** ① multi-run/error-bar(⑥ non-deterministic·단일-run) · ② raw-log 아카이빙
-(⚠️ `*.log`이 `.gitignore`라 컨벤션 결정 필요 — `git add -f` or non-.log 확장자 or results/ 예외) · ③ cold-key 스코핑 vs
+**[컨벤션 해결]** = `.gitignore`에 `!integration/results/*.log` negation 추가(전역 `*.log` 무시를 results/ 한정 override),
+이번 세션 result 로그(q13/q14/q15/q15_gc/q16 + 세션12 d6/q11/q12/s5) 커밋. 이후 측정 로그는 results/에 떨궈 추적 · ③ cold-key 스코핑 vs
 eviction · ④ CH-benCHmark/TPC-C 평가 · ⑤ no-wrong-serve **semi-formal 논증**(형식모델은 향후연구) · ⑥ **논문 한/영**. vDriver
 직접 재구현은 SKIP(이미 git, related-work 참조). 커밋 `b9924b6`·`acd6461`·`6618760`·`4809081`.
 
