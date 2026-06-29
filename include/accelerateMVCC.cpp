@@ -16,7 +16,7 @@ mvcc::Accelerate_mvcc::Accelerate_mvcc(uint64_t record_count, uint32_t kuku_log2
 
     this->epoch_table = new Epoch_table();
 
-    for (int i = 0; i < record_count; i++) {
+    for (uint64_t i = 0; i < record_count; i++) {
         kuku::item_type item = kuku::make_item(1, i);
 
         // value is header node pointer address for epoch-based interval linked list

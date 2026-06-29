@@ -30,6 +30,15 @@ set(COMMON_SOURCES
   "include/epoch_table.h"
   "include/epoch_table.cpp"
 )
+# Compile OUR core sources with -Wall -Wextra to surface latent warnings (sign-compare in the deadzone
+# index math, maybe-uninitialized in the Harris CAS loops, etc.) -- the cheapest defect signal, which the
+# integration build globally disables with -w on these same files. Vendored Kuku / gtest keep their defaults.
+set_source_files_properties(
+  include/accelerateMVCC.cpp
+  include/interval_list.cpp
+  include/epoch_table.cpp
+  PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
+
 # Add source to this project's executable.
 add_executable (AccelerateMVCC
   "main.cpp"

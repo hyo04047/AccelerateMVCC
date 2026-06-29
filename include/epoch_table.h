@@ -225,7 +225,7 @@ namespace mvcc {
                         continue;
                     }
 
-                    for (int j = 0; j < zone->oldest_active_trx_ids.size(); ++j) {
+                    for (std::size_t j = 0; j < zone->oldest_active_trx_ids.size(); ++j) {
                         if (zone->oldest_active_trx_ids.at(j) == v_end) {
                             flag = false;
                             break;

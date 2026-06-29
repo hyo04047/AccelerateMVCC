@@ -39,8 +39,10 @@ set_source_files_properties(
   $REPO/include/interval_list.cpp
   $REPO/include/epoch_table.cpp
   $REPO/include/trxManager.cpp
-  $REPO/Kuku/src/kuku/kuku.cpp
   $INNO/accel/accel_hook.cc
+  PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
+set_source_files_properties(
+  $REPO/Kuku/src/kuku/kuku.cpp
   PROPERTIES COMPILE_OPTIONS "-w")
 EOF
 fi

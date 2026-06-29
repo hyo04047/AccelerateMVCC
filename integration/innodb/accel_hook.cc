@@ -3,8 +3,9 @@
 // Stage D-1b-2b: wire the validated bounded MPMC ring (accel_ring.h) into the InnoDB hook.
 // The hook (under the page latch) only ENQUEUES a scalar record -- noexcept, no allocation, no
 // lock, full -> drop (never blocks a latch holder). A single off-latch drainer thread pops and
-// (for now) just counts + tracks pk_hash breadth; D-1b-3 will make it do the real insert into
-// the AccelerateMVCC index. Explicit init/shutdown lifecycle (no static destructor) + a ready
+// does the real single-consumer insert into the AccelerateMVCC index; the same off-latch domain also
+// drives the cuts-driven deadzone GC and answers shadow/serve consults. Explicit init/shutdown lifecycle
+// (no static destructor) + a ready
 // gate so the hook is a no-op outside the live window. accel is a LEAF lock domain: nothing here
 // includes an InnoDB header or calls back into InnoDB.
 
@@ -12,6 +13,7 @@
 #include "accel_ring.h"
 #include "accelerateMVCC.h"  // D-1b-3a: pull the real accelerator into the mysqld/innobase build
 #include "active_view_registry.h"  // D-5 5-1b: leaf-domain mirror of InnoDB's active read-views
+#include "common.h"          // EPOCH_SIZE / EPOCH_TABLE_SIZE -- the GC PERIOD is derived from them
 
 #include <algorithm>
 #include <atomic>
@@ -240,7 +242,9 @@ void drain_loop() {
 // the SINGLE GC actor (the standalone BG GC stays off). Gated on ACCEL_GC (g_gc_enabled): off = no-op
 // sleeper (step-1 behavior). It re-checks g_gc_stop inside the catch-up loop so the join never hangs.
 void gc_loop() {
-  constexpr uint64_t PERIOD = 2500;   // EPOCH_SIZE(100) * EPOCH_TABLE_SIZE(100) / 4
+  // DERIVED from the common.h sizing constants (not hardcoded 2500) so a change to EPOCH_SIZE /
+  // EPOCH_TABLE_SIZE cannot silently diverge from this GC driver's window-advance cadence.
+  constexpr uint64_t PERIOD = (uint64_t)EPOCH_SIZE * EPOCH_TABLE_SIZE / 4;
   uint64_t last_norm_boundary = 0;
   uint64_t cycles = 0;
   std::vector<mvcc::ViewCut> cuts;
@@ -398,7 +402,7 @@ void accel_init() noexcept {
     g_accel->set_dummy_drain_cap(g_drain_cap);      // D-5 GC-tuning (0 = unlimited)
     g_accel->set_gc_tail_only(g_tail_only);         // ⓠ3: tail-only baseline (default off = deadzone)
     g_drainer = std::thread(drain_loop);
-    g_gc = std::thread(gc_loop);  // D-5 ⑤a-2: integration GC driver (empty body in step 1)
+    g_gc = std::thread(gc_loop);  // D-5 ⑤a-2: integration GC driver (cuts-driven deadzone sweep when ACCEL_GC=1)
     g_t0 = std::chrono::steady_clock::now();           // ⓠ3: reporter t_ms origin (set before it starts)
     if (g_retention_ms) g_reporter = std::thread(retention_loop);  // ⓠ3: read-only retention reporter
   } catch (...) {
