@@ -1,8 +1,8 @@
-# AccelerateMVCC — 설계와 평가 (Stage A–C)
+# AccelerateMVCC — 설계와 평가 (Stage A–D)
 
 > 디스크 기반 DBMS(InnoDB)의 MVCC를 가속하는 **in-memory 보조 인덱스 + deadzone GC**의 설계·구현·평가 보고서.
 > 이 문서는 위에서 아래로 읽히는 **standalone 보고서**입니다. 깊은 설계근거는 [design-gc.md](design-gc.md)·[design-1c.md](design-1c.md), 세션별 이력은 [progress-log.md](progress-log.md), 이슈 추적은 [findings.md](findings.md)를 참조.
-> 작성: 2026-06-20 · 저자: 하태성 · 라이선스: MIT (deadzone 알고리즘은 vDriver 파생, §7)
+> 작성: 2026-06-20 (Stage A–C) · Stage D + Limitations 추가: 2026-06-29 · 저자: 하태성 · 라이선스: MIT (deadzone 알고리즘은 vDriver 파생, §9)
 
 ---
 
@@ -119,7 +119,68 @@ deadzone는 skew 전반에서 max ~40으로 안정, tail-only는 어느 skew든 
 
 ---
 
-## 5. 관련 연구
+## 5. Stage D — 실 InnoDB 통합 (요약)
+
+Stage A–C는 standalone 프로토타입이다. Stage D는 같은 구조를 **실제 MySQL 8.4 / InnoDB 안에서** 동작시킨다:
+populate(undo 메타데이터 + 소형 행 image 캡처) → consult(visible 버전 선택) → authoritative serve(캐시 결과로
+undo walk 대체) → deadzone GC(InnoDB read-view cuts로 재구동). 전 구간 불변식은 **construct_BAD=0** — 서빙된
+모든 답이 vanilla undo walk와 byte 동일(틀린 서빙은 구조적으로 불가).
+
+**배선 (leaf-domain, one-way InnoDB→accel edge).** 페이지 X-latch 아래의 hook은 scalar record를 lock-free
+ring에 enqueue만 한다(noexcept·no-alloc·no-block·full→drop, 한 줄 WARNING으로 관측). 단일 off-latch
+**drainer**가 인덱스의 유일한 mutator로 저수준 insert를 수행한다(single producer). consult는 InnoDB
+consistent-read의 version-build 지점에서 호출돼 reader의 ReadView로 가시 버전을 고른다.
+
+**⑥ read-latency payoff (헤드라인).** held snapshot이 purge를 막아 undo chain이 깊어진 상태에서 deep
+analytic read의 latency를 vanilla walk vs serve로 비교: vanilla는 buffer-pool이 작아질수록 undo page I/O
+절벽을 맞지만(4G 0.8s → 64M 123s), **serve는 BP와 무관하게 ~0.16s로 평탄** → 4G ~5×·256M ~490×·64M ~775×
+(GC-off serve-only). 물리 read 80만~140만 → 0~8로 소멸. GC-on에서도 생존(~190×, `ACCEL_DRAIN_CAP`으로 안정화).
+이 우위는 **InnoDB undo-walk I/O 절벽 제거**에서 오며 인메모리 navigation의 big-O가 아니다(체인 깊이는 GC가
+flat ~80–92로 유계 유지).
+
+**⑤ deadzone GC (통합 ON).** GC를 standalone trx manager가 아니라 **pushed InnoDB clock + active-view
+registry cuts**로 재구동(amortized windowed sweep). LLT 하 write-heavy OLTP + 동시 HTAP 리더서 캐시 보존이
+bounded(~6–9k versions)인 반면 InnoDB History List Length는 LLT에 선형 증가 → 비율이 LLT 나이에 선형
+(realistic full-table 20×/40×/63× @15/30/60s). 승리는 동시 read-view 리더가 만드는 in-middle gap을 요구
+(리더0 대조군 0.9× = 승리 0). 메커니즘·scaling·gap 요건은 프로토타입과 동일, magnitude는 실 InnoDB OLTP
+rate(~4,200 versions/s)가 정한 정직한 값이다.
+
+**serve 안전.** mode-2 verify-serve(walk+byte-compare 후 서빙)·mode-1 serve-only(walk skip) 둘 다
+construct_BAD=0. mode-1 출하 경로엔 link-gap 구조 firewall + C1 inverted-superseded 오라클 + gc_generation
+race detector + 1-in-N walk-audit의 4-layer 방어. **crash-recovery**(kill -9 mid-load → 재시작 → ephemeral
+캐시 재구축 후 mode-2 construct_BAD=0 + 롤백된 미커밋 버전 미서빙)로 ACID 전제(캐시 非권위·ephemeral)를 실증.
+
+**워크로드 폭.** single-INT-PK 너머 composite-PK(a,b)·VARCHAR string-PK·secondary-index·savepoint 전부
+construct_BAD=0(full-PK FNV 일반화·savepoint rollback 버전 미서빙). full-mysqld **AddressSanitizer CLEAN**
+(drainer‖consult‖serve‖GC‖teardown 동시 스트레스, 리포트 0). drainer는 단일 consumer로 64-thread oltp_write_only
+(~183k write-q/s, 525만 버전)서도 dropped=0으로 따라잡음(populate 비병목).
+
+## 6. Limitations & Threats to Validity (위협 요인)
+
+정직한 한계·위협 요인 (논문 Evaluation 전 명시):
+
+- **measurement variance (다음 작업).** 통합 헤드라인 다수가 **단일 run**이다 — 특히 ⑥는 non-deterministic
+  (reclaim storm 하 3/4 hold·1/4 degrade; `ACCEL_DRAIN_CAP≈1000`이 stable로 안정화). 헤드라인 config는
+  N≥3–5 재측·median+min/max로 격상 필요(Phase 3). drain-cap "X/N degrade" 표는 이미 그 규율을 따른다.
+- **cache scope = small-row OLTP (정직한 scope 한계).** LOB/off-page/virtual/>512B 행은 캡처서 제외
+  (construct_BAD=0·안전하나 가속 0). big-row deep read(82.7s)가 캐시가 가장 필요한 곳인데 512B cap이 막는다.
+  future-work = configurable cap / in-page prefix + off-page locator.
+- **cold-key footprint = capacity-bounded, not adaptive.** per-key header + Kuku slot은 회수 안 됨(~72B/키).
+  용량 초과 시 graceful non-admission(vanilla fallback·construct_BAD=0·crash 없음)이나, *이동하는* working
+  set 추적용 LRU eviction은 미구현 — "memory ∝ working set"은 **Kuku 용량(kuku_log2) 안에서** defensible
+  (hot set ≥로 sizing). 진짜 eviction(lock-free Kuku erase + EBR)은 적대 리뷰서 cost≫payoff로 보류.
+- **full-mysqld TSan = documented residual.** standalone TSan이 accel race 표면(drainer‖consult‖cuts-GC)을
+  덮고, MySQL-under-TSan은 무거운 suppression + 5–10× 둔화 대비 marginal value가 낮아 미실행.
+- **in-memory navigation은 최적화 대상이 아니다.** consult 비용은 OLTP 트랜잭션 비용(I/O·lock)의 무시할
+  fraction(FG-α 측정 +0.9%/노이즈; pool allocator도 측정 0). roll_pred fast chase와 DIVA interval tree 둘 다
+  GC-safety/worth-it에서 NO-GO(design-D5-gc §14) — ⑤b-lite(~0.22s reuse)가 출하 fast consult. ⑥ 이득은 undo
+  I/O 절벽 제거에서 온다.
+- **재현성.** InnoDB 소스 패치는 `integration/innodb/innodb-8.4.10-accel.diff`로 vendor(+ build_d1b3a.sh가
+  CMakeLists/컴파일 플래그 생성); standalone 러너도 in-repo. raw run 로그 아카이빙은 Phase 3 작업.
+- **Stage-C 헤드라인(~5500×)은 프로토타입 내 self-modeled tail-only baseline**(고-rate 마이크로벤치)이며, 실
+  InnoDB 메모리/체인 우위는 Stage D ⑤(통합 HLL 대비 20×/40×/63×)로 측정된다.
+
+## 7. 관련 연구
 
 | | 핵심 무기 | 저장 | GC 단위 | LLT 대응 |
 |---|---|---|---|---|
@@ -132,15 +193,17 @@ deadzone는 skew 전반에서 max ~40으로 안정, tail-only는 어느 skew든 
 
 ---
 
-## 6. 결론 & 향후
+## 8. 결론 & 향후
 
 **결론.** LLT가 존재하는 HTAP에서 InnoDB식 tail-only purge는 version chain을 통제하지 못하지만, deadzone의 in-middle reclaim은 chain을 유계로 유지한다(max ~155 vs ~846k, read throughput ~2,800× 우위). 이 효과는 skew 전반에서 견고하며, lock-free 동시성(marked pointer + EBR + FG/BG)이 정확성을 보존한다. 즉 본 구조는 standalone 프로토타입 수준에서 **HTAP/LLT 성능 향상이라는 목표를 정량적으로 입증**한다.
 
-**향후 (Stage D, 최종).** 실제 InnoDB 소스에 가속 인덱스를 연결(trx_sys active list 소비, undo 메타데이터 포인터 보관, `row_search_mvcc` read 경로 + purge 연동)하고, sysbench HTAP로 vanilla MySQL 대비 효과를 측정한다. 추가 개선 후보(design-gc §9.3): list → DIVA식 interval tree(LLT 하 길이를 log로 bound), tagged-pointer reclamation, hot/cold/LLT version classification, read latency 분포 측정.
+**Stage D 완료 (§5).** 가속 인덱스를 실 InnoDB에 연결해(undo 메타데이터/소형 image 캡처, read-view cuts로 GC 재구동, consistent-read serve) ⑥ read-latency payoff(~190×/775×)·⑤ 통합 GC(LLT에 선형 20×/40×/63×)·serve construct_BAD=0·crash-recovery·워크로드 폭·full-mysqld ASan을 실증했다. 추가 perf 레버 두 개(roll_pred fast chase·DIVA interval tree)는 적대 리뷰서 NO-GO(GC-safety/worth-it; design-D5-gc §14) — ⑤b-lite가 출하 fast consult.
+
+**향후 (Phase 3).** 헤드라인 config의 multi-run/error-bar 재측 + raw 로그 아카이빙 + **논문(한글·영문)** 작성. 한계·위협 요인은 §6.
 
 ---
 
-## 7. provenance & 라이선스
+## 9. provenance & 라이선스
 - 코드 라이선스 **MIT**(하태성).
 - **deadzone 알고리즘 = vDriver 파생**: 판정식이 vDriver `IsInDeadZone`(`xmin>left && xmax<right`)과 동일하며, 원 설계는 vDriver InnoDB part에서 dead zone 검출부를 추출·간소화한 것이다(클린룸 재구현 아님). vDriver 출처 및 PostgreSQL License를 표기한다.
-- 재현: 빌드/실행 레시피와 벤치 인자는 [NEXT-SESSION.md](NEXT-SESSION.md) §1, 결과 원자료(CSV)·스크립트는 저장소 밖 작업 환경에 보존.
+- 재현: 빌드/실행 레시피·토글은 [NEXT-SESSION.md](NEXT-SESSION.md), 통합 스크립트는 `integration/scripts/`, InnoDB 소스 패치는 `integration/innodb/innodb-8.4.10-accel.diff`로 vendor. 헤드라인 raw 로그(CSV) 아카이빙은 Phase 3 작업(현재 일부 단일-run, §6).
