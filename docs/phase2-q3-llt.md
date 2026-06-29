@@ -12,9 +12,13 @@
   re-run headline configs N≥3–5 and report median + min/max. This matters most for ⑥ (the held-read latency
   payoff), which is **known non-deterministic** (3/4 hold ~190×, 1/4 degrades to the correct walk under a
   small-BP reclaim storm — design-D5-gc §12.2). The drain-cap "X/N degrade" table already has this discipline;
-  the rest does not yet.
+  the rest does not yet. **[⑥ gate ① DONE 2026-06-30]** ⑥ now HAS multi-run error bars — see the *Phase 3 /
+  gate ① — ⑥ multi-run* section at the bottom (64M serve median 0.45 s ≈ 290×, 2/8 degrade to the correct
+  walk, construct_BAD=0 in all 18 runs). The ⓠ3 / ⓠ5 numbers in THIS doc are still single-run.
 - **Raw run logs were not retained** (overwritten per run; only the ASan log survives). Phase 3 must archive
   the `[accel] retention:`/`consult:` lines into `integration/results/` so each table cell is verifiable.
+  **[gate ② — ⑥/q11 DONE]** the q11 multi-run archives every per-run mysqld/scan/churn log + `q11_d6.csv`
+  into `integration/results/`; the ⓠ3 retention logs remain to be archived on a re-run.
 - **Regime differences between sections are real, not interchangeable:** ⓠ3 is GC-ON retention; ⓠ5 is a
   GC-OFF, cross-boot A/B (mode-0 vs mode-1 are separate server instances) at a different BP. Don't compare the
   ⓠ3 ratios to the ⓠ5 ~34× as if one scale.
@@ -317,3 +321,59 @@ The integration sizes Kuku at `kuku_log2 = 16` (65,536 bins, 2 hash funcs). A 20
   documented residual (standalone TSan covers the accel race surface).
 - **Phase 2 essentially complete.** Next: Phase 3 (paper — Korean + English — incl. the ⓝ6 Limitation and
   the TSan residual; multi-run/error-bars; patch vendoring).
+
+---
+
+# Phase 3 / gate ① — ⑥ held-read serve payoff, MULTI-RUN error bars (2026-06-30)
+
+> **Result: the ⑥ payoff is real but non-deterministic at small BP — now quantified with N runs instead of
+> one.** Re-running the SHIP-setting held-read serve (mode-1 serve-only, GC on, `ACCEL_DRAIN_CAP=1000`)
+> replaces the single-run "~775×/190×" headline with **median + min/max + a degrade rate**. At 64M the serve
+> holds at ~0.45 s in **6/8 runs (~290× over the ~132 s vanilla walk)** and degrades to the correct vanilla
+> walk in **2/8 runs** (chain-sever → consult MISS → walk). At 4G (resident) serve is ~0.46 s vs ~1.1 s
+> vanilla (**~2.4×**), no degrade. **construct_BAD=0 in all 18 runs** — every degrade is perf-only, never a
+> wrong row.
+
+## Setup
+`integration/scripts/build_q11_d6_multirun.sh [N]` re-runs the `build_d5_d6_gc.sh` harness fresh-boot N times
+at the SHIP setting (mode-1 serve, GC on, drain-cap 1000 = the ⑥ stabilizer, design-D5-gc §13.2). Each run:
+fresh-init mysqld → sysbench prepare (1 table × 1000 rows) → a held REPEATABLE-READ snapshot does a warm SUM,
+then SLEEP(48) while 8-thread `oltp_update_non_index` churns 44 s, then the measured deep SUM. mode-0 = vanilla
+walk baseline; mode-1 = serve. 16 runs total: 64M vanilla×3 + serve×8, 4G vanilla×2 + serve×3. Per-run
+mysqld/scan/churn logs + `q11_d6.csv` (one row/run) + `q11_d6_run.log` land in `integration/results/` (gate ②).
+
+## Data (latency s; construct_BAD; physical reads)
+| config | median | min – max | n | degrade | physical reads |
+|---|---|---|---|---|---|
+| 64M vanilla walk | 132.1 | 102.5 – 133.4 | 3 | (baseline) | ~1.1–1.5 M |
+| **64M serve (headline)** | **0.454** | 0.379 – 121.2 | 8 | **2/8** | ~4,000 (degrade run: ~1.0–1.4 M) |
+| 4G vanilla walk | 1.106 | 1.102 – 1.109 | 2 | 0 | 0 (resident) |
+| 4G serve | 0.462 | 0.411 – 0.553 | 3 | 0 | 0 (resident) |
+
+**construct_BAD = 0 in every one of the 18 rows.**
+
+## Reading it
+- **Headline (64M, I/O-bound):** when serve holds (6/8) it is ~0.45 s → **~290×** over the ~132 s walk; the
+  mechanism is undo-I/O elimination (physical reads ~4,000 vs ~1.4 M). **2/8 runs degrade** to 87–121 s — the
+  documented chain-sever events (design-D5-gc §12): the GC reclaims an interior navigation version, the lineage
+  chase breaks, consult returns MISS (noncontig), and the held read falls to the **correct** vanilla walk
+  (physical reads climb back to ~1.0–1.4 M, served drops to 390–1451). **construct_BAD=0 in both degrade runs.**
+  The 2/8 = 25% rate matches the previously-characterized "~1/4 degrade", now sampled at N=8.
+- **4G (resident, stability):** serve ~0.46 s vs ~1.1 s vanilla = **~2.4×**, no degrade. A big BP only saves the
+  version-reconstruction CPU (no undo I/O to remove), so the win is modest and stable (phys=0 both modes) —
+  consistent with the mechanism.
+- **The vanilla baseline itself varies** 102–133 s across runs (churn-depth dependent); earlier single-run
+  sessions saw 98–123 s. So the *held ratio* sits in a ~190–290× band depending on the baseline — reporting
+  median + range is the honest form, not a single "775×".
+- **vs the old 0.16 s / 775×:** that was GC-OFF serve-only (back-edge chase, since NO-GO). The SHIP path is
+  GC-ON map-walk consult at ~0.45 s (≈ design-D5-gc's 0.45 s first-scan / 0.22 s reuse). The headline is now
+  stated at the shippable, GC-on, bounded-memory setting — honest and still ~290×.
+- This is the gate-① deliverable: the ⑥ headline stands on median + distribution + a degrade rate. The degrade
+  is the honest cost of small-BP serve under a GC reclaim storm; drain-cap 1000 holds it to ~1/4
+  (design-D5-gc §13.2) and it is always correct.
+
+## Reproduction
+`integration/scripts/build_q11_d6_multirun.sh 8` (mysqld pre-built with current accel sources). Raw logs:
+`integration/results/d6_bp{64M,4G}_m{0,1}_cap1000_i*_{mysqld,scan,churn}.log` + `q11_d6.csv` + `q11_d6_run.log`.
+**Execution note:** run via WSL (not Git Bash); for unattended / teardown-surviving runs launch the script
+under `setsid` (plain `nohup` lets a terminal-close SIGHUP abort the held-snapshot client → NA rows).

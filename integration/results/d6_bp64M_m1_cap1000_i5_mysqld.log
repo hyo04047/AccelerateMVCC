@@ -1,0 +1,25 @@
+2026-06-29T15:22:15.780987Z 0 [System] [MY-015015] [Server] MySQL Server - start.
+2026-06-29T15:22:16.032206Z 0 [System] [MY-010116] [Server] /root/mysql-build/runtime_output_directory/mysqld (mysqld 8.4.10) starting as process 12661
+2026-06-29T15:22:16.040827Z 1 [System] [MY-013576] [InnoDB] InnoDB initialization has started.
+[accel] init: drainer started, accelerator constructed (gc=1 tail_only=0 retention_ms=0)
+2026-06-29T15:22:16.302529Z 1 [System] [MY-013577] [InnoDB] InnoDB initialization has ended.
+2026-06-29T15:22:16.483810Z 0 [Warning] [MY-010068] [Server] CA certificate ca.pem is self signed.
+2026-06-29T15:22:16.484424Z 0 [System] [MY-013602] [Server] Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.
+2026-06-29T15:22:16.508028Z 0 [System] [MY-010931] [Server] /root/mysql-build/runtime_output_directory/mysqld: ready for connections. Version: '8.4.10'  socket: '/root/mysql.sock'  port: 3309  Source distribution.
+2026-06-29T15:22:16.772840Z 8 [Warning] [MY-013360] [Server] Plugin mysql_native_password reported: ''mysql_native_password' is deprecated and will be removed in a future release. Please use caching_sha2_password instead'
+[accel] drained=500000 enq=500002 dropped=0 pk_buckets=676/1024 cur_key_chain_len=236 last_pk_len=6 last_del=0
+[accel] gc: cycles=420 retired{windowed=24 dummy=0} live_buckets=159 views=1 norm_clock=1050738
+[accel] drained=1000000 enq=1000004 dropped=0 pk_buckets=676/1024 cur_key_chain_len=200 last_pk_len=6 last_del=0
+[accel] gc: cycles=665 retired{windowed=24 dummy=0} live_buckets=184 views=1 norm_clock=1664689
+2026-06-29T15:23:06.322390Z 22 [System] [MY-013172] [Server] Received SHUTDOWN from user root. Shutting down mysqld (Version: 8.4.10).
+[accel] shutdown: enq=1300698 drained=1300698 dropped=0 pk_buckets=676/1024 live_epoch_buckets=184
+[accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=1 construct_BAD=0 | auth_mode=1 served=1999 gen_gate=1
+[accel] audit: mode=1 audit_n=1024 mode1_hits=2000 audited=1 (mode-1: ok+bad==audited, bad==0)
+[accel] noncontig split: head_writer_gate=0 (cache head behind live row) chase_break=0 (GC severed a mid-chain link)
+[accel] view-registry: open_calls=442 published=442 unpublished=879 publish_on=1 live_snapshot=0 floor=none clock=2601428
+[accel] construct_BAD detail: trx_same=0 (right version, bytes differ) trx_diff=0 (WRONG version: older=0 [cache behind] newer=0 [visibility])
+[accel] newer split: vanilla_sees=0 (cross-generation: ct visible, off vanilla's chain) vanilla_hides=0 (input mismatch: consult got different view limits)
+[accel] gc: enabled=1 retired{total=24 windowed=24 dummy=0} live_buckets=184 clock=2601428
+[accel] fg-alpha: consult_fg=0 coop_dead_seen=0 | drain_cap=1000 dummy_pending=734435
+2026-06-29T15:23:06.663064Z 0 [System] [MY-010910] [Server] /root/mysql-build/runtime_output_directory/mysqld: Shutdown complete (mysqld 8.4.10)  Source distribution.
+2026-06-29T15:23:06.664068Z 0 [System] [MY-015016] [Server] MySQL Server - end.

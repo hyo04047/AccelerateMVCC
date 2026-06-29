@@ -1,0 +1,28 @@
+2026-06-29T15:34:12.010374Z 0 [System] [MY-015015] [Server] MySQL Server - start.
+2026-06-29T15:34:12.204673Z 0 [System] [MY-010116] [Server] /root/mysql-build/runtime_output_directory/mysqld (mysqld 8.4.10) starting as process 13532
+2026-06-29T15:34:12.210553Z 1 [System] [MY-013576] [InnoDB] InnoDB initialization has started.
+[accel] init: drainer started, accelerator constructed (gc=1 tail_only=0 retention_ms=0)
+2026-06-29T15:34:12.653746Z 1 [System] [MY-013577] [InnoDB] InnoDB initialization has ended.
+2026-06-29T15:34:12.845693Z 0 [Warning] [MY-010068] [Server] CA certificate ca.pem is self signed.
+2026-06-29T15:34:12.846209Z 0 [System] [MY-013602] [Server] Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.
+2026-06-29T15:34:12.867732Z 0 [System] [MY-010931] [Server] /root/mysql-build/runtime_output_directory/mysqld: ready for connections. Version: '8.4.10'  socket: '/root/mysql.sock'  port: 3309  Source distribution.
+2026-06-29T15:34:12.999716Z 8 [Warning] [MY-013360] [Server] Plugin mysql_native_password reported: ''mysql_native_password' is deprecated and will be removed in a future release. Please use caching_sha2_password instead'
+[accel] gc: cycles=205 retired{windowed=24 dummy=0} live_buckets=171 views=1 norm_clock=514654
+2026-06-29T15:34:24.751140Z 0 [Warning] [MY-014084] [InnoDB] Threads are unable to reserve space in redo log which can't be reclaimed due to the 'log_checkpointer' consumer still lagging behind at LSN = 89500004. Consider increasing innodb_redo_log_capacity.
+[accel] drained=500000 enq=500071 dropped=0 pk_buckets=676/1024 cur_key_chain_len=9989 last_pk_len=6 last_del=0
+[accel] gc: cycles=465 retired{windowed=24 dummy=0} live_buckets=202 views=1 norm_clock=1162512
+[accel] drained=1000000 enq=1000006 dropped=0 pk_buckets=676/1024 cur_key_chain_len=247 last_pk_len=6 last_del=0
+2026-06-29T15:34:49.182191Z 0 [Warning] [MY-014084] [InnoDB] Threads are unable to reserve space in redo log which can't be reclaimed due to the 'log_checkpointer' consumer still lagging behind at LSN = 488973995. Consider increasing innodb_redo_log_capacity.
+[accel] gc: cycles=725 retired{windowed=24 dummy=0} live_buckets=202 views=1 norm_clock=1813622
+2026-06-29T15:35:03.147333Z 22 [System] [MY-013172] [Server] Received SHUTDOWN from user root. Shutting down mysqld (Version: 8.4.10).
+[accel] shutdown: enq=1424429 drained=1424429 dropped=0 pk_buckets=676/1024 live_epoch_buckets=127
+[accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=2000 construct_BAD=0 | auth_mode=0 served=0 gen_gate=1
+[accel] audit: mode=0 audit_n=1024 mode1_hits=0 audited=0 (mode-1: ok+bad==audited, bad==0)
+[accel] noncontig split: head_writer_gate=0 (cache head behind live row) chase_break=0 (GC severed a mid-chain link)
+[accel] view-registry: open_calls=446 published=446 unpublished=887 publish_on=1 live_snapshot=0 floor=none clock=2848860
+[accel] construct_BAD detail: trx_same=0 (right version, bytes differ) trx_diff=0 (WRONG version: older=0 [cache behind] newer=0 [visibility])
+[accel] newer split: vanilla_sees=0 (cross-generation: ct visible, off vanilla's chain) vanilla_hides=0 (input mismatch: consult got different view limits)
+[accel] gc: enabled=1 retired{total=24 windowed=24 dummy=0} live_buckets=127 clock=2848860
+[accel] fg-alpha: consult_fg=0 coop_dead_seen=0 | drain_cap=1000 dummy_pending=804023
+2026-06-29T15:35:05.656805Z 0 [System] [MY-010910] [Server] /root/mysql-build/runtime_output_directory/mysqld: Shutdown complete (mysqld 8.4.10)  Source distribution.
+2026-06-29T15:35:05.657794Z 0 [System] [MY-015016] [Server] MySQL Server - end.

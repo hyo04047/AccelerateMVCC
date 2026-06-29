@@ -1,4 +1,95 @@
 === ⑥ MULTI-RUN (ship setting: mode-1 serve, GC on, DRAIN_CAP=1000). N(serve,64M)=8 ===
-Mon Jun 29 02:07:39 KST 2026
+Tue Jun 30 00:03:04 KST 2026
 
 ########## bp64M_m0_cap1000_i1 (N=8) ##########
+>> bp64M_m0_cap1000_i1 : deep1_lat=133.37307275s phys=1474506 hit=2000 noncontig=0 construct_BAD=0 served=0 degraded=1
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=2000 construct_BAD=0 | auth_mode=0 served=0 gen_gate=1
+
+########## bp64M_m0_cap1000_i2 (N=8) ##########
+>> bp64M_m0_cap1000_i2 : deep1_lat=102.45582800s phys=1105642 hit=2000 noncontig=0 construct_BAD=0 served=0 degraded=1
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=2000 construct_BAD=0 | auth_mode=0 served=0 gen_gate=1
+
+########## bp64M_m0_cap1000_i3 (N=8) ##########
+>> bp64M_m0_cap1000_i3 : deep1_lat=132.09853575s phys=1519326 hit=1082 noncontig=918 construct_BAD=0 served=0 degraded=1
+   consult: [accel] consult: calls=2000 hit=1082 miss{absent=0 novisible=0 noncontig=918 ineligible=0 gcrace=0} | construct_ok=1082 construct_BAD=0 | auth_mode=0 served=0 gen_gate=1
+
+########## bp64M_m1_cap1000_i1 (N=8) ##########
+>> bp64M_m1_cap1000_i1 : deep1_lat=0.46808525s phys=4091 hit=2000 noncontig=0 construct_BAD=0 served=1999 degraded=0
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=1 construct_BAD=0 | auth_mode=1 served=1999 gen_gate=1
+
+########## bp64M_m1_cap1000_i2 (N=8) ##########
+>> bp64M_m1_cap1000_i2 : deep1_lat=0.45574250s phys=3958 hit=2000 noncontig=0 construct_BAD=0 served=1999 degraded=0
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=1 construct_BAD=0 | auth_mode=1 served=1999 gen_gate=1
+
+########## bp64M_m1_cap1000_i3 (N=8) ##########
+>> bp64M_m1_cap1000_i3 : deep1_lat=0.45254000s phys=4059 hit=2000 noncontig=0 construct_BAD=0 served=1999 degraded=0
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=1 construct_BAD=0 | auth_mode=1 served=1999 gen_gate=1
+
+########## bp64M_m1_cap1000_i4 (N=8) ##########
+>> bp64M_m1_cap1000_i4 : deep1_lat=0.41766900s phys=3814 hit=2000 noncontig=0 construct_BAD=0 served=1999 degraded=0
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=1 construct_BAD=0 | auth_mode=1 served=1999 gen_gate=1
+
+########## bp64M_m1_cap1000_i5 (N=8) ##########
+>> bp64M_m1_cap1000_i5 : deep1_lat=0.37876300s phys=3953 hit=2000 noncontig=0 construct_BAD=0 served=1999 degraded=0
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=1 construct_BAD=0 | auth_mode=1 served=1999 gen_gate=1
+
+########## bp64M_m1_cap1000_i6 (N=8) ##########
+>> bp64M_m1_cap1000_i6 : deep1_lat=87.48795075s phys=1010493 hit=1452 noncontig=548 construct_BAD=0 served=1451 degraded=1
+   consult: [accel] consult: calls=2000 hit=1452 miss{absent=0 novisible=0 noncontig=548 ineligible=0 gcrace=0} | construct_ok=1 construct_BAD=0 | auth_mode=1 served=1451 gen_gate=1
+
+########## bp64M_m1_cap1000_i7 (N=8) ##########
+>> bp64M_m1_cap1000_i7 : deep1_lat=0.42266950s phys=4134 hit=2000 noncontig=0 construct_BAD=0 served=1999 degraded=0
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=1 construct_BAD=0 | auth_mode=1 served=1999 gen_gate=1
+
+########## bp64M_m1_cap1000_i8 (N=8) ##########
+>> bp64M_m1_cap1000_i8 : deep1_lat=121.19929275s phys=1414042 hit=390 noncontig=1610 construct_BAD=0 served=390 degraded=1
+   consult: [accel] consult: calls=2000 hit=390 miss{absent=0 novisible=0 noncontig=1610 ineligible=0 gcrace=0} | construct_ok=0 construct_BAD=0 | auth_mode=1 served=390 gen_gate=1
+
+########## bp4G_m0_cap1000_i1 (N=8) ##########
+>> bp4G_m0_cap1000_i1 : deep1_lat=1.10921100s phys=0 hit=2000 noncontig=0 construct_BAD=0 served=0 degraded=0
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=2000 construct_BAD=0 | auth_mode=0 served=0 gen_gate=1
+
+########## bp4G_m0_cap1000_i2 (N=8) ##########
+>> bp4G_m0_cap1000_i2 : deep1_lat=1.10207275s phys=0 hit=2000 noncontig=0 construct_BAD=0 served=0 degraded=0
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=2000 construct_BAD=0 | auth_mode=0 served=0 gen_gate=1
+
+########## bp4G_m1_cap1000_i1 (N=8) ##########
+>> bp4G_m1_cap1000_i1 : deep1_lat=0.46210025s phys=0 hit=2000 noncontig=0 construct_BAD=0 served=1999 degraded=0
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=1 construct_BAD=0 | auth_mode=1 served=1999 gen_gate=1
+
+########## bp4G_m1_cap1000_i2 (N=8) ##########
+>> bp4G_m1_cap1000_i2 : deep1_lat=0.55323875s phys=0 hit=2000 noncontig=0 construct_BAD=0 served=1999 degraded=0
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=1 construct_BAD=0 | auth_mode=1 served=1999 gen_gate=1
+
+########## bp4G_m1_cap1000_i3 (N=8) ##########
+>> bp4G_m1_cap1000_i3 : deep1_lat=0.41117725s phys=0 hit=2000 noncontig=0 construct_BAD=0 served=1999 degraded=0
+   consult: [accel] consult: calls=2000 hit=2000 miss{absent=0 novisible=0 noncontig=0 ineligible=0 gcrace=0} | construct_ok=1 construct_BAD=0 | auth_mode=1 served=1999 gen_gate=1
+
+=== RAW CSV (/mnt/c/Users/USER/projects/AccelerateMVCC/integration/results/q11_d6.csv) ===
+iter,bp,mode,cap,deep1_lat_s,phys_reads,consult_calls,hit,noncontig,construct_BAD,served,degraded
+1,64M,0,1000,133.37307275,1474506,2000,2000,0,0,0,1
+2,64M,0,1000,102.45582800,1105642,2000,2000,0,0,0,1
+3,64M,0,1000,132.09853575,1519326,2000,1082,918,0,0,1
+1,64M,1,1000,0.46808525,4091,2000,2000,0,0,1999,0
+2,64M,1,1000,0.45574250,3958,2000,2000,0,0,1999,0
+3,64M,1,1000,0.45254000,4059,2000,2000,0,0,1999,0
+4,64M,1,1000,0.41766900,3814,2000,2000,0,0,1999,0
+5,64M,1,1000,0.37876300,3953,2000,2000,0,0,1999,0
+6,64M,1,1000,87.48795075,1010493,2000,1452,548,0,1451,1
+7,64M,1,1000,0.42266950,4134,2000,2000,0,0,1999,0
+8,64M,1,1000,121.19929275,1414042,2000,390,1610,0,390,1
+1,4G,0,1000,1.10921100,0,2000,2000,0,0,0,0
+2,4G,0,1000,1.10207275,0,2000,2000,0,0,0,0
+1,4G,1,1000,0.46210025,0,2000,2000,0,0,1999,0
+2,4G,1,1000,0.55323875,0,2000,2000,0,0,1999,0
+3,4G,1,1000,0.41117725,0,2000,2000,0,0,1999,0
+
+=== SUMMARY (latency s) ===
+64M mode0 (vanilla walk) : min=102.4558 median=132.0985 max=133.3731 n=3 degraded=3
+64M mode1 (serve, headline): min=0.3788 median=0.4541 max=121.1993 n=8 degraded=2
+4G  mode0 (vanilla walk) : min=1.1021 median=1.1056 max=1.1092 n=2 degraded=0
+4G  mode1 (serve)        : min=0.4112 median=0.4621 max=0.5532 n=3 degraded=0
+
+ratio(64M) = median(64M m0) / median(64M m1) ; ratio(4G) likewise. construct_BAD must be 0 in every row.
+=== DONE ===
+Tue Jun 30 00:38:02 KST 2026
