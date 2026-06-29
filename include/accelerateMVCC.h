@@ -209,7 +209,8 @@ namespace mvcc
         // require_full_pk=false is a TEST-ONLY negative control: it skips the full-PK identity check
         // so a forced pk_hash collision serves a cross-row image -> the shadow byte-compare must then
         // report mismatches, proving the test can actually catch a wrong selection (and that full-PK
-        // is what prevents it). Production always passes true (the default).
+        // is what prevents it). It is IGNORED (forced true) unless set_allow_no_full_pk(true) was called
+        // first, so a production slip can never silently disable the firewall (see allow_no_full_pk_).
         ConsultOutcome consult(uint64_t table_id, uint64_t pk_hash,
                                const unsigned char *pk, uint32_t pk_len,
                                uint64_t up_limit_id, uint64_t low_limit_id, uint64_t creator_trx_id,
@@ -405,6 +406,13 @@ namespace mvcc
         // negative control oracle toggles this to prove the gate flips a would-be HIT to MISS. Default off.
         std::atomic<bool> test_bump_gen_mid_consult_{false};
         void set_test_bump_gen_mid_consult(bool v) { test_bump_gen_mid_consult_.store(v, std::memory_order_relaxed); }
+
+        // Production firewall lock: require_full_pk=false (the cross-row negative control) is IGNORED
+        // (treated as true) unless this test-only opt-in is set first. So a positional/default slip can
+        // never silently disable the full-PK identity firewall in production -- disabling it takes an
+        // explicit, greppable set_allow_no_full_pk(true). Default false (firewall always on).
+        std::atomic<bool> allow_no_full_pk_{false};
+        void set_allow_no_full_pk(bool v) { allow_no_full_pk_.store(v, std::memory_order_relaxed); }
 
         trx_t* start_trx(){
             return trxManger->startTrx();

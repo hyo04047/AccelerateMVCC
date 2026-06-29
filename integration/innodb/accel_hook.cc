@@ -401,6 +401,7 @@ void accel_init() noexcept {
     g_accel->set_consult_fg_reclaim(g_consult_fg);  // D-5 FG-α (default off)
     g_accel->set_dummy_drain_cap(g_drain_cap);      // D-5 GC-tuning (0 = unlimited)
     g_accel->set_gc_tail_only(g_tail_only);         // ⓠ3: tail-only baseline (default off = deadzone)
+    if (g_no_full_pk) g_accel->set_allow_no_full_pk(true);  // test negative control opt-in (ACCEL_NO_FULL_PK)
     g_drainer = std::thread(drain_loop);
     g_gc = std::thread(gc_loop);  // D-5 ⑤a-2: integration GC driver (cuts-driven deadzone sweep when ACCEL_GC=1)
     g_t0 = std::chrono::steady_clock::now();           // ⓠ3: reporter t_ms origin (set before it starts)

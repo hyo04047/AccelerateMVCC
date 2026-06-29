@@ -197,6 +197,8 @@ TEST(Consult, NegControlFullPkOffServesCrossRow) {
     CO on = m.consult(1, H, pkB.data(), 1, 5, 35, 0, nullptr, 0, 40, buf, sizeof(buf), &bl, /*require_full_pk=*/true);
     EXPECT_EQ(on, CO::MISS_ABSENT);
     // guard OFF: identity ignored -> matches row A's entries -> wrong cross-row HIT serving A's v30.
+    // The firewall-off path now requires an explicit opt-in (so production can never silently disable it).
+    m.set_allow_no_full_pk(true);
     CO off = m.consult(1, H, pkB.data(), 1, 5, 35, 0, nullptr, 0, 40, buf, sizeof(buf), &bl, /*require_full_pk=*/false);
     EXPECT_EQ(off, CO::HIT);
     EXPECT_EQ(bl, 1u); EXPECT_EQ(buf[0], 0xAC);

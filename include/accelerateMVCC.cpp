@@ -326,6 +326,9 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
     // since a reader reconstructs against the CURRENT layout, the reader's era is the safe signal.
     if (live_schema_epoch != ~uint64_t(0) && live_schema_epoch != 0)
         return ConsultOutcome::MISS_INELIGIBLE;
+    // Production firewall lock: the cross-row negative control (require_full_pk=false) only takes effect
+    // behind an explicit test opt-in; otherwise force the full-PK identity firewall ON (allow_no_full_pk_).
+    require_full_pk = require_full_pk || !allow_no_full_pk_.load(std::memory_order_relaxed);
     kuku::item_type item = kuku::make_item(table_id, pk_hash);
     kuku::QueryResult query = kuku_table->query(item);
     if (!query.found()) return ConsultOutcome::MISS_ABSENT;
