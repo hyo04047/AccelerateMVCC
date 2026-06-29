@@ -6,13 +6,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![C++](https://img.shields.io/badge/C%2B%2B-17%2F20-00599C.svg)
 ![Build](https://img.shields.io/badge/build-CMake-064F8C.svg)
-![Status](https://img.shields.io/badge/status-WIP%20(reviving)-orange.svg)
+![Status](https://img.shields.io/badge/status-stages%20A--D%20done%2C%20Phase%203%20(paper)-blue.svg)
 
 ## Motivation
 
 In HTAP workloads, a long-lived transaction forces InnoDB's MVCC to walk increasingly long version chains (undo-log chains), pulling many undo-log pages into the buffer pool. Profiling shows `row_search_mvcc` and related functions consuming **~45% of CPU** under such conditions — with I/O cost, buffer-pool pollution, and GC contention as the main symptoms.
 
-**AccelerateMVCC** keeps only the *metadata* of each version (space / page / offset pointers) in a compact in-memory structure, so the correct visible version can be located quickly instead of traversing a long on-disk chain. The design adapts ideas from DIVA (VLDB '22) to an in-memory setting.
+**AccelerateMVCC** keeps only the *metadata* of each version (space / page / offset pointers) plus a small row image in a compact in-memory structure, so the correct visible version can be located quickly instead of traversing a long on-disk undo chain. The deadzone *in-middle* reclaim is derived from **vDriver (SIGMOD '20, "Long-lived Transactions Made Less Harmful")**; DIVA (VLDB '22) is the related interval-tree / chain-bound work, adapted here to an in-memory setting.
 
 ## Architecture
 
@@ -37,14 +37,17 @@ flowchart LR
 
 ## Status & Roadmap
 
-Reviving a 2023 graduate project. Current plan:
+Reviving a 2023 graduate project (solo, 2026).
 
-- **A. Build revival** — compiles & runs on WSL2 / gcc 15 / cmake 4 *(done ✅)*
-- **B. Prototype correctness** — wire up GC, fix bugs, add correctness tests
-- **C. Experiments** — HTAP / long-transaction benchmarks vs. baseline
-- **D. MySQL/InnoDB integration** — final goal
+- **A. Build revival** — compiles & runs on WSL2 / gcc / cmake *(done ✅)*
+- **B. Prototype correctness** — GC, deadzone, lock-free hardening, correctness tests *(done ✅)*
+- **C. Experiments** — HTAP / long-transaction benchmarks vs. baseline *(done ✅)*
+- **D. MySQL/InnoDB integration** — populate → consult → authoritative serve → read-latency payoff;
+  deadzone GC on; safe serve; workload breadth (composite/string PK, secondary index, savepoint, safe
+  LOB exclusion, full-mysqld ASan) *(done ✅ — every served answer is byte-equal to the vanilla undo walk)*
+- **Phase 3 (in progress)** — multi-run/error-bar data, InnoDB patch vendoring, the paper (Korean + English).
 
-See [`docs/`](docs/) for the living status report, forensic findings, and the issue tracker.
+See [`docs/`](docs/) for the living status report, design docs, and the open-items tracker.
 
 ## Repository layout
 

@@ -34,12 +34,15 @@ namespace mvcc {
         uint64_t page_id;
         uint64_t offset;
         std::atomic<undo_entry_node *> next_entry;
-        // D-5 (O(C) lineage walk): roll_ptr PREDECESSOR = the node this version's value overwrote
-        // (the next-older version on the row's lineage). The single drainer receives a row's versions
-        // in commit (= roll_ptr) order, so the node inserted immediately before this one FOR THIS KEY
-        // is exactly that predecessor; insert() sets this once, before the node is published. consult
-        // chases roll_pred from the newest cached node instead of rebuilding a per-call link table, so
-        // the walk is O(depth) with no allocation. nullptr = oldest cached version (chain bottom).
+        // D-5 lineage predecessor = the node this version's value overwrote (the next-older version on the
+        // row's lineage). The single drainer receives a row's versions in commit (= roll_ptr) order, so the
+        // node inserted immediately before this one FOR THIS KEY is exactly that predecessor; insert() sets
+        // it once, before the node is published.
+        // NOTE (GC-on): consult does NOT chase roll_pred -- the back-edge is GC-UNSAFE (it keeps pointing at
+        // a predecessor a PRIOR GC cycle already freed -> UAF; design-D5-gc §11 + the session-12 re-review
+        // confirmed the C3 gc_generation gate cannot rescue it). consult uses the GC-safe ⑤b-lite memoized
+        // live-chain map instead. roll_pred / newest_node are MAINTAINED but UNREAD (kept from the historical
+        // fast path; candidates for removal). nullptr = oldest cached version (chain bottom).
         undo_entry_node *roll_pred = nullptr;
         // D-4: cached full-row image of the version this entry locates. Set ONCE at insert (the
         // single drainer is the sole mutator), heap-owned, and freed in the dtor -- which runs
