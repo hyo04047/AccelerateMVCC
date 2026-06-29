@@ -203,7 +203,7 @@ construct_BAD=0(full-PK FNV 일반화·savepoint rollback 버전 미서빙). ful
 
 **Stage D 완료 (§5).** 가속 인덱스를 실 InnoDB에 연결해(undo 메타데이터/소형 image 캡처, read-view cuts로 GC 재구동, consistent-read serve) ⑥ read-latency payoff(~190×/775×)·⑤ 통합 GC(LLT에 선형 20×/40×/63×)·serve construct_BAD=0·crash-recovery·워크로드 폭·full-mysqld ASan을 실증했다. **DoD 원문 config(churn이 도는 중 held read)도 측정**: 동시 OLTP churn 하에서도 ⑥ serve가 vanilla 60s 대비 0.2~3.9s(~16–300×)로 유지되고 mode-2 verify-serve가 construct_BAD=0(GC-on/off 모두, `build_q15_concurrent.sh`) — 헤드라인이 동시성에서 생존. 추가 perf 레버 두 개(roll_pred fast chase·DIVA interval tree)는 적대 리뷰서 NO-GO(GC-safety/worth-it; design-D5-gc §14) — ⑤b-lite가 출하 fast consult.
 
-**Phase 3 (마무리 — 테스트·정리·집필).** 헤드라인 config multi-run/error-bar 재측 + raw 로그 아카이빙 + CH-benCHmark/TPC-C 평가 + no-wrong-serve semi-formal 불변식 논증 + **논문(한글·영문)** 작성. 한계·위협 요인은 §6.
+**Phase 3 (마무리 — 테스트·정리·집필).** 헤드라인 config multi-run/error-bar 재측 + raw 로그 아카이빙(`integration/results/`, `.gitignore` negation으로 추적) + CH-benCHmark/TPC-C 평가 + no-wrong-serve semi-formal 불변식 논증(**초안 완료 → `docs/design-D7-no-wrong-serve.md`**: 4-firewall F1–F4가 wrong-serve 공간을 jointly 닫음을 lineage 유일성[L0] + over-approx-only[L2]로 논증; HIT⟹byte==vanilla, ¬HIT⟹MISS⟹vanilla, 틀린 행은 결과공간 밖. 형식모델[TLA+]은 향후연구) + **논문(한글·영문)** 작성. 한계·위협 요인은 §6.
 
 **향후 연구 (다음 논문 방향).** superset-safe *derived-and-served* 캐시 아이디어를 다른 storage 엔진/index 타입·isolation level로, 분산/다노드 MVCC로, persistent memory 상 deadzone으로 일반화; no-wrong-serve 불변식의 형식검증(TLA+/모델체크). (off-page LOB 서빙·shared cross-reader nav cache 등은 *구현* 확장/최적화 주제이지 별도 연구 방향이 아니다 — 전자는 §6 scope Limitation, 후자는 측정상 이득 ~0.)
 
