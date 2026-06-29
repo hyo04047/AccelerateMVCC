@@ -21,29 +21,6 @@ namespace mvcc {
     // (the sole wrapper unlinker) retires it, gated by state.exchange(RETIRED).
     enum EpochState : uint8_t { EPOCH_LIVE = 0, EPOCH_CHAIN_DETACHED = 1, EPOCH_RETIRED = 2 };
 
-    struct UndoLogEntryNode {
-        uint64_t trxId;
-
-        uint64_t spaceId;
-        uint64_t pageId;
-        uint64_t offset;
-
-        std::atomic<UndoLogEntryNode *> nextUndoLogEntry = nullptr;
-
-        UndoLogEntryNode(uint64_t trxId, uint64_t spaceId, uint64_t pageId, uint64_t offset);
-    };
-
-
-    struct EpochNode {
-        uint64_t epochNumber;
-
-        std::atomic<UndoLogEntryNode *> startUndoLogEntry = nullptr;
-        std::atomic<UndoLogEntryNode *> endUndoLogEntry = nullptr;
-        std::atomic<EpochNode *> nextEpoch = nullptr;
-
-        explicit EpochNode(uint64_t epochNumber);
-    };
-
     struct undo_entry_node {
         // D-4 (4b-0): split the single trx_id into the two distinct ids InnoDB visibility needs.
         //   version_trx_id = the VERSION's creator = old DB_TRX_ID (the begin-ts of the version this

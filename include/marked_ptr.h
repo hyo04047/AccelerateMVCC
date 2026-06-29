@@ -23,8 +23,9 @@ namespace mvcc {
 // a node type may embed MarkedPtr<Self> as its own `next` (alignof(Self) is not
 // available inside Self's own definition).
 //
-// Stage 1b Increment 0: this helper is defined and unit-tested in isolation. It
-// is NOT yet wired into any list -- zero behavior change.
+// Introduced (stage 1b inc 0) unit-tested in isolation; it is now the backbone of every lock-free list
+// in the index -- epoch_node::next, interval_list_header::next, and the epoch_table wrapper list all use
+// MarkedPtr for their Harris mark + CAS-unlink.
 template <typename T>
 class MarkedPtr {
 public:
