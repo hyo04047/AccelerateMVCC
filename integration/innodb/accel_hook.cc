@@ -32,6 +32,8 @@ std::atomic<bool> g_ready{false};        // hook may enqueue
 std::atomic<bool> g_stop{false};         // drainer should exit
 std::atomic<uint64_t> g_enq{0};
 std::atomic<uint64_t> g_dropped{0};
+std::atomic<bool> g_drop_warned{false};                  // ⓣ13: one-shot ring-overflow WARNING latch (drainer emits, off-latch)
+std::atomic<uint64_t> g_first_drop_table{~uint64_t(0)};  // ⓣ13: table_id of the first overflow (attribution)
 std::atomic<uint64_t> g_drained{0};
 std::atomic<uint32_t> g_pk_seen[1024];   // pk breadth proxy (drainer-only writer)
 std::thread g_drainer;
@@ -178,6 +180,20 @@ int pk_buckets() {
 }
 
 void consume(const accel::UndoRec &r) {
+  // ⓣ13: one-shot ring-overflow WARNING, emitted OFF-LATCH by the drainer (NEVER fprintf under the page
+  // latch). A drop means the affected key consult-MISSes to the vanilla walk until the drainer catches up
+  // (correct, just unaccelerated); this makes the otherwise-silent degrade observable + attributable. The
+  // double-check (load then exchange) keeps the steady state to a single relaxed load once warned.
+  if (g_dropped.load(std::memory_order_relaxed) != 0 &&
+      !g_drop_warned.load(std::memory_order_relaxed) &&
+      g_drop_warned.exchange(true, std::memory_order_relaxed) == false) {
+    std::fprintf(stderr,
+                 "[accel] WARNING: ring overflowed (drop-on-full) -- first table_id=%llu; affected keys "
+                 "consult-MISS to the vanilla walk until the drainer catches up (increase the ring size or "
+                 "reduce the write burst). dropped so far=%llu\n",
+                 (unsigned long long)g_first_drop_table.load(std::memory_order_relaxed),
+                 (unsigned long long)g_dropped.load(std::memory_order_relaxed));
+  }
   // pk-breadth bucket + ⓠ3 first-touch representative-key capture. The drainer is the SOLE writer, so the
   // plain load/store is race-free between drainers; the rep is written BEFORE the bit is published (release)
   // so a reader that sees the bit set also sees the rep.
@@ -541,10 +557,15 @@ void accel_on_undo(uint64_t table_id, uint64_t pk_hash, uint64_t trx_id, uint64_
     r.img_len = static_cast<uint32_t>(img_len);
     std::memcpy(r.img, img, img_len);
   }
-  if (g_ring.enqueue(r))
+  if (g_ring.enqueue(r)) {
     g_enq.fetch_add(1, std::memory_order_relaxed);
-  else
+  } else {
     g_dropped.fetch_add(1, std::memory_order_relaxed);  // full -> drop, never block the latch
+    // ⓣ13: record the first overflowing table (one cheap CAS under the latch -- no alloc/lock/InnoDB call).
+    // The drainer emits the one-shot WARNING off-latch (consume()); under the latch we only stash attribution.
+    uint64_t exp = ~uint64_t(0);
+    g_first_drop_table.compare_exchange_strong(exp, table_id, std::memory_order_relaxed);
+  }
 }
 
 int accel_consult_fetch(uint64_t table_id, uint64_t pk_hash,
