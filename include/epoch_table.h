@@ -286,15 +286,26 @@ namespace mvcc {
         // <- (epoch_num - epoch_table_size/4)  ~ (epoch_num)
         // Phase2 : processing gc in LLT vector
         bool garbage_collect(uint64_t epoch_num, std::vector<trx_t> vector) {
-            // BG reclaim: free anything retired in a previous cycle that no
-            // currently-active reader (Guard) can still reach. Safe to run every
-            // call, including the warm-up early-returns below.
+            return gc_cycle(epoch_num, [&] { return generate_dead_zone(vector); });
+        }
+
+        // Shared GC-cycle orchestration for garbage_collect (standalone, dead zone from the active trx list)
+        // and garbage_collect_from_cuts (integration, dead zone from the active-view registry cuts + floor).
+        // The ONLY difference is HOW the dead zone is built, so the builder is passed as a callable, invoked
+        // AFTER the warm-up early-returns and BEFORE the sweep. Single-sourcing this means a fix to the
+        // windowed/backstop/drain/compaction sequence (the correctness-critical drainer||GC mutation edge)
+        // cannot drift between the two entry points. reclaim() runs every call (safe, incl. warm-up returns).
+        template <typename BuildDeadzone>
+        bool gc_cycle(uint64_t epoch_num, BuildDeadzone build_dz) {
+            // BG reclaim: free anything retired in a previous cycle that no currently-active reader (Guard)
+            // can still reach. Safe to run every call, including the warm-up early-returns below.
             reclaimer_.reclaim();
             if (epoch_num == EPOCH_TABLE_SIZE / 4) {
                 return false;
             }
             {
-                // get index range to move elements from table to long_live_epochs
+                // Phase-1: age EPOCH_TABLE_SIZE/4 buckets out of the ring into long_live_epochs, swapping in
+                // fresh table nodes one window ahead.
                 uint64_t start_index = (epoch_num - EPOCH_TABLE_SIZE / 2) % EPOCH_TABLE_SIZE;
                 uint64_t end_index = ((epoch_num - EPOCH_TABLE_SIZE / 4) - 1) % EPOCH_TABLE_SIZE;
 
@@ -310,13 +321,13 @@ namespace mvcc {
             if (epoch_num == EPOCH_TABLE_SIZE / 2) {
                 return false;
             }
-            deadzone* deadzone = generate_dead_zone(vector);
+            deadzone* dz = build_dz();   // the ONLY per-caller difference (active list vs registry cuts+floor)
             ++backstop_counter_;
             {
                 uint64_t llt_size = long_live_epochs.size();
                 if (llt_size < (uint64_t)(EPOCH_TABLE_SIZE / 2)) {   // not enough lag accumulated yet
-                    drain_dummy(deadzone);        // still drain orphans before a window exists
-                    publish_deadzone(deadzone);
+                    drain_dummy(dz);        // still drain orphans before a window exists
+                    publish_deadzone(dz);
                     return false;
                 }
                 // Windowed sweep: only the buckets that have aged into the window. Bounded
@@ -326,7 +337,7 @@ namespace mvcc {
                 for (int i = i_start; i <= i_end; i++) {
                     epoch_table_node *tn = long_live_epochs.at(i);
                     if (tn == nullptr) continue;                     // tombstoned (already reclaimed)
-                    sweep_bucket(tn, deadzone);
+                    sweep_bucket(tn, dz);
                     try_reclaim_bucket(static_cast<size_t>(i));
                 }
                 // Backstop full-bucket sweep (low cadence): the windowed sweep visits each bucket
@@ -338,11 +349,11 @@ namespace mvcc {
                     for (size_t i = 0; i < long_live_epochs.size(); ++i) {
                         epoch_table_node *tn = long_live_epochs.at(i);
                         if (tn == nullptr) continue;
-                        sweep_bucket(tn, deadzone);
+                        sweep_bucket(tn, dz);
                         try_reclaim_bucket(i);
                     }
                 }
-                drain_dummy(deadzone);            // pending #2: reclaim/keep orphan wrappers
+                drain_dummy(dz);            // pending #2: reclaim/keep orphan wrappers
                 if (backstop_counter_ % BACKSTOP_PERIOD == 0) {
                     // Stage 1c-6: compact away tombstoned (reclaimed) slots so long_live_epochs
                     // tracks LIVE buckets, not all-buckets-ever. Safe: the backstop (which just ran)
@@ -355,7 +366,7 @@ namespace mvcc {
                         long_live_epochs.end());
                 }
             }
-            publish_deadzone(deadzone);
+            publish_deadzone(dz);
             return true;
         }
 
@@ -366,60 +377,7 @@ namespace mvcc {
         // truly-active views, design-D5-gc §2.1/§3) instead of the standalone active list, which the
         // off-latch drainer never advances (M4). Single GC actor (the accel_hook gc_loop thread).
         bool garbage_collect_from_cuts(uint64_t epoch_num, const std::vector<ViewCut>& cuts, uint64_t floor) {
-            reclaimer_.reclaim();
-            if (epoch_num == EPOCH_TABLE_SIZE / 4) {
-                return false;
-            }
-            {
-                uint64_t start_index = (epoch_num - EPOCH_TABLE_SIZE / 2) % EPOCH_TABLE_SIZE;
-                uint64_t end_index = ((epoch_num - EPOCH_TABLE_SIZE / 4) - 1) % EPOCH_TABLE_SIZE;
-                int i_start = static_cast<int>(start_index);
-                int i_end = static_cast<int>(end_index);
-                for (int i = i_start; i <= i_end; i++) {
-                    epoch_table_node *prev_table_node = table.at(i).load();
-                    long_live_epochs.push_back(prev_table_node);
-                    auto *new_table_node = new epoch_table_node((prev_table_node->epoch_num) + EPOCH_TABLE_SIZE);
-                    table.at(i).store(new_table_node);
-                }
-            }
-            if (epoch_num == EPOCH_TABLE_SIZE / 2) {
-                return false;
-            }
-            deadzone* dz = generate_dead_zone_from_cuts(cuts, floor);
-            ++backstop_counter_;
-            {
-                uint64_t llt_size = long_live_epochs.size();
-                if (llt_size < (uint64_t)(EPOCH_TABLE_SIZE / 2)) {
-                    drain_dummy(dz);
-                    publish_deadzone(dz);
-                    return false;
-                }
-                int i_start = static_cast<int>(llt_size - (EPOCH_TABLE_SIZE / 2));
-                int i_end   = static_cast<int>(llt_size - (EPOCH_TABLE_SIZE / 4) - 1);
-                for (int i = i_start; i <= i_end; i++) {
-                    epoch_table_node *tn = long_live_epochs.at(i);
-                    if (tn == nullptr) continue;
-                    sweep_bucket(tn, dz);
-                    try_reclaim_bucket(static_cast<size_t>(i));
-                }
-                if (backstop_counter_ % BACKSTOP_PERIOD == 0) {
-                    for (size_t i = 0; i < long_live_epochs.size(); ++i) {
-                        epoch_table_node *tn = long_live_epochs.at(i);
-                        if (tn == nullptr) continue;
-                        sweep_bucket(tn, dz);
-                        try_reclaim_bucket(i);
-                    }
-                }
-                drain_dummy(dz);
-                if (backstop_counter_ % BACKSTOP_PERIOD == 0) {
-                    long_live_epochs.erase(
-                        std::remove(long_live_epochs.begin(), long_live_epochs.end(),
-                                    static_cast<epoch_table_node *>(nullptr)),
-                        long_live_epochs.end());
-                }
-            }
-            publish_deadzone(dz);
-            return true;
+            return gc_cycle(epoch_num, [&] { return generate_dead_zone_from_cuts(cuts, floor); });
         }
 
         // EBR used by GC (retire/reclaim) and search readers (Guard). Single

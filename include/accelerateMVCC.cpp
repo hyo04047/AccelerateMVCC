@@ -5,6 +5,35 @@
 #include <unordered_map>       // D-5 (5-2 prep): GC-safe live-chain lineage walk builds a writer->pred table
 #include <memory>              // D-5 ⑤b-lite: unique_ptr owns a non-published (raced) consult-cache build
 
+namespace mvcc {
+namespace {
+// Harris help-splice: best-effort CAS pred_next from (epoch, unmarked) to (succ, unmarked). Only succeeds
+// through an unmarked pred still pointing at `epoch`, so it is multi-unlinker safe; on failure leave it for
+// the BG backstop. Used wherever a reader/consult traversal meets an already-MARKED (logically deleted) epoch.
+inline void accel_help_splice_marked(MarkedPtr<epoch_node>* pred_next, epoch_node* epoch, epoch_node* succ) {
+    uintptr_t exp = MarkedPtr<epoch_node>::pack(epoch, false);
+    pred_next->cas(exp, MarkedPtr<epoch_node>::pack(succ, false));
+}
+// Mark a dead non-head epoch + best-effort O(1) splice it out via pred_next; returns the next epoch to visit.
+// CRITICAL: after set_mark, RE-READ epoch->next -- once MARKED its pointer is frozen, so splice to THAT frozen
+// successor, never the pre-mark `succ` (a concurrent unlinker may have moved epoch->next between the caller's
+// load and here, which would make splicing the stale succ drop a live node / resurrect a detached one). If
+// set_mark did not take (next moved without a mark), just advance without splicing. Caller does NOT advance
+// pred (the pruned node is gone). Single-sources the subtle mark/re-read ordering shared by search + consult.
+inline epoch_node* accel_mark_and_splice_dead(MarkedPtr<epoch_node>* pred_next, epoch_node* epoch, epoch_node* succ) {
+    epoch->next.set_mark(succ);                  // logical delete (idempotent; may fail if next moved)
+    uintptr_t mw = epoch->next.load();
+    if (MarkedPtr<epoch_node>::mark_of(mw)) {
+        epoch_node* msucc = MarkedPtr<epoch_node>::ptr_of(mw);
+        uintptr_t exp = MarkedPtr<epoch_node>::pack(epoch, false);
+        pred_next->cas(exp, MarkedPtr<epoch_node>::pack(msucc, false));  // best-effort, no retry
+        return msucc;
+    }
+    return MarkedPtr<epoch_node>::ptr_of(mw);    // next moved w/o mark -> advance, no splice
+}
+}  // namespace
+}  // namespace mvcc
+
 mvcc::Accelerate_mvcc::Accelerate_mvcc(uint64_t record_count, uint32_t kuku_log2) {
     constexpr uint64_t max_value = ~0ULL;
     // Cuckoo table sized to (1 << kuku_log2) bins (default 1024; InnoDB integration uses 65536
@@ -246,8 +275,7 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
             // skip its (invisible) versions. CAS only succeeds through an UNMARKED pred still
             // pointing at us, so it is multi-unlinker safe; on failure leave it for the BG
             // backstop. Do NOT advance pred (a marked node is not a valid predecessor).
-            uintptr_t exp = MarkedPtr<epoch_node>::pack(epoch, false);
-            pred_next->cas(exp, MarkedPtr<epoch_node>::pack(succ, false));
+            accel_help_splice_marked(pred_next, epoch, succ);
             epoch = succ;
             continue;
         }
@@ -259,21 +287,7 @@ bool mvcc::Accelerate_mvcc::search(uint64_t table_id, uint64_t index,
         if (fg_on && dz != nullptr && pred_next != &header->next &&
             epoch_table->can_prune_epoch(epoch, dz)) {
             coop_dead_seen_.fetch_add(1, std::memory_order_relaxed);
-            epoch->next.set_mark(succ);                  // logical delete (idempotent; may fail if next moved)
-            // Re-read epoch->next: once it is MARKED its pointer is frozen, so splice to that
-            // re-read successor -- never the pre-mark `succ` (a concurrent unlinker may have
-            // changed epoch->next between the load above and here, which would make set_mark fail
-            // and the old `succ` stale; splicing it would drop a live node / resurrect a detached
-            // one). If set_mark did not take, just advance without splicing.
-            uintptr_t mw = epoch->next.load();
-            if (MarkedPtr<epoch_node>::mark_of(mw)) {
-                epoch_node *msucc = MarkedPtr<epoch_node>::ptr_of(mw);
-                uintptr_t exp = MarkedPtr<epoch_node>::pack(epoch, false);
-                pred_next->cas(exp, MarkedPtr<epoch_node>::pack(msucc, false));  // best-effort, no retry
-                epoch = msucc;
-            } else {
-                epoch = MarkedPtr<epoch_node>::ptr_of(mw);   // next moved w/o mark -> advance, no splice
-            }
+            epoch = accel_mark_and_splice_dead(pred_next, epoch, succ);
             continue;                                    // pruned: skip scan, do NOT advance pred
         }
         // Kept epoch (the head, or a live/not-yet-dead epoch): scan its versions for visibility
@@ -411,8 +425,7 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
             if (MarkedPtr<epoch_node>::mark_of(w)) {
                 // already logically deleted: best-effort help-splice (Harris), skip its dead entries. Its links
                 // are absent from this map -> a chase needing them MISSes (the existing chain-sever, PERF-only).
-                uintptr_t exp = MarkedPtr<epoch_node>::pack(epoch, false);
-                pred_next->cas(exp, MarkedPtr<epoch_node>::pack(succ, false));
+                accel_help_splice_marked(pred_next, epoch, succ);
                 epoch = succ;
                 continue;
             }
@@ -441,16 +454,7 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
             // re-read epoch->next after the mark so we splice to the frozen successor, never a stale one.
             if (dz != nullptr && pred_next != &header->next && epoch_table->can_prune_epoch(epoch, dz)) {
                 coop_dead_seen_.fetch_add(1, std::memory_order_relaxed);
-                epoch->next.set_mark(succ);
-                uintptr_t mw = epoch->next.load();
-                if (MarkedPtr<epoch_node>::mark_of(mw)) {
-                    epoch_node *msucc = MarkedPtr<epoch_node>::ptr_of(mw);
-                    uintptr_t exp = MarkedPtr<epoch_node>::pack(epoch, false);
-                    pred_next->cas(exp, MarkedPtr<epoch_node>::pack(msucc, false));  // best-effort, no retry
-                    epoch = msucc;
-                } else {
-                    epoch = MarkedPtr<epoch_node>::ptr_of(mw);   // next moved w/o mark -> advance, no splice
-                }
+                epoch = accel_mark_and_splice_dead(pred_next, epoch, succ);
                 continue;   // pruned: do NOT advance pred
             }
             pred_next = &epoch->next;   // kept -> advance pred over it
