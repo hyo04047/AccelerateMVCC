@@ -36,7 +36,6 @@ namespace mvcc {
     struct epoch_table_node {
         uint64_t epoch_num;
         std::atomic<epoch_node_wrapper *> first_node;
-        std::atomic<epoch_node_wrapper *> last_node;
 
         // watcher number for this node
         std::atomic<int> count;
@@ -46,7 +45,6 @@ namespace mvcc {
             // dummy node!
             auto *epoch_wrapper = new epoch_node_wrapper(nullptr);
             first_node.store(epoch_wrapper);
-            last_node.store(epoch_wrapper);
         }
     };
 

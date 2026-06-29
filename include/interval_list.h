@@ -152,20 +152,29 @@ namespace mvcc {
         // otherwise fall back to a full walk (MISS) -- never serve a guess. Maintained by the single
         // drainer (sole mutator), read by concurrent consults, hence atomic (release/acquire).
         //   contiguous_head_writer       = the overwriter of the newest cached version IF the
-        //     gap-free run reaches it (0 = no versions yet). A consult requires this to equal the
-        //     live row's last writer (proof the cache reaches the head); otherwise MISS.
-        //   contiguous_suffix_min_version = the oldest version in the current gap-free run. A
-        //     candidate older than this sits below a hole -> MISS.
+        //     gap-free run reaches it (0 = no versions yet). A consult REQUIRES this to equal the
+        //     live row's last writer (proof the cache reaches the head); otherwise MISS. This is the
+        //     enforced contiguity firewall (read by consult).
+        //   contiguous_suffix_min_version = the oldest version in the current gap-free run. NOTE: this
+        //     is VESTIGIAL bookkeeping -- note_newest maintains it (its change marks a restart) but the
+        //     shipped consult does NOT read it as a positive gate. A hole below a candidate is caught
+        //     instead by the link-gap: the writer->predecessor chase runs off the missing link and
+        //     returns MISS_NONCONTIG. So the enforced firewalls are: full-PK identity, contiguity
+        //     (head_writer), link-gap (chase break -> MISS), and the changes_visible mirror.
         // Per-key updates arrive in version order (the row's X-lock serializes writers, the FIFO ring
         // preserves it), so the ONLY source of a hole is a ring drop, caught by the linkage break in
         // note_newest below.
         std::atomic<uint64_t> contiguous_head_writer{0};
         std::atomic<uint64_t> contiguous_suffix_min_version{0};
 
-        // D-5 (O(C) lineage walk): the most-recently-inserted node for this key (the newest cached
-        // version) and the per-key node count. insert() release-stores newest_node after wiring the
-        // node's roll_pred to the prior newest; consult acquire-loads it as the chase start and uses
-        // node_count as a defensive hop cap. Single drainer = sole writer.
+        // D-5: newest_node + the per-key node count. SUPERSEDED: newest_node (with undo_entry_node::
+        // roll_pred) was the GC-UNSAFE back-edge chase start -- consult NO LONGER reads it (see the
+        // roll_pred NOTE above; ⑤b-lite uses the GC-safe memoized live-chain map instead). newest_node/
+        // roll_pred are still maintained by insert but are removal candidates. node_count IS read by
+        // consult, but ONLY as the ⑤b-lite reuse change-detector: built_node_count==node_count means no
+        // insert raced since the cache was built. It is a MONOTONIC insert counter (never decremented on
+        // GC retire), so it is NOT a live-version count and NOT the chase hop cap (the shipped chase
+        // hop-caps on the link-table size). Single drainer = sole writer.
         std::atomic<undo_entry_node *> newest_node{nullptr};
         std::atomic<uint64_t> node_count{0};
 

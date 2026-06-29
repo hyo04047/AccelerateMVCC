@@ -106,6 +106,11 @@ no-UAF:
    clustered 경로)에서 정확한가? 거짓 contiguous를 내는 시퀀스가 있나?
 2. live-top writer를 `row_get_rec_trx_id(rec)`로 읽는 게 secondary-index 진입 경로에서도 옳은가(rec가
    clustered top인지)?
+   - **해소(CLOSED)**: serve hook은 `row_vers_build_for_consistent_read`(= clustered version builder)에만
+     있고, secondary-index consistent read도 옛 clustered version 재구성 시 **반드시 이 함수를 거친다**(=
+     `rec`는 항상 clustered top). 즉 가속은 clustered/secondary 양쪽 analytic read에 적용된다. fast-path
+     visibility로 버전 재구성을 건너뛰는 secondary 케이스는 undo walk 자체가 없어 가속 대상이 아니다(손실 0).
+     실측: `build_q7_keys.sh`(composite-PK + `FORCE INDEX(sec)` held read, mode-2) HIT 2000/2000·construct_BAD=0.
 3. full-PK 추출이 populate(pre-image rec)와 consult(현재 top rec)에서 **동일 바이트**인가? non-key
    update는 PK 동일하나, **key update(InnoDB는 delete+insert)** 는 row identity가 바뀐다 — 그 경우
    캡처/판정이 어긋나나? (4c 영역이나 shadow에서 mismatch로 샐 수 있음)
@@ -205,6 +210,11 @@ changes_visible 최신)가 **boundary로 인정**되려면 (acquire-load):
 3. (full-PK memcmp 일치 — 4b-1).
 셋 다 충족 → **candidate가 증명된 newest-visible boundary = HIT**. 하나라도 아니면 **MISS → full walk**.
 candidate **위쪽**만 gap-free면 됨(그 아래는 더 오래돼 무관). drop된 구역의 reader는 ②/③에서 걸러 MISS.
+
+> **갱신(세션8 lineage walk 이후 — 출하 코드 기준)**: 출하 consult는 게이트 ②(`>= contiguous_suffix_min_version`)를
+> **enforce하지 않는다.** §15의 writer→predecessor lineage chase로 교체됐고, suffix 안쪽 hole은 chase가 끊긴 link에서
+> **MISS_NONCONTIG**로 잡힌다(= link-gap firewall). 따라서 `contiguous_suffix_min_version`은 vestigial bookkeeping이고,
+> 실효 firewall은 ①(`contiguous_head_writer==L`)·full-PK·link-gap·changes_visible mirror다. (`include/interval_list.h` 주석과 일치.)
 
 ### 9.6 동시성 (M3)
 header의 두 scalar는 단일 writer(drainer) release-store / consult acquire-load = atomic. node의
