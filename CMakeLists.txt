@@ -77,7 +77,6 @@ enable_testing()
 
 add_executable(
   test_with_google
-  "google_test.cpp"
   "correctness_test.cpp"
   ${COMMON_SOURCES}
 )
@@ -102,6 +101,17 @@ target_link_libraries(
 
 include(GoogleTest)
 gtest_discover_tests(test_with_google)
+
+# Legacy Kuku self-tests + the 1M-insert throughput micro-benchmarks (every AccelerateTest* asserts
+# true==true and just prints timing). They test the vendored Kuku dependency + ad-hoc insert perf, NOT our
+# MVCC correctness (correctness_test.cpp does), and they slow ctest down -- so they build as their OWN binary
+# and are NOT registered with ctest. Run manually for perf spot-checks.
+add_executable(accel_microbench "google_test.cpp" ${COMMON_SOURCES})
+target_include_directories(accel_microbench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/Kuku/src)
+if (CMAKE_VERSION VERSION_GREATER 3.12)
+  set_property(TARGET accel_microbench PROPERTY CXX_STANDARD 20)
+endif()
+target_link_libraries(accel_microbench PRIVATE Kuku::kuku GTest::gtest_main Threads::Threads)
 
 # Standalone test for the EBR reclamation primitive (header-only, no kuku/mvcc
 # deps -> fast to rebuild under ASan/TSan).
