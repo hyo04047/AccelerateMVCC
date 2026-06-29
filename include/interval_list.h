@@ -133,6 +133,12 @@ namespace mvcc {
 
     };
 
+    // marked_ptr.h contract: MarkedPtr<epoch_node> packs a 1-bit Harris mark into epoch_node::next's low
+    // bit (interval_list_header::next too), so epoch_node must be >=2 aligned. Asserted here at the wiring
+    // site -- alignof(epoch_node) is unavailable inside the struct's own body. uint64_t members give
+    // alignof 8; this catches a future all-narrow-members reorder that would break the mark bit.
+    static_assert(alignof(epoch_node) >= 2, "MarkedPtr<epoch_node> requires alignof(epoch_node) >= 2");
+
     void update_epoch_node(epoch_node *epoch, uint64_t epoch_num, uint64_t trx_id, undo_entry_node *undo_entry,
                            epoch_node *next);
 
@@ -146,6 +152,11 @@ namespace mvcc {
     struct ConsultLink { uint64_t version; undo_entry_node *node; bool ambiguous; };
     struct ConsultCache {
         uint64_t built_node_count = 0;
+        // D-5: the key's gc_generation when this table was built. Reuse additionally requires this to be
+        // unchanged, so a GC retire (which clears consult_cache AND bumps gc_generation in the same
+        // detach_and_retire_epoch chokepoint) can never be silently reused -- making reuse self-validating
+        // instead of resting only on the implicit "retire clears the cache before freeing nodes" ordering.
+        uint64_t built_gc_generation = 0;
         bool require_full_pk = true;
         bool any_pk_match = false;
         std::vector<unsigned char> pk;

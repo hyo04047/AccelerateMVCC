@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <algorithm>
+#include <cassert>
 #include <vector>
 
 // D-4 ④ (4a): an EXACT mirror of InnoDB's ReadView::changes_visible
@@ -35,6 +36,10 @@ inline bool changes_visible(uint64_t id,
     // (3) between the marks with no active set -> committed before us -> visible.
     if (m_ids_size == 0) return true;
     // (4) between the marks: visible iff it was NOT one of the then-active RW transactions.
+    // m_ids MUST be sorted ascending (the documented caller contract). This is THE wrong-serve gate, so
+    // debug-guard the precondition: an unsorted m_ids would silently binary_search to a wrong visibility
+    // verdict. assert() compiles out under NDEBUG -> zero shipped cost; it fires loudly in debug/sanitizer.
+    assert(std::is_sorted(m_ids, m_ids + m_ids_size));
     return !std::binary_search(m_ids, m_ids + m_ids_size, id);
 }
 

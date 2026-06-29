@@ -29,6 +29,10 @@ namespace mvcc {
                 : epoch(epoch), next(nullptr) {}
     };
 
+    // marked_ptr.h contract: epoch_node_wrapper::next is a MarkedPtr<epoch_node_wrapper>, so the type must
+    // be >=2 aligned for the Harris mark bit (wiring-site assert; alignof is unavailable inside the body).
+    static_assert(alignof(epoch_node_wrapper) >= 2, "MarkedPtr<epoch_node_wrapper> requires alignof >= 2");
+
     struct epoch_table_node {
         uint64_t epoch_num;
         std::atomic<epoch_node_wrapper *> first_node;

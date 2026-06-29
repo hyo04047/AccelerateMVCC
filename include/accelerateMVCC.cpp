@@ -90,7 +90,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
             epoch_table->insert(epoch);
             undo_entry->roll_pred = header->newest_node.load(std::memory_order_relaxed);  // D-5: prior newest = this version's roll_ptr predecessor
             header->newest_node.store(undo_entry, std::memory_order_release);
-            header->node_count.fetch_add(1, std::memory_order_relaxed);
+            header->node_count.fetch_add(1, std::memory_order_release);
             header->note_newest(version_trx_id, wtrx);   // D-4 4b-2: contiguity bookkeeping
         }
         else if (header->next_epoch_num < epoch_num) {
@@ -113,7 +113,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
             epoch_table->insert(epoch);
             undo_entry->roll_pred = header->newest_node.load(std::memory_order_relaxed);  // D-5: prior newest = this version's roll_ptr predecessor
             header->newest_node.store(undo_entry, std::memory_order_release);
-            header->node_count.fetch_add(1, std::memory_order_relaxed);
+            header->node_count.fetch_add(1, std::memory_order_release);
             header->note_newest(version_trx_id, wtrx);   // D-4 4b-2: contiguity bookkeeping
         } else {
             // insert undo log entry to existing epoch
@@ -130,7 +130,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
             epoch->last_entry.store(undo_entry);
             undo_entry->roll_pred = header->newest_node.load(std::memory_order_relaxed);  // D-5: prior newest = this version's roll_ptr predecessor
             header->newest_node.store(undo_entry, std::memory_order_release);
-            header->node_count.fetch_add(1, std::memory_order_relaxed);
+            header->node_count.fetch_add(1, std::memory_order_release);
             header->note_newest(version_trx_id, wtrx);   // D-4 4b-2: contiguity bookkeeping
         }
     } else {
@@ -167,7 +167,7 @@ bool mvcc::Accelerate_mvcc::insert(uint64_t table_id, uint64_t index,
         epoch_table->insert(epoch);
         undo_entry->roll_pred = header->newest_node.load(std::memory_order_relaxed);  // D-5: nullptr (first version for this new header)
         header->newest_node.store(undo_entry, std::memory_order_release);
-        header->node_count.fetch_add(1, std::memory_order_relaxed);
+        header->node_count.fetch_add(1, std::memory_order_release);
         header->note_newest(version_trx_id, wtrx);   // D-4 4b-2: contiguity bookkeeping
         return true;
     }
@@ -371,7 +371,7 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
     // four firewalls (full-PK filter, ambiguity, contiguity gate below, link-gap break) are inherited.
     std::unique_ptr<ConsultCache> scratch;   // owns a non-published (insert-raced) build until consult returns
     ConsultCache *c = header->consult_cache.load(std::memory_order_acquire);
-    bool reuse = c != nullptr && c->built_node_count == node_count && c->require_full_pk == require_full_pk;
+    bool reuse = c != nullptr && c->built_node_count == node_count && c->built_gc_generation == gen0 && c->require_full_pk == require_full_pk;
     if (reuse && require_full_pk) {
         reuse = (c->pk.size() == pk_len);
         for (uint32_t i = 0; reuse && i < pk_len; ++i)
@@ -389,6 +389,7 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
         // >=2 distinct predecessors for one writer = ambiguous -> any chase through it MISSes).
         ConsultCache *nc = new ConsultCache();
         nc->built_node_count = node_count;
+        nc->built_gc_generation = gen0;   // D-5: stamp the gen we built under; reuse requires it unchanged
         nc->require_full_pk = require_full_pk;
         if (require_full_pk && pk != nullptr && pk_len > 0) nc->pk.assign(pk, pk + pk_len);
         bool apm = false;

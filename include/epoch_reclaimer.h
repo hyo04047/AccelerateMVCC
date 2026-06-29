@@ -35,7 +35,13 @@ namespace mvcc {
 // of any reader that could still reach it.
 class EpochReclaimer {
 public:
-    static constexpr unsigned MAX_THREADS = 256;
+    // EBR reservation-slot ceiling. Set to 4096 to MATCH ActiveViewRegistry's MAX_VIEWS, so the two leaf
+    // pools share the same Guard/overflow ceiling: at >256 concurrently-leasing threads the EBR overflow
+    // pin would otherwise engage permanently while the view registry (4096) did not -- an asymmetry that
+    // loosens the memory bound exactly under the high-fanout HTAP this targets. 4096 atomics = 32KB;
+    // min_reservation scans them once per (infrequent) reclaim. Beyond 4096 the conservative overflow pin
+    // still keeps reclamation correct (only the bound loosens).
+    static constexpr unsigned MAX_THREADS = 4096;
     static constexpr uint64_t NOT_READING = ~uint64_t(0);  // sentinel: not in a traversal
     static constexpr unsigned SLOT_NONE = ~0u;             // my_slot(): lease pool exhausted
 
