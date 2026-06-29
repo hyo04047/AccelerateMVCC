@@ -138,3 +138,11 @@ target_link_libraries(stage_c_bench
   Kuku::kuku
   Threads::Threads
 )
+
+# Register the standalone test binaries with CTest. Previously only gtest_discover_tests(test_with_google)
+# was registered, so ebr_test / marked_ptr_test / accel_ring_test built but never ran under `ctest` -- the
+# green count looked like more coverage than ctest actually exercised. (stage_c_bench is a perf harness with
+# no pass/fail asserts, so it is intentionally not a ctest.)
+add_test(NAME ebr_test COMMAND ebr_test)
+add_test(NAME marked_ptr_test COMMAND marked_ptr_test)
+add_test(NAME accel_ring_test COMMAND accel_ring_test)

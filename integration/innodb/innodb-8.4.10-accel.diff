@@ -1,0 +1,258 @@
+diff --git a/storage/innobase/include/read0types.h b/storage/innobase/include/read0types.h
+index efcca54a..e2f1349e 100644
+--- a/storage/innobase/include/read0types.h
++++ b/storage/innobase/include/read0types.h
+@@ -227,6 +227,12 @@ class ReadView {
+   @return the low limit id */
+   trx_id_t low_limit_id() const { return (m_low_limit_id); }
+ 
++  /* D-4 4b-3b: read-only accessors for the shadow consult (PoC). */
++  trx_id_t up_limit_id() const { return (m_up_limit_id); }
++  trx_id_t view_creator_trx_id() const { return (m_creator_trx_id); }
++  const trx_id_t *ids_data() const { return (m_ids.data()); }
++  ulint ids_size() const { return (m_ids.size()); }
++
+   /**
+   @return true if there are no transaction ids in the snapshot */
+   bool empty() const { return (m_ids.empty()); }
+diff --git a/storage/innobase/read/read0read.cc b/storage/innobase/read/read0read.cc
+index 0aea80fe..85a43136 100644
+--- a/storage/innobase/read/read0read.cc
++++ b/storage/innobase/read/read0read.cc
+@@ -36,6 +36,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
+ 
+ #include "srv0srv.h"
+ #include "trx0sys.h"
++#include "accel_hook.h"  // D-5 5-1b
+ 
+ /*
+ -------------------------------------------------------------------------------
+@@ -500,6 +501,7 @@ freed by calling view_close()
+ @param trx      Transaction instance of caller */
+ void MVCC::view_open(ReadView *&view, trx_t *trx) {
+   ut_ad(!srv_read_only_mode);
++  accel_note_view_open();  /* D-5 5-1c: count every open path */
+ 
+   /** If no new RW transaction has been started since the last view
+   was created then reuse the the existing view. */
+@@ -522,6 +524,7 @@ void MVCC::view_open(ReadView *&view, trx_t *trx) {
+       view->m_closed = false;
+ 
+       if (view->m_low_limit_id == trx_sys_get_next_trx_id_or_no()) {
++        accel_publish_view_open(view->low_limit_id(), view->up_limit_id());  /* D-5 5-1b */
+         return;
+       } else {
+         view->m_closed = true;
+@@ -543,6 +546,8 @@ void MVCC::view_open(ReadView *&view, trx_t *trx) {
+ 
+     UT_LIST_ADD_FIRST(m_views, view);
+ 
++    accel_publish_view_open(view->low_limit_id(), view->up_limit_id());  /* D-5 5-1b: piggyback the mutex */
++
+     ut_ad(!view->is_closed());
+ 
+     ut_ad(validate());
+@@ -672,6 +677,7 @@ Close a view created by the above function.
+ @param own_mutex        true if caller owns trx_sys_t::mutex */
+ 
+ void MVCC::view_close(ReadView *&view, bool own_mutex) {
++  accel_publish_view_close();  /* D-5 5-1b: best-effort unpublish */
+   uintptr_t p = reinterpret_cast<uintptr_t>(view);
+ 
+   /* Note: The assumption here is that AC-NL-RO transactions will
+diff --git a/storage/innobase/row/row0vers.cc b/storage/innobase/row/row0vers.cc
+index 45f09bcf..3148b244 100644
+--- a/storage/innobase/row/row0vers.cc
++++ b/storage/innobase/row/row0vers.cc
+@@ -32,6 +32,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
+  *******************************************************/
+ 
+ #include <stddef.h>
++#include "accel_hook.h"  /* D-4 4b-3b shadow */
+ 
+ #include "btr0btr.h"
+ #include "current_thd.h"
+@@ -1266,6 +1267,51 @@ dberr_t row_vers_build_for_consistent_read(
+   ut_ad(rec_offs_validate(rec, index, *offsets));
+ 
+   trx_id = row_get_rec_trx_id(rec, index, *offsets);
++  trx_id_t accel_live_writer = trx_id;  /* D-4 4b-3b: live row last writer */
++  /* D-4 4d-1: hoist the consult ABOVE the walk -- fetch the cached image now, keyed by the LIVE TOP
++     rec's PK (identical across a clustered row's versions for non-key updates). Still SHADOW: we do
++     NOT serve; the loop below still returns vanilla's walked *old_vers. We only prove this top-site
++     consult HITs and its image equals vanilla, de-risking the relocation before 4d-2 flips the serve. */
++  uint64_t accel_pk = 1469598103934665603ULL;
++  unsigned char accel_pkbuf[256]; ulint accel_pklen = 0; bool accel_pk_ok = true;
++  {
++    const ulint accel_nuk = dict_index_get_n_unique(index);
++    for (ulint accel_i = 0; accel_i < accel_nuk; accel_i++) {
++      ulint accel_len; const byte *accel_f = rec_get_nth_field(index, rec, *offsets, accel_i, &accel_len);
++      if (accel_len == UNIV_SQL_NULL) accel_len = 0;
++      for (ulint accel_b = 0; accel_b < accel_len; accel_b++) accel_pk = (accel_pk ^ accel_f[accel_b]) * 1099511628211ULL;
++      accel_pk = (accel_pk ^ accel_len) * 1099511628211ULL;
++      if (accel_pk_ok && accel_pklen + 2 + accel_len <= sizeof(accel_pkbuf)) {
++        accel_pkbuf[accel_pklen++] = (unsigned char)(accel_len & 0xFF);
++        accel_pkbuf[accel_pklen++] = (unsigned char)((accel_len >> 8) & 0xFF);
++        for (ulint accel_c = 0; accel_c < accel_len; accel_c++) accel_pkbuf[accel_pklen++] = accel_f[accel_c];
++      } else { accel_pk_ok = false; }
++    }
++    if (!accel_pk_ok) accel_pklen = 0;
++  }
++  unsigned char accel_cbuf[512]; unsigned int accel_clen = 0, accel_cextra = 0;
++  int accel_oc = accel_consult_fetch(index->table->id, accel_pk, accel_pkbuf, accel_pklen,
++                    view->up_limit_id(), view->low_limit_id(), view->view_creator_trx_id(),
++                    view->ids_data(), view->ids_size(), accel_live_writer,
++                    index->table->current_row_version, accel_cbuf, sizeof(accel_cbuf),
++                    &accel_clen, &accel_cextra);
++  /* D-4 4d-2 serve-only (mode 1): on HIT build *old_vers from the cached image and SKIP the walk
++     (the perf path). Gated on n_v_cols==0 (virtual-column rows are never cached, 4c-1, so the skipped
++     walk had no vrow to fill). MISS or mode!=1 -> fall through to the vanilla walk below. */
++  /* D-5 C3-b walk-audit: 1-in-N mode-1 HITs are AUDITED -- do NOT skip the walk; fall through so the
++     in-loop shadow byte-compare runs against vanilla's walked answer (observe-only: serve vanilla). The
++     decision must precede the serve gate; accel_audit_should() advances the sample clock only on mode-1 HITs. */
++  int accel_audit = (accel_authoritative_mode() == 1 && accel_oc == 0) ? accel_audit_should() : 0;
++  if (accel_authoritative_mode() == 1 && accel_oc == 0 && accel_clen > accel_cextra &&
++      index->table->n_v_cols == 0 && !accel_audit) {
++    byte *accel_s = static_cast<byte *>(mem_heap_alloc(in_heap, accel_clen));
++    memcpy(accel_s, accel_cbuf, accel_clen);
++    *old_vers = accel_s + accel_cextra;
++    *offsets = rec_get_offsets(*old_vers, index, *offsets, ULINT_UNDEFINED, UT_LOCATION_HERE, offset_heap);
++    rec_offs_make_valid(*old_vers, index, *offsets);
++    accel_note_serve();
++    return DB_SUCCESS;
++  }
+ 
+   /* Reset the collected LOB undo information. */
+   if (lob_undo != nullptr) {
+@@ -1326,6 +1372,49 @@ dberr_t row_vers_build_for_consistent_read(
+       *old_vers = rec_copy(buf, prev_version, *offsets);
+       rec_offs_make_valid(*old_vers, index, *offsets);
+ 
++      {  /* D-4 4d-1 SHADOW: compare the TOP-consulted cache image to vanilla's walked *old_vers. */
++        if (accel_oc == 0 && accel_clen > accel_cextra) {
++          mem_heap_t *accel_h = mem_heap_create(256, UT_LOCATION_HERE);
++          rec_t *accel_crec = reinterpret_cast<rec_t*>(accel_cbuf + accel_cextra);
++          ulint *accel_co = rec_get_offsets(accel_crec, index, nullptr, ULINT_UNDEFINED, UT_LOCATION_HERE, &accel_h);
++          ulint accel_comp = rec_offs_comp(*offsets);
++          int accel_match = (rec_offs_data_size(accel_co) == rec_offs_data_size(*offsets)
++                && memcmp(accel_crec, *old_vers, rec_offs_data_size(*offsets)) == 0
++                && (rec_get_deleted_flag(accel_crec, accel_comp) ? 1 : 0)
++                   == (rec_get_deleted_flag(*old_vers, accel_comp) ? 1 : 0)) ? 1 : 0;
++          accel_note_construct(accel_match);
++          if (!accel_match) {
++            trx_id_t accel_ct = row_get_rec_trx_id(accel_crec, index, accel_co);
++            trx_id_t accel_vt = row_get_rec_trx_id(*old_vers, index, *offsets);
++            accel_note_bad_trx(accel_ct == accel_vt ? 1 : 0);
++            if (accel_ct != accel_vt) accel_note_bad_dir(accel_ct < accel_vt ? 1 : 0);
++            if (accel_ct > accel_vt) {  /* D-5 diag6: the systematic NEWER wrong-version set */
++              bool accel_vsees = view->changes_visible(accel_ct, index->table->name);
++              int accel_ct_in = 0;
++              const trx_id_t *accel_mi = view->ids_data();
++              auto accel_mn = view->ids_size();
++              for (decltype(accel_mn) accel_q = 0; accel_q < accel_mn; accel_q++)
++                if (accel_mi[accel_q] == accel_ct) { accel_ct_in = 1; break; }
++              accel_note_newer_detail((uint64_t)accel_ct, (uint64_t)accel_vt,
++                  (uint64_t)view->up_limit_id(), (uint64_t)view->low_limit_id(),
++                  (uint64_t)view->view_creator_trx_id(), accel_ct_in, accel_vsees ? 1 : 0);
++            }
++          }
++          /* D-4 4d-2 verify-serve (mode 2): byte-equality just proven, so replace *old_vers with the
++             cache-built record -- exercises the serve path AND re-checks every served answer. Only when
++             matched (mismatch -> keep vanilla, never a wrong row) and n_v_cols==0. */
++          if (accel_authoritative_mode() == 2 && accel_match && index->table->n_v_cols == 0) {
++            byte *accel_s2 = static_cast<byte *>(mem_heap_alloc(in_heap, accel_clen));
++            memcpy(accel_s2, accel_cbuf, accel_clen);
++            *old_vers = accel_s2 + accel_cextra;
++            *offsets = rec_get_offsets(*old_vers, index, *offsets, ULINT_UNDEFINED, UT_LOCATION_HERE, offset_heap);
++            rec_offs_make_valid(*old_vers, index, *offsets);
++            accel_note_serve();
++          }
++          mem_heap_free(accel_h);
++        }
++      }
++
+       if (vrow && *vrow) {
+         *vrow = dtuple_copy(*vrow, in_heap);
+         dtuple_dup_v_fld(*vrow, in_heap);
+diff --git a/storage/innobase/srv/srv0start.cc b/storage/innobase/srv/srv0start.cc
+index 1f8ae22e..1e530539 100644
+--- a/storage/innobase/srv/srv0start.cc
++++ b/storage/innobase/srv/srv0start.cc
+@@ -89,6 +89,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
+ #include "rem0rec.h"
+ #include "srv0srv.h"
+ #include "srv0start.h"
++#include "accel_hook.h"
+ #include "trx0sys.h"
+ #include "trx0trx.h"
+ #include "ut0mem.h"
+@@ -2347,6 +2348,7 @@ dberr_t srv_start(bool create_new_db) {
+ 
+   ib::info(ER_IB_MSG_1151, INNODB_VERSION_STR,
+            ulonglong{log_get_lsn(*log_sys)});
++  accel_init();
+ 
+   return (DB_SUCCESS);
+ }
+@@ -2956,6 +2958,7 @@ void srv_thread_delay_cleanup_if_needed(bool wait_for_signal) {
+ 
+ /** Shut down the InnoDB database. */
+ void srv_shutdown() {
++  accel_shutdown();
+   ut_d(trx_sys_after_pre_dd_shutdown_validate());
+ 
+   /* Need to revert partition file names if minor upgrade fails. */
+diff --git a/storage/innobase/trx/trx0rec.cc b/storage/innobase/trx/trx0rec.cc
+index 5e5b98b8..217478ea 100644
+--- a/storage/innobase/trx/trx0rec.cc
++++ b/storage/innobase/trx/trx0rec.cc
+@@ -32,6 +32,7 @@ this program; if not, write to the Free Software Foundation, Inc.,
+  *******************************************************/
+ 
+ #include "trx0rec.h"
++#include "accel_hook.h"
+ 
+ #include <sys/types.h>
+ 
+@@ -2321,6 +2322,41 @@ dberr_t trx_undo_report_row_operation(
+       *roll_ptr =
+           trx_undo_build_roll_ptr(op_type == TRX_UNDO_INSERT_OP,
+                                   undo_ptr->rseg->space_id, page_no, offset);
++      if (op_type == TRX_UNDO_MODIFY_OP && rec != nullptr) {
++        /* D-4 4b-1: pk_hash bucket hint (FNV-1a) + full-PK identity bytes (length-prefixed so
++           distinct field splits cannot alias) + delete-mark + DATA-payload image
++           (rec_offs_data_size, NOT rec_offs_size which over-reads extra_size past the row, M1). */
++        uint64_t accel_pk = 1469598103934665603ULL;
++        unsigned char accel_pkbuf[256];   /* must match accel::ACCEL_PK_MAX */
++        ulint accel_pklen = 0;
++        bool accel_pk_ok = true;
++        const ulint accel_nuk = dict_index_get_n_unique(index);
++        for (ulint accel_i = 0; accel_i < accel_nuk; accel_i++) {
++          ulint accel_len;
++          const byte *accel_f = rec_get_nth_field(index, rec, offsets, accel_i, &accel_len);
++          if (accel_len == UNIV_SQL_NULL) accel_len = 0;
++          for (ulint accel_b = 0; accel_b < accel_len; accel_b++)
++            accel_pk = (accel_pk ^ accel_f[accel_b]) * 1099511628211ULL;
++          accel_pk = (accel_pk ^ accel_len) * 1099511628211ULL;
++          if (accel_pk_ok && accel_pklen + 2 + accel_len <= sizeof(accel_pkbuf)) {
++            accel_pkbuf[accel_pklen++] = (unsigned char)(accel_len & 0xFF);
++            accel_pkbuf[accel_pklen++] = (unsigned char)((accel_len >> 8) & 0xFF);
++            for (ulint accel_c = 0; accel_c < accel_len; accel_c++)
++              accel_pkbuf[accel_pklen++] = accel_f[accel_c];
++          } else {
++            accel_pk_ok = false;   /* PK over cap -> no identity bytes -> consult MISS */
++          }
++        }
++        if (!accel_pk_ok) accel_pklen = 0;
++        ulint accel_extra = rec_offs_extra_size(offsets);
++        ulint accel_img_len = (rec_offs_any_extern(offsets) || index->table->n_v_cols > 0) ? 0 : rec_offs_size(offsets);  /* D-4 4d: full physical record */  /* D-4 4c-1: exclude off-page LOB / virtual-column rows */
++        ulint accel_del = rec_get_deleted_flag(rec, rec_offs_comp(offsets)) ? 1 : 0;
++        accel_on_undo(index->table->id, accel_pk, trx->id,
++                      row_get_rec_trx_id(rec, index, offsets),
++                      undo_ptr->rseg->space_id, page_no, offset, op_type,
++                      reinterpret_cast<const unsigned char*>(rec) - accel_extra, accel_img_len,
++                      accel_pkbuf, accel_pklen, accel_del, accel_extra);
++      }
+       return (DB_SUCCESS);
+     }
+ 
