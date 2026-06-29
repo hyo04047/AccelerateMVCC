@@ -4,9 +4,14 @@
 > [README.md](README.md), 남은 작업의 상세 트래커는 [open-items.md](open-items.md), 세션별 서사는
 > [progress-log.md](progress-log.md), 설계 근거는 `design-*.md`에 있습니다.
 >
-> 최종 갱신: **2026-06-29** (세션 11 — Phase 2 완료 + 사전 감사·정리 + cold-key graceful fix. 다음 = Phase 3 논문)
+> 최종 갱신: **2026-06-29** (세션 12 — dev-completeness pass: 하드닝·crash-recovery·vendoring·dedup·hygiene + 큰 레버 2개 NO-GO + drift 정정. **개발 완전 완료, 다음 = Phase 3 논문**)
 
 ## 현재 위치 (한눈에)
+- **세션 12 — dev-completeness pass DONE (개발 완전 완료).** 전수 감사(14 task)로 코드 hygiene·crash-recovery(ⓣ17)·
+  vendoring(ⓣ10)·GC/splice dedup·하드닝·관측성을 닫고, 큰 레버 둘(roll_pred chase·DIVA interval tree)은 적대 리뷰서
+  **NO-GO**(design-D5-gc §14), pool allocator는 데이터 근거로 보류. construct_BAD=0 도처·Release 40/ASan 29/TSan 29 green.
+  **모든 결정·스킵 기록 = open-items §0e.** 새 산출물: `build_q12_crash_recovery.sh` · in-repo `build_d5_walk_{std,san}.sh` ·
+  `accel_microbench`(분리된 벤치) · `ctest`(correctness만) · `innodb-8.4.10-accel.diff`(패치 vendor). **다음 = Phase 3(논문).**
 - **Phase 2 ⓠ3 CLOSED (세션 11)** — write-heavy OLTP + held LLT + 동시 HTAP 리더 하에서 캐시 보존이 bounded
   (~6–9k versions), InnoDB HLL은 LLT 시간에 선형 증가 → **비율이 LLT 나이에 선형 성장: 20×/40×/63×@15/30/60s**
   (realistic full-table; pinned hot-set 10×/21×/42×). 프로젝트 중심 헤드라인이 실 InnoDB서 생존, **5-3 후퇴

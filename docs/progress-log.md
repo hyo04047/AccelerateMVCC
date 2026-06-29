@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-06-29 — 세션 12: dev-completeness pass (Phase 3 전 개발 완전 완료)
+
+> 사용자 지시: Phase 3(논문) 전에 **개발을 완전히 완료**. 멀티에이전트 전수 감사(survey 8 → ideate 5 → triage)로
+> 남은 작업을 14 task로 전수화 후 **코드 hygiene → 큰 레버 적대 리뷰 → drift 정정** 순으로 닫음. construct_BAD=0
+> 도처, standalone Release 40 / ASan 29 / TSan 29 green 유지. **모든 결정·스킵을 이유와 함께 기록**(open-items §0e).
+
+**시작 전: cold-key 적대 설계 리뷰(21에이전트) = NO-GO/SCOPE** — eviction(lock-free Kuku erase+EBR)은 3 feasibility
+killer(consult가 Guard 전 header 읽음→pre-Guard UAF·non-atomic 슬롯·multi-writer Kuku·header↔version 수명 결합)로
+cost≫payoff. graceful non-admission(용량 안 bounded)으로 충분 = "용량 N 스코핑"이 정직(사용자 scope 수용, sizing 고려).
+
+**코드(커밋):**
+- `818e900` 하드닝: node_count release-store(⑤b-lite 재사용 acquire와 happens-before)·m_ids 정렬 debug-assert(wrong-serve
+  게이트)·EpochReclaimer 256→4096(registry 대칭)·ConsultCache built_gc_generation 가드·MarkedPtr alignof static_assert.
+- `4f8325d` **crash-recovery / ephemeral rebuild(ⓣ17) PASS**: kill -9 mid-load → 재시작 → mode-2 construct_BAD=0 + 롤백된
+  미커밋 버전 미서빙 = ACID 전제 첫 실증(`build_q12_crash_recovery.sh`).
+- `c296430` dead struct(UndoLogEntryNode/EpochNode) 제거·common.h 중복 guard·marked_ptr 주석.
+- `15b5b92` -Wall -Wextra 코어(sign-compare 2 수정→0)·PERIOD 유도(2500→EPOCH_SIZE×EPOCH_TABLE_SIZE/4).
+- `cfdfbf9` **vendoring(ⓣ10)**: InnoDB 패치 `innodb-8.4.10-accel.diff`(reverse-apply 검증)·standalone 러너 in-repo·CTest 3 등록.
+- `dfe0538` consult full-PK firewall opt-in lock(require_full_pk=false를 명시 opt-in 뒤로 — production 슬립 차단).
+- `04b0cf1` GC sweep(`gc_cycle` template)+Harris splice 공유 헬퍼 dedup(−38줄·GC-on construct_BAD=0).
+- `8b8ebe8` ring drop-on-full 관측성(ⓣ13). · `0f258d6` bench split(google_test→accel_microbench, ctest 112→50).
+
+**큰 레버 적대 리뷰 — 둘 다 NO-GO(코드 변경 없음, design-D5-gc §14):**
+- **roll_pred fast chase(~0.16s)**(7에이전트): C3 gc_generation 게이트로도 GC-unsafe — UAF가 chase 도중·prior-cycle
+  free는 탐지조차 안 됨. **⑤b-lite(~0.22s reuse, ~470×)가 출하 fast consult**(§14.1).
+- **DIVA interval tree**(7에이전트): 3 killer(lineage≠sortable range·WAF/UAF 재발·β-impossible). in-memory navigation은
+  병목 아님(⑥ 이득=undo I/O 절벽 제거; depth flat ~90)(§14.2).
+
+**결정(데이터):** pool/arena allocator + header cache-line split **보류** — drainer가 64-thread oltp_write_only(~183k
+write-q/s, 525만 버전)서도 dropped=0·drained==enq = alloc 비병목 → 이득 ≈0(FG-α 동일 패턴; `s5_drainer_ceiling.log`). Phase-3 perf 후보.
+
+**drift 정정(커밋 `11f4b57`·`dffa2ad`·`81e7e0f`·`32835ce`):** README status + deadzone attribution=vDriver(DIVA 아님)·
+design-D4b-shadow MISS_GCRACE enum + §15.6 roll_pred SUPERSEDED 배너·interval_list.h roll_pred 주석·design-D5-gc status
+헤더 "GC-side COMPLETE" + §14(레버 NO-GO)·design-gc forward pointer·**REPORT §5 Stage-D + §6 Limitations**(A–C→A–D, ⓝ14)·
+open-items §0e(전수)·findings as-found 노트(#6 해결).
+
+**→ 개발 완전 완료(correctness 갭 0, construct_BAD=0 도처). 다음 = Phase 3**(multi-run/error-bar 재측·raw 로그 아카이빙·논문 한/영).
+
+---
+
 ## 2026-06-28 — 세션 11: Phase 2 착수 — ⓠ3(in-middle 헤드라인 실 InnoDB 생존) CLOSED
 
 > Phase 2의 최우선 ⓠ3(프로젝트 중심 헤드라인이 실 InnoDB write-heavy+LLT서 살아남나)를 통합 mysqld에서 측정.
