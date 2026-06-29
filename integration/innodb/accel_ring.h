@@ -24,7 +24,15 @@ namespace accel {
 // D-4: cap on the cached full-row image carried per slot. A row larger than this is enqueued
 // WITHOUT an image (img_len=0) -> consult falls back to a full walk for it (off-page LOB rows
 // are excluded from caching anyway, so this matches the correctness gate, design-D §13).
-constexpr uint32_t ACCEL_IMG_MAX = 512;
+// D-6 (wide in-page rows): this cap is the ONLY thing excluding rows that are >512B but entirely
+// IN-PAGE (no extern LOB, no virtual cols) -- which capture byte-identically, so raising it is
+// SAFE (design-D6-wide-row.md (A)). It is a fixed-size POD array bound, so the cost is ring memory
+// = N * (slot_overhead + cap). Build-overridable (-DACCEL_IMG_MAX_BYTES=N) so the SHIPPED default
+// stays 512 (no memory regression); a deployment with wide hot rows rebuilds with a larger cap.
+#ifndef ACCEL_IMG_MAX_BYTES
+#define ACCEL_IMG_MAX_BYTES 512
+#endif
+constexpr uint32_t ACCEL_IMG_MAX = ACCEL_IMG_MAX_BYTES;
 
 // D-4 4b-1: cap on the full clustered-PK identity bytes carried per slot. pk_hash (above) is only
 // a bucket hint for the cuckoo table; this is the AUTHORITY consult memcmp-compares to reject
