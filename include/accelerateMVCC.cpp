@@ -340,6 +340,13 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
     // since a reader reconstructs against the CURRENT layout, the reader's era is the safe signal.
     if (live_schema_epoch != ~uint64_t(0) && live_schema_epoch != 0)
         return ConsultOutcome::MISS_INELIGIBLE;
+    // Hardening (no-wrong-serve gate, release-active): changes_visible's branch-4 binary_search REQUIRES
+    // m_ids sorted ascending (InnoDB's own ReadView contract). The mirror only debug-asserts that, so the
+    // gate compiles out under NDEBUG -- the production mysqld. Guard it here, release-active: if the passed
+    // m_ids is not sorted we cannot trust the visibility verdict, so fail CLOSED to a full vanilla walk
+    // (MISS), never a possibly-wrong serve. Cheap -- m_ids is the small active-RW-txn set, scanned once.
+    if (m_ids_n > 1 && !std::is_sorted(m_ids, m_ids + m_ids_n))
+        return ConsultOutcome::MISS_INELIGIBLE;
     // Production firewall lock: the cross-row negative control (require_full_pk=false) only takes effect
     // behind an explicit test opt-in; otherwise force the full-PK identity firewall ON (allow_no_full_pk_).
     require_full_pk = require_full_pk || !allow_no_full_pk_.load(std::memory_order_relaxed);
@@ -389,6 +396,12 @@ mvcc::Accelerate_mvcc::consult(uint64_t table_id, uint64_t pk_hash,
     std::unique_ptr<ConsultCache> scratch;   // owns a non-published (insert-raced) build until consult returns
     ConsultCache *c = header->consult_cache.load(std::memory_order_acquire);
     bool reuse = c != nullptr && c->built_node_count == node_count && c->built_gc_generation == gen0 && c->require_full_pk == require_full_pk;
+    // SHARP EDGE: when require_full_pk is true (always, in production -- forced by the firewall lock above)
+    // reuse additionally re-verifies the full PK bytes below, so it can never reuse another row's cache from
+    // the same Kuku bucket. The require_full_pk==false branch (test-only cross-row negative control) reuses
+    // WITHOUT a PK compare; that is sound ONLY because allow_no_full_pk_ keeps require_full_pk=true in every
+    // shipping mode. A future change that shipped allow_no_full_pk_=true would make this fast path serve a
+    // cross-row image -- a wrong serve, not a safe MISS. Keep the firewall lock engaged.
     if (reuse && require_full_pk) {
         reuse = (c->pk.size() == pk_len);
         for (uint32_t i = 0; reuse && i < pk_len; ++i)

@@ -38,6 +38,7 @@
 #include <vector>
 #include <algorithm>
 #include <cstdint>
+#include <cassert>
 
 namespace mvcc {
 
@@ -62,6 +63,11 @@ public:
     // view_open under the InnoDB mutex, so it is ordered before the view becomes usable. begin
     // MUST be nonzero (it identifies a live view; begin==0 would read as an empty slot).
     void publish(uint64_t begin, uint64_t up) {
+        // Superset-theorem precondition: begin (low_limit_id) MUST be nonzero. begin==0 reads as an EMPTY
+        // slot, i.e. a SILENTLY DROPPED live view = under-approximation of the active set = the one
+        // forbidden direction (interior over-prune -> wrong authoritative serve). InnoDB's low_limit_id is
+        // always >=1, so this never fires in integration; the assert guards a future direct caller.
+        assert(begin != EMPTY);
         unsigned slot = my_slot();
         if (slot != SLOT_NONE) {
             write_slot(slots_[slot], begin, up);
