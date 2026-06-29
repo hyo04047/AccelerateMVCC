@@ -1,11 +1,14 @@
 # D-5 — purge-view GC: re-drive the deadzone GC from InnoDB read-views (design)
 
-> Status: **5-1 done (push hook + registry + cuts-deadzone, shadow-verified); ⑤a-1 done (consult restored to
-> the GC-safe live-chain lineage walk); ⑤a-2 (GC ON) adversarially reviewed = `GO_WITH_CONDITIONS` (54 agents)
-> -- see §9; next = ⑤a-2 step 1 (lifecycle scaffolding).** Inputs: D-5 design review (`GO_WITH_CONDITIONS`,
-> 59 agents) + the ⑤a-2 GC-on review (§9) + cheap-collection research (lineage + over-approximation theorem).
-> Background: [design-gc.md](design-gc.md) (standalone deadzone GC), [design-D.md](design-D.md) §9 (deferred
-> GC safety), [design-D4b-shadow.md](design-D4b-shadow.md) §13/§14 (serve + payoff).
+> Status: **GC-side COMPLETE.** ⑤a-2 (GC ON in integration, §9) · 5-2b serve under GC — C1 safety-net oracle,
+> C2 mode-2 verify-serve, C3 mode-1 safe ship (§10/§10.1) · ⑤b-lite memoized live-chain consult (§11) · the
+> ⑥-vs-⑤ chain-sever tension characterized + the FG+BG stage (α measures null, `ACCEL_DRAIN_CAP` stabilizes ⑥)
+> (§12/§13). **Session 12: the two remaining big-lever PERF reviews are both NO-GO — §14:** the O(depth)
+> roll_pred back-edge chase stays GC-unsafe even with the C3 gc_generation gate (7-agent re-review), and the
+> DIVA-style interval tree is not worth building (3 feasibility killers). construct_BAD=0 throughout; ⑤b-lite
+> is the shipped fast consult. Inputs: the D-5 (59-agent) + ⑤a-2 (54) + 5-2b (44) + C3 (42) reviews +
+> cheap-collection research. Background: [design-gc.md](design-gc.md) (standalone deadzone GC),
+> [design-D.md](design-D.md) §9 (deferred GC safety), [design-D4b-shadow.md](design-D4b-shadow.md) §13/§14.
 
 ## 0. Goal
 Turn the in-memory cache (per-key version chains + captured row images, D-4) from **GC-off / unbounded**
@@ -495,3 +498,43 @@ bounded memory (⑤a-2) + a SAFE held-reader fast read (⑥ ~190× when held; no
 + a measured dial to trade between them. **Recommendation: an ⑥-serving deployment sets `ACCEL_DRAIN_CAP≈1000`**
 (default stays 0 = the InnoDB-faithful unlimited-reclaim baseline; operators opt in). α stays a default-off knob.
 This is a defensible, honest paper story: the tension is fundamental, characterized, and tunable.
+
+## 14. Session-12 big-lever perf re-reviews — both NO-GO (the GC-side stays as shipped)
+
+Two algorithmic perf levers were flagged "at least review before the paper." Both were adversarially
+re-reviewed (multi-agent) and are NO-GO; ⑤b-lite (§11) remains the shipped fast consult. No code change.
+
+### 14.1 roll_pred back-edge chase under the C3 gc_generation gate — NO-GO (7-agent re-review)
+The original §11 NO-GO on the O(depth) alloc-free roll_pred chase predated the C3 `gc_generation` counter, so
+the obvious question was whether that gate now makes the chase GC-safe (recovering ~0.16s vs ⑤b-lite's ~0.22s
+reuse). It does NOT, and the reason is exact: the UAF occurs **during** the chase — when it dereferences a
+roll_pred that points at an undo_entry_node a **prior** GC cycle already EBR-retired and freed (a node the
+reader's per-traversal Guard does NOT protect, because the node's retire-stamp epoch < this later reader's
+reservation, so reclaim() is entitled to free it while the Guard is held; roll_pred/newest_node are never
+nulled by GC). The gc_generation gate is a **post-hoc** check — snapshotted at Guard-open, re-checked only at
+the HIT site (accelerateMVCC.cpp:512), AFTER the whole chase. So it can at most DETECT a *racing* retire (too
+late — the freed-memory read already happened), and for the **dominant prior-cycle case it does not even fire**
+(the generation already settled before this Guard opened, so gen==gen0 at the recheck and the gate passes). No
+placement of the gen check prevents the deref (the free is gated by epoch<min_reservation, independent of
+gc_generation; only the EBR Guard pins memory, and structurally it cannot pin prior-cycle nodes). No safe
+variant survives: GC-nulls-back-edge reintroduces the drainer write-after-free; a hazard pointer can't be
+installed before the offending deref; "follow roll_pred only to live nodes" IS the live walk. **Verdict: keep
+⑤b-lite (~0.22s reuse, ~470×, zero new UAF surface — the GC clears the memoized cache before freeing any
+node). The 0.16-vs-0.22s gap is a single-reader microbench artifact, not worth reopening a correctness-critical
+UAF class.** Confirms (does not overturn) §11/§12.
+
+### 14.2 DIVA-style epoch interval tree / skiplist — NO-GO / SCOPE-OUT
+Three feasibility killers, each already adjudicated in this codebase: (1) **consult navigates a
+writer→predecessor LINEAGE, not a sortable key** — the map exists precisely because trx-id order is inverted
+vs commit order, so an interval tree keyed on [min_trx_id, superseded_ts] would binary-search by version key,
+which the inversion makes WRONG; the tree degenerates into "the map, but balanced," and the O(log depth)
+headline does not survive contact with the visibility logic. (2) **It re-opens the §11/§14.1 WAF/UAF class** —
+a drainer-maintained tree means the single drainer writes tree links (rotations) into GC-prunable nodes while
+holding NO Guard = write-after-free, and rebalancing under concurrent readers + GC-retire of interior tree
+nodes is a strictly LARGER lock-free surface. (3) **The navigation-vs-memory tension is the β-impossible
+result** (§11/§13): a tree needs interior nodes intact, the ⑤ memory bound needs GC to cut them; a reader
+mid-descent races the deletion+rebalance. Worth-it: speculative (FG-α and the pool allocator both measured
+~0), and the ⑥ read win comes from eliminating the **undo-walk I/O cliff**, not from consult's in-memory
+big-O (consult latency is a negligible fraction of OLTP cost; held-reader depth is flat ~80–92 = effectively
+O(constant)). **Verdict: do not build it; the in-memory navigation is O(flat-depth) and not the bottleneck.
+Keep ⑤b-lite.**

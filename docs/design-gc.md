@@ -3,6 +3,9 @@
 > AccelerateMVCC의 GC·동시성 설계를 1차 자료(논문/실제 코드)에 근거해 확정한 문서.
 > 이 파일은 "왜 이렇게 설계했나(추론·결정 포함)"를 담는다. 상태/로드맵은 [README](README.md), 이슈는 [findings](findings.md), 세션 기록은 [progress-log](progress-log.md).
 > 최종 수정: 2026-06-20 (§11 stage C 결과 추가)
+>
+> ⚠️ **이 문서는 STANDALONE deadzone GC 설계(stage 1c까지)에 frozen.** 통합 mysqld의 GC 진실(read-view cuts로
+> 재구동·GC ON·serve·⑥ payoff·chain-sever·FG+BG·세션 12 lever 재리뷰)은 [design-D5-gc.md](design-D5-gc.md) §9–§14에 있다.
 
 ---
 
