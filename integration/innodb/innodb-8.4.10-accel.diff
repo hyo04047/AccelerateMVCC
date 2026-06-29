@@ -105,14 +105,16 @@ index 45f09bcf..3148b244 100644
 +                    index->table->current_row_version, accel_cbuf, sizeof(accel_cbuf),
 +                    &accel_clen, &accel_cextra);
 +  /* D-4 4d-2 serve-only (mode 1): on HIT build *old_vers from the cached image and SKIP the walk
-+     (the perf path). Gated on n_v_cols==0 (virtual-column rows are never cached, 4c-1, so the skipped
-+     walk had no vrow to fill). MISS or mode!=1 -> fall through to the vanilla walk below. */
++     (the perf path). Gated on n_v_cols==0 (virtual-column rows are never cached, 4c-1) AND vrow==nullptr
++     (defensive: if a caller requested the version's virtual-row out-param, fall through to the walk that
++     produces it rather than skip it -- on n_v_cols==0 tables vrow is null anyway, so this is free).
++     MISS or mode!=1 -> fall through to the vanilla walk below. */
 +  /* D-5 C3-b walk-audit: 1-in-N mode-1 HITs are AUDITED -- do NOT skip the walk; fall through so the
 +     in-loop shadow byte-compare runs against vanilla's walked answer (observe-only: serve vanilla). The
 +     decision must precede the serve gate; accel_audit_should() advances the sample clock only on mode-1 HITs. */
 +  int accel_audit = (accel_authoritative_mode() == 1 && accel_oc == 0) ? accel_audit_should() : 0;
 +  if (accel_authoritative_mode() == 1 && accel_oc == 0 && accel_clen > accel_cextra &&
-+      index->table->n_v_cols == 0 && !accel_audit) {
++      index->table->n_v_cols == 0 && vrow == nullptr && !accel_audit) {
 +    byte *accel_s = static_cast<byte *>(mem_heap_alloc(in_heap, accel_clen));
 +    memcpy(accel_s, accel_cbuf, accel_clen);
 +    *old_vers = accel_s + accel_cextra;
