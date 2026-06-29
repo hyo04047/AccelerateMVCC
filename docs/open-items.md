@@ -81,6 +81,51 @@
 
 **다음 = Phase 2 잔여(LOB ⓝ6 · oltp_read_write 22% MISS ⓠ5 · savepoint ⓝ15 · secondary-index/composite-PK · full-mysqld ASan/TSan ⓝ5) → Phase 3(논문).**
 
+## 0e. 세션 12 갱신 (2026-06-29) — dev-completeness pass (Phase 3 전 개발 완전 완료)
+> 사용자 지시: Phase 3(논문) 전에 개발을 완전히 완료. 멀티에이전트 전수 감사(survey 8 → ideate 5 → triage)로
+> 남은 작업을 14 task로 전수화 후 코드 hygiene → 큰 레버 적대 리뷰 → drift 정정 순으로 닫음. construct_BAD=0
+> 도처, standalone Release 40 / ASan 29 / TSan 29 green 유지. **모든 결정·스킵을 이유와 함께 기록(누락 0).**
+
+**닫힘(CLOSED) — 코드:**
+- **ⓣ17 crash-recovery / ephemeral 캐시 재구축** → 통합 테스트 실증(`build_q12_crash_recovery.sh`): kill -9
+  mid-load → 재시작 → mode-2 verify-serve construct_BAD=0 + 롤백된 미커밋 버전 미서빙. ACID 전제(ephemeral·非권위) 첫 실증.
+- **ⓣ10 패치 vendoring** → `integration/innodb/innodb-8.4.10-accel.diff`(소스 5파일, reverse-apply로 정확 검증)
+  + standalone 러너 in-repo(`integration/scripts/build_d5_walk_{std,san}.sh`) + CTest 등록(ebr/marked_ptr/accel_ring). 레포 단독 재현 가능.
+- **하드닝 batch** → node_count release-store(⑤b-lite 재사용 acquire와 happens-before) · changes_visible m_ids
+  정렬 debug-assert(wrong-serve 게이트) · EpochReclaimer 256→4096(registry 대칭, ⓝ8 비대칭 해소) · ConsultCache
+  built_gc_generation 가드(retire에 self-validating) · MarkedPtr alignof static_assert(ⓣ contract 강제).
+- **consult-signature footgun(ⓝ4 일부)** → require_full_pk=false(firewall-off)를 명시적 opt-in(`allow_no_full_pk_`)
+  뒤로 잠금 — production 슬립으로 침묵 해제 구조적 불가.
+- **GC sweep + Harris splice dedup** → garbage_collect vs from_cuts를 `gc_cycle` template로, search/consult splice를
+  공유 헬퍼로 단일화(correctness-critical lock-free 중복 제거; verbatim·ASan/TSan/GC-on construct_BAD=0).
+- **ⓣ13 ring drop-on-full 관측성** → 첫 overflow table_id stash(latch 아래 CAS) + drainer off-latch one-shot WARNING.
+- **bench split** → google_test.cpp(Kuku 자체테스트 + 1M-insert 벤치)를 `accel_microbench`로 분리, ctest는 correctness만(112→50).
+- **-w → -Wall** → standalone 코어 -Wall -Wextra(sign-compare 2개 수정, 이제 0) + build_d1b3a.sh fresh 통합도 우리 소스
+  -Wall(Kuku -w). **PERIOD 유도**(2500 하드코딩 → EPOCH_SIZE×EPOCH_TABLE_SIZE/4). dead struct(UndoLogEntryNode/EpochNode) 제거.
+
+**결정(DECISION) — 코드 변경 없음, 데이터/리뷰 근거:**
+- **ⓠ1 / ⑤b roll_pred fast chase(~0.16s) → NO-GO 재확정**(7에이전트). C3 gc_generation 게이트로도 GC-unsafe(UAF가 chase
+  도중·prior-cycle free는 탐지조차 안 됨). ⑤b-lite(~0.22s reuse, ~470×)가 출하 fast consult. 근거 design-D5-gc §14.1.
+- **DIVA interval tree(ⓞ) → NO-GO / SCOPE-OUT**(3 feasibility killer: lineage≠sortable range · WAF/UAF 재발 · β-impossible).
+  in-memory navigation은 병목 아님(⑥ 이득은 undo I/O 절벽 제거). design-D5-gc §14.2.
+- **pool/arena allocator + header cache-line split → 보류(데이터 근거)**: drainer가 64-thread oltp_write_only(~183k
+  write-q/s, 525만 버전)서도 dropped=0·drained==enq = alloc 비병목 → pool 이득 ≈0(FG-α 동일 패턴). Phase-3 perf 후보. 측정 `s5_drainer_ceiling.log`.
+
+**스킵(SKIP) — 이유와 함께(누락 0):**
+- consult hop-cap `linkp->size()`→`node_count`: node_count는 헤더 전체-버킷 수라 PK-필터된 size()보다 느슨 → production 무이득.
+- overflow-floor reset(count==0→NO_FLOOR, ⓝ8 잔여): naive reset이 enter와 레이스 → 일시적 count>0 ∧ floor=NO_FLOOR =
+  under-protect = wrong-serve 위험. pool=4096으로 overflow 사실상 불가 + monotone floor 안전 → 미적용(EpochReclaimer 4096만 적용).
+- trxManager.cpp(빈 TU) 제거: standalone+build_d1b3a+live InnoDB CMakeLists 3곳 수술 vs 빈 TU 하나 = ratio 나빠 유지.
+- 16-param consult positional 시그니처: 단일 호출부(facade)라 struct refactor risk 대비 이득 낮음, 유지.
+
+**ⓝ10·ⓠ2 정정:**
+- **ⓝ10**(EPOCH_SIZE) §0b "CLOSED"는 boot-offset 절반만 — within-window sparsity(rank-map 재척도)는 여전히 deferred(5-2 미착수). tag를 "boot offset only"로 스코프.
+- **ⓠ2**(FG +30%) → **CLOSED/REFUTED-by-measurement**: 통합 §13.1서 +0.9%/노이즈(+30%는 read-only microbench 아티팩트). ablation knob(default off).
+
+**잔여(낮은 우선순위):** roll_pred/newest_node 필드가 이제 dead(fast path NO-GO) → 제거 후보 · FTS/spatial/partition correctness · full-mysqld TSan(documented residual).
+
+**→ 개발 완전 완료. 다음 = Phase 3(#13 multi-run/error-bar · #14 raw 로그 아카이빙 · 논문 한/영).**
+
 ---
 
 ## ⓠ 조용히 버려질 위험이 있는 목표 (최우선 — 사용자 핵심 우려)

@@ -24,6 +24,10 @@
 
 심각도: 🔴 빌드 블로커 / 🟠 정확성 / 🟡 위생·미완
 
+> ⚠️ 아래 표의 "상태"는 **세션 1 발견 시점(as-found) 스냅샷**이다. 정확성/빌드 이슈 #1–#10은 A·B단계서 전부
+> 해소됐다(아래 "해소 로그" 참조) — 예: **#6 `garbage_collect`는 full windowed-sweep 경로서 `true` 반환**(2-phase
+> GC 완성; 세션 12 `gc_cycle` template로 standalone/integration 단일화). #11 이후 stale findings는 ⓞ(무관).
+
 | # | 위치 | 이슈 | 심각도 | 상태 |
 |---|---|---|---|---|
 | 1 | [CMakeLists.txt:3](../CMakeLists.txt) | `cmake_minimum_required(VERSION 3.1Threads::Threads4)` — 손상된 버전 문자열(잘못된 find/replace 흔적). configure 즉시 실패 | 🔴 | 미해결 |
