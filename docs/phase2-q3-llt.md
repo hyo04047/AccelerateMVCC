@@ -14,7 +14,9 @@
   small-BP reclaim storm — design-D5-gc §12.2). The drain-cap "X/N degrade" table already has this discipline;
   the rest does not yet. **[⑥ gate ① DONE 2026-06-30]** ⑥ now HAS multi-run error bars — see the *Phase 3 /
   gate ① — ⑥ multi-run* section at the bottom (64M serve median 0.45 s ≈ 290×, 2/8 degrade to the correct
-  walk, construct_BAD=0 in all 18 runs). The ⓠ3 / ⓠ5 numbers in THIS doc are still single-run.
+  walk, construct_BAD=0 in all 18 runs). **ⓠ3 now has multi-run error bars too** (see the *Multi-run error
+  bars* block in the ⓠ3 section: median 19.5×/40.5×/81.9× @15/30/60s, live_versions ~7k bounded). ⓠ5 is
+  still single-run.
 - **Raw run logs were not retained** (overwritten per run; only the ASan log survives). Phase 3 must archive
   the `[accel] retention:`/`consult:` lines into `integration/results/` so each table cell is verifiable.
   **[gate ② — ⑥/q11 DONE]** the q11 multi-run archives every per-run mysqld/scan/churn log + `q11_d6.csv`
@@ -79,6 +81,23 @@ behaves tail-only → no win. This is confirmed by the readers=0 control below (
 | readers=8, 15 s | 130,570 | 6,409 | **20.4×** | 81 |
 | readers=8, 30 s | 278,914 | 7,086 | **39.4×** | 81 |
 | readers=8, 60 s | 573,483 | 9,043 | **63.4×** | 92 |
+
+**Multi-run error bars (gate ①, 2026-06-30, `build_q3_multirun.sh`, N=5):**
+
+| config | ratio median | min–max | cache live_versions | InnoDB HLL |
+|---|---|---|---|---|
+| control (rdr=0, no gap) | **0.9×** | 0.9–0.9 | ~741–764 k | ~694–708 k |
+| rdr=8, 15 s | **19.5×** | 18.1–21.0 | ~6.8–7.0 k | ~123–142 k |
+| rdr=8, 30 s | **40.5×** | 33.1–41.2 | ~6.9–7.2 k | ~238–286 k |
+| rdr=8, 60 s | **81.9×** | 81.0–87.6 | ~7.0–7.2 k | ~571–611 k |
+
+The invariant holds across all 15 headline runs: **cache live_versions stays bounded ~7 k, flat in LLT**,
+while **InnoDB HLL grows ~linearly** (123 k → 286 k → 611 k), so the ratio grows ~linearly with LLT
+(≈ 20× / 40× / 82×). The 60 s median (82×) is higher than the earlier single-run (63×) only because
+live_versions came out ~7 k this run vs ~9 k before — run-to-run variation in the bounded cache window; the
+**linear-in-LLT scaling + bounded cache are the robust claims, not the exact constant**. The control stays
+~1× (cache tracks InnoDB with no gap), confirming the win is entirely the HTAP gap. construct_BAD is not a
+metric here (this is a read-only memory measurement, no serve).
 
 **Reading the data:**
 - cache `live_versions` is **bounded** (~6–9 k) and roughly flat in LLT; InnoDB HLL grows **linearly**

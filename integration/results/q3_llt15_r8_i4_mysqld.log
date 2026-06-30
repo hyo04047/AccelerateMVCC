@@ -1,0 +1,66 @@
+2026-06-30T07:45:35.800194Z 0 [System] [MY-015015] [Server] MySQL Server - start.
+2026-06-30T07:45:36.033657Z 0 [System] [MY-010116] [Server] /root/mysql-build/runtime_output_directory/mysqld (mysqld 8.4.10) starting as process 1366
+2026-06-30T07:45:36.044179Z 1 [System] [MY-013576] [InnoDB] InnoDB initialization has started.
+[accel] init: drainer started, accelerator constructed (gc=1 tail_only=0 retention_ms=1000)
+2026-06-30T07:45:36.286977Z 1 [System] [MY-013577] [InnoDB] InnoDB initialization has ended.
+2026-06-30T07:45:36.511645Z 0 [Warning] [MY-010068] [Server] CA certificate ca.pem is self signed.
+2026-06-30T07:45:36.512190Z 0 [System] [MY-013602] [Server] Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.
+2026-06-30T07:45:36.532146Z 0 [System] [MY-010931] [Server] /root/mysql-build/runtime_output_directory/mysqld: ready for connections. Version: '8.4.10'  socket: '/root/mysql.sock'  port: 3309  Source distribution.
+2026-06-30T07:45:36.789745Z 8 [Warning] [MY-013360] [Server] Plugin mysql_native_password reported: ''mysql_native_password' is deprecated and will be removed in a future release. Please use caching_sha2_password instead'
+[accel] retention: t_ms=1000 max=2 p50=1 capped=0 keys=452 sampled_sum=468 drained=580 entries_retired=0 dropped=0 live_versions=580 headers=530 long_live=0
+[accel] retention: t_ms=2001 max=2 p50=1 capped=0 keys=452 sampled_sum=468 drained=580 entries_retired=0 dropped=0 live_versions=580 headers=530 long_live=0
+[accel] retention: t_ms=3003 max=64 p50=1 capped=0 keys=649 sampled_sum=1033 drained=4565 entries_retired=0 dropped=0 live_versions=4565 headers=1233 long_live=50
+[accel] gc: cycles=5 retired{windowed=1276 dummy=101} live_buckets=100 views=8 norm_clock=12509
+[accel] gc: cycles=10 retired{windowed=4397 dummy=567} live_buckets=140 views=8 norm_clock=25012
+[accel] retention: t_ms=4006 max=79 p50=1 capped=0 keys=674 sampled_sum=1284 drained=15307 entries_retired=9853 dropped=0 live_versions=5454 headers=1491 long_live=165
+[accel] gc: cycles=15 retired{windowed=6638 dummy=1290} live_buckets=164 views=9 norm_clock=37513
+[accel] gc: cycles=20 retired{windowed=9377 dummy=2008} live_buckets=200 views=9 norm_clock=50105
+[accel] retention: t_ms=5012 max=71 p50=1 capped=0 keys=674 sampled_sum=1268 drained=27435 entries_retired=20855 dropped=0 live_versions=6580 headers=1524 long_live=225
+[accel] gc: cycles=25 retired{windowed=12003 dummy=2818} live_buckets=229 views=9 norm_clock=62524
+[accel] retention: t_ms=6014 max=77 p50=1 capped=0 keys=674 sampled_sum=1300 drained=37728 entries_retired=30810 dropped=0 live_versions=6918 headers=1529 long_live=236
+[accel] gc: cycles=30 retired{windowed=15327 dummy=3585} live_buckets=170 views=9 norm_clock=75037
+[accel] gc: cycles=35 retired{windowed=17585 dummy=4381} live_buckets=181 views=9 norm_clock=87555
+[accel] retention: t_ms=7017 max=33 p50=1 capped=0 keys=674 sampled_sum=1006 drained=48049 entries_retired=41991 dropped=0 live_versions=6058 headers=1530 long_live=166
+[accel] gc: cycles=40 retired{windowed=20209 dummy=5169} live_buckets=216 views=9 norm_clock=100005
+[accel] gc: cycles=45 retired{windowed=22915 dummy=5961} live_buckets=233 views=8 norm_clock=112533
+[accel] retention: t_ms=8020 max=45 p50=1 capped=0 keys=674 sampled_sum=1091 drained=58608 entries_retired=51985 dropped=0 live_versions=6623 headers=1530 long_live=169
+[accel] gc: cycles=50 retired{windowed=26269 dummy=6834} live_buckets=172 views=9 norm_clock=125000
+[accel] retention: t_ms=9023 max=76 p50=1 capped=0 keys=674 sampled_sum=1280 drained=65163 entries_retired=59408 dropped=0 live_versions=5755 headers=1530 long_live=197
+[accel] gc: cycles=55 retired{windowed=28512 dummy=7684} live_buckets=179 views=9 norm_clock=137565
+[accel] retention: t_ms=10028 max=78 p50=1 capped=0 keys=674 sampled_sum=1288 drained=75296 entries_retired=69665 dropped=0 live_versions=5631 headers=1530 long_live=176
+[accel] gc: cycles=60 retired{windowed=31139 dummy=8533} live_buckets=201 views=6 norm_clock=150031
+[accel] gc: cycles=65 retired{windowed=33778 dummy=9325} live_buckets=230 views=8 norm_clock=162545
+[accel] retention: t_ms=11030 max=63 p50=1 capped=0 keys=676 sampled_sum=1193 drained=85815 entries_retired=79615 dropped=0 live_versions=6200 headers=1534 long_live=209
+[accel] gc: cycles=70 retired{windowed=37093 dummy=10092} live_buckets=150 views=8 norm_clock=175025
+[accel] gc: cycles=75 retired{windowed=39344 dummy=10931} live_buckets=185 views=8 norm_clock=187532
+[accel] retention: t_ms=12031 max=76 p50=1 capped=0 keys=676 sampled_sum=1295 drained=96427 entries_retired=89650 dropped=0 live_versions=6777 headers=1534 long_live=210
+[accel] gc: cycles=80 retired{windowed=42018 dummy=11744} live_buckets=196 views=8 norm_clock=200137
+[accel] gc: cycles=85 retired{windowed=44655 dummy=12559} live_buckets=229 views=9 norm_clock=212524
+[accel] retention: t_ms=13033 max=77 p50=1 capped=0 keys=676 sampled_sum=1310 drained=107773 entries_retired=100793 dropped=0 live_versions=6980 headers=1534 long_live=229
+[accel] gc: cycles=90 retired{windowed=48056 dummy=13394} live_buckets=152 views=8 norm_clock=225133
+[accel] retention: t_ms=14035 max=53 p50=1 capped=0 keys=676 sampled_sum=1151 drained=119043 entries_retired=112003 dropped=0 live_versions=7040 headers=1534 long_live=170
+[accel] gc: cycles=95 retired{windowed=50289 dummy=14186} live_buckets=195 views=8 norm_clock=237622
+[accel] gc: cycles=100 retired{windowed=52986 dummy=14943} live_buckets=229 views=8 norm_clock=250028
+[accel] retention: t_ms=15037 max=82 p50=1 capped=0 keys=676 sampled_sum=1349 drained=130489 entries_retired=124618 dropped=0 live_versions=5871 headers=1534 long_live=198
+[accel] gc: cycles=105 retired{windowed=55717 dummy=15723} live_buckets=248 views=7 norm_clock=262668
+[accel] gc: cycles=110 retired{windowed=59087 dummy=16537} live_buckets=147 views=8 norm_clock=275077
+[accel] retention: t_ms=16039 max=65 p50=1 capped=0 keys=676 sampled_sum=1223 drained=142154 entries_retired=135830 dropped=0 live_versions=6324 headers=1534 long_live=222
+[accel] gc: cycles=115 retired{windowed=61322 dummy=17339} live_buckets=184 views=8 norm_clock=287566
+[accel] gc: cycles=120 retired{windowed=64070 dummy=18108} live_buckets=210 views=9 norm_clock=300072
+[accel] retention: t_ms=17041 max=58 p50=1 capped=0 keys=676 sampled_sum=1221 drained=154275 entries_retired=149442 dropped=0 live_versions=4833 headers=1534 long_live=158
+[accel] gc: cycles=125 retired{windowed=66730 dummy=18896} live_buckets=233 views=8 norm_clock=312630
+[accel] retention: t_ms=18043 max=62 p50=1 capped=0 keys=676 sampled_sum=1194 drained=160748 entries_retired=154647 dropped=0 live_versions=6101 headers=1534 long_live=209
+[accel] retention: t_ms=19045 max=62 p50=1 capped=0 keys=676 sampled_sum=1194 drained=160748 entries_retired=154647 dropped=0 live_versions=6101 headers=1534 long_live=209
+2026-06-30T07:45:55.887359Z 28 [System] [MY-013172] [Server] Received SHUTDOWN from user root. Shutting down mysqld (Version: 8.4.10).
+[accel] retention: t_ms=20046 max=62 p50=1 capped=0 keys=676 sampled_sum=1194 drained=160748 entries_retired=154647 dropped=0 live_versions=6101 headers=1534 long_live=209
+[accel] shutdown: enq=160748 drained=160748 dropped=0 pk_buckets=676/1024 live_epoch_buckets=209
+[accel] consult: calls=810726 hit=691610 miss{absent=159 novisible=0 noncontig=118957 ineligible=0 gcrace=0} | construct_ok=691610 construct_BAD=0 | auth_mode=0 served=0 gen_gate=1
+[accel] audit: mode=0 audit_n=1024 mode1_hits=0 audited=0 (mode-1: ok+bad==audited, bad==0)
+[accel] noncontig split: head_writer_gate=118957 (cache head behind live row) chase_break=0 (GC severed a mid-chain link)
+[accel] view-registry: open_calls=25453 published=25453 unpublished=25882 publish_on=1 live_snapshot=0 floor=none clock=321618
+[accel] construct_BAD detail: trx_same=0 (right version, bytes differ) trx_diff=0 (WRONG version: older=0 [cache behind] newer=0 [visibility])
+[accel] newer split: vanilla_sees=0 (cross-generation: ct visible, off vanilla's chain) vanilla_hides=0 (input mismatch: consult got different view limits)
+[accel] gc: enabled=1 retired{total=87764 windowed=68426 dummy=19338} live_buckets=209 clock=321618
+[accel] fg-alpha: consult_fg=0 coop_dead_seen=0 | drain_cap=0 dummy_pending=1027
+2026-06-30T07:45:57.550705Z 0 [System] [MY-010910] [Server] /root/mysql-build/runtime_output_directory/mysqld: Shutdown complete (mysqld 8.4.10)  Source distribution.
+2026-06-30T07:45:57.551643Z 0 [System] [MY-015016] [Server] MySQL Server - end.

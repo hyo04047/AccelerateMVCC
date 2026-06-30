@@ -1,0 +1,84 @@
+=== ⓠ3 REALISTIC MULTI-RUN (table-size=1000, pareto, 256M BP, GC on): ratio = InnoDB HLL / cache live_versions. N=5 ===
+Tue Jun 30 16:42:21 KST 2026
+
+########## llt30_r0_i1 (N=5) ##########
+>> llt30_r0_i1 | InnoDB_HLL=693680    cache_live_versions=741116    RATIO=0.9x   chain=2000  
+
+########## llt30_r0_i2 (N=5) ##########
+>> llt30_r0_i2 | InnoDB_HLL=708440    cache_live_versions=764080    RATIO=0.9x   chain=2000  
+
+########## llt15_r8_i1 (N=5) ##########
+>> llt15_r8_i1 | InnoDB_HLL=142030    cache_live_versions=6756      RATIO=21.0x  chain=82    
+
+########## llt15_r8_i2 (N=5) ##########
+>> llt15_r8_i2 | InnoDB_HLL=123025    cache_live_versions=6792      RATIO=18.1x  chain=82    
+
+########## llt15_r8_i3 (N=5) ##########
+>> llt15_r8_i3 | InnoDB_HLL=132595    cache_live_versions=6980      RATIO=19.0x  chain=81    
+
+########## llt15_r8_i4 (N=5) ##########
+>> llt15_r8_i4 | InnoDB_HLL=137094    cache_live_versions=7040      RATIO=19.5x  chain=82    
+
+########## llt15_r8_i5 (N=5) ##########
+>> llt15_r8_i5 | InnoDB_HLL=138149    cache_live_versions=6841      RATIO=20.2x  chain=82    
+
+########## llt30_r8_i1 (N=5) ##########
+>> llt30_r8_i1 | InnoDB_HLL=281897    cache_live_versions=6957      RATIO=40.5x  chain=81    
+
+########## llt30_r8_i2 (N=5) ##########
+>> llt30_r8_i2 | InnoDB_HLL=285979    cache_live_versions=6967      RATIO=41.0x  chain=83    
+
+########## llt30_r8_i3 (N=5) ##########
+>> llt30_r8_i3 | InnoDB_HLL=269589    cache_live_versions=7111      RATIO=37.9x  chain=81    
+
+########## llt30_r8_i4 (N=5) ##########
+>> llt30_r8_i4 | InnoDB_HLL=284715    cache_live_versions=6916      RATIO=41.2x  chain=82    
+
+########## llt30_r8_i5 (N=5) ##########
+>> llt30_r8_i5 | InnoDB_HLL=237835    cache_live_versions=7179      RATIO=33.1x  chain=84    
+
+########## llt60_r8_i1 (N=5) ##########
+>> llt60_r8_i1 | InnoDB_HLL=581598    cache_live_versions=7151      RATIO=81.3x  chain=82    
+
+########## llt60_r8_i2 (N=5) ##########
+>> llt60_r8_i2 | InnoDB_HLL=579777    cache_live_versions=7076      RATIO=81.9x  chain=83    
+
+########## llt60_r8_i3 (N=5) ##########
+>> llt60_r8_i3 | InnoDB_HLL=570800    cache_live_versions=7050      RATIO=81.0x  chain=82    
+
+########## llt60_r8_i4 (N=5) ##########
+>> llt60_r8_i4 | InnoDB_HLL=595495    cache_live_versions=7136      RATIO=83.4x  chain=83    
+
+########## llt60_r8_i5 (N=5) ##########
+>> llt60_r8_i5 | InnoDB_HLL=610889    cache_live_versions=6972      RATIO=87.6x  chain=83    
+
+=== RAW CSV (/mnt/c/Users/USER/projects/AccelerateMVCC/integration/results/q3_realistic.csv) ===
+iter,llt_s,readers,innodb_hll,cache_live_versions,ratio,chain_max
+1,30,0,693680,741116,0.9,2000
+2,30,0,708440,764080,0.9,2000
+1,15,8,142030,6756,21.0,82
+2,15,8,123025,6792,18.1,82
+3,15,8,132595,6980,19.0,81
+4,15,8,137094,7040,19.5,82
+5,15,8,138149,6841,20.2,82
+1,30,8,281897,6957,40.5,81
+2,30,8,285979,6967,41.0,83
+3,30,8,269589,7111,37.9,81
+4,30,8,284715,6916,41.2,82
+5,30,8,237835,7179,33.1,84
+1,60,8,581598,7151,81.3,82
+2,60,8,579777,7076,81.9,83
+3,60,8,570800,7050,81.0,82
+4,60,8,595495,7136,83.4,83
+5,60,8,610889,6972,87.6,83
+
+=== SUMMARY (ratio = InnoDB HLL / cache live_versions) ===
+control llt=30 rdr=0 (no gap) : min=0.9 median=0.9 max=0.9 n=2
+headline llt=15 rdr=8         : min=18.1 median=19.5 max=21.0 n=5
+headline llt=30 rdr=8         : min=33.1 median=40.5 max=41.2 n=5
+headline llt=60 rdr=8         : min=81.0 median=81.9 max=87.6 n=5
+
+Expect: control ~1x (no in-middle reclaim); headline ratio grows ~linearly with LLT (was 20/40/63x single-run).
+cache live_versions should stay bounded (~6-9k) across LLT durations; HLL grows linearly with dur.
+=== DONE ===
+Tue Jun 30 16:56:52 KST 2026

@@ -144,7 +144,8 @@ flat ~80–92로 유계 유지).
 **⑤ deadzone GC (통합 ON).** GC를 standalone trx manager가 아니라 **pushed InnoDB clock + active-view
 registry cuts**로 재구동(amortized windowed sweep). LLT 하 write-heavy OLTP + 동시 HTAP 리더서 캐시 보존이
 bounded(~6–9k versions)인 반면 InnoDB History List Length는 LLT에 선형 증가 → 비율이 LLT 나이에 선형
-(realistic full-table 20×/40×/63× @15/30/60s). 승리는 동시 read-view 리더가 만드는 in-middle gap을 요구
+(realistic full-table, 멀티런 N=5 median **19.5×/40.5×/81.9×** @15/30/60s; live_versions ~7k bounded·HLL
+123k→286k→611k 선형·control 0.9×). 승리는 동시 read-view 리더가 만드는 in-middle gap을 요구
 (리더0 대조군 0.9× = 승리 0). 메커니즘·scaling·gap 요건은 프로토타입과 동일, magnitude는 실 InnoDB OLTP
 rate(~4,200 versions/s)가 정한 정직한 값이다.
 
