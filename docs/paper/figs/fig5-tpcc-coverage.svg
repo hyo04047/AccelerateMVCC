@@ -1,0 +1,38 @@
+<svg viewBox="0 0 680 340" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',Arial,sans-serif" role="img">
+<title>TPC-C coverage is capacity-bounded (the D8 sizing law)</title>
+<desc>On TPC-C, sizing the cuckoo capacity from kuku_log2 16 to 21 raises the held-scan hit rate from 16 percent to 64 percent, with construct_BAD zero at both sizings.</desc>
+<rect x="0" y="0" width="680" height="340" fill="#ffffff"/>
+
+<!-- axis -->
+<line x1="110" y1="60" x2="110" y2="280" stroke="#B4B2A9"/>
+<line x1="110" y1="280" x2="600" y2="280" stroke="#D3D1C7"/>
+<g font-size="11.5" fill="#888780" text-anchor="end">
+<text x="103" y="283">0%</text><text x="103" y="228">25%</text><text x="103" y="173">50%</text><text x="103" y="118">75%</text><text x="103" y="63">100%</text>
+</g>
+<g stroke="#EFEEE8"><line x1="110" y1="225" x2="600" y2="225"/><line x1="110" y1="170" x2="600" y2="170"/><line x1="110" y1="115" x2="600" y2="115"/></g>
+<text x="40" y="170" font-size="12" fill="#5F5E5A" transform="rotate(-90 40 170)" text-anchor="middle">held-scan consult outcome</text>
+
+<!-- bar 1: kuku_log2 = 16 -->
+<rect x="180" y="60" width="110" height="184.8" fill="#F1EFE8" stroke="#D3D1C7"/>
+<rect x="180" y="244.8" width="110" height="35.2" fill="#1D9E75"/>
+<text x="235" y="266" font-size="12" fill="#ffffff" text-anchor="middle">HIT 16%</text>
+<text x="235" y="160" font-size="11.5" fill="#5F5E5A" text-anchor="middle">miss → vanilla</text>
+<text x="235" y="176" font-size="11.5" fill="#5F5E5A" text-anchor="middle">(absent + ineligible)</text>
+<text x="235" y="300" font-size="12.5" fill="#2C2C2A" text-anchor="middle">kuku_log2 = 16</text>
+<text x="235" y="316" font-size="11" fill="#5F5E5A" text-anchor="middle">≈43k key capacity</text>
+
+<!-- bar 2: kuku_log2 = 21 -->
+<rect x="420" y="60" width="110" height="79.2" fill="#F1EFE8" stroke="#D3D1C7"/>
+<rect x="420" y="139.2" width="110" height="140.8" fill="#1D9E75"/>
+<text x="475" y="215" font-size="12" fill="#ffffff" text-anchor="middle">HIT 64%</text>
+<text x="475" y="104" font-size="11.5" fill="#5F5E5A" text-anchor="middle">miss → vanilla</text>
+<text x="475" y="300" font-size="12.5" fill="#2C2C2A" text-anchor="middle">kuku_log2 = 21</text>
+<text x="475" y="316" font-size="11" fill="#5F5E5A" text-anchor="middle">≈1.4M key capacity</text>
+
+<!-- sizing arrow -->
+<line x1="296" y1="244.8" x2="414" y2="150" stroke="#534AB7" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="355" y="188" font-size="11.5" fill="#534AB7" text-anchor="middle" transform="rotate(-26 355 188)">size to working set</text>
+
+<!-- note -->
+<text x="355" y="42" font-size="12" fill="#0F6E56" text-anchor="middle">construct_BAD = 0 at both sizings  ·  TPC-C working set ≈ 920k rows</text>
+</svg>

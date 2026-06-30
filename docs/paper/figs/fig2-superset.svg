@@ -1,0 +1,56 @@
+<svg viewBox="0 0 680 330" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',Arial,sans-serif" role="img">
+<title>The superset-safety invariant</title>
+<desc>The dead zone reclaimed in the middle of the chain is kept a conservative superset of the active read views, so over-pruning can only drop unneeded versions or cause a miss that falls back to the vanilla walk.</desc>
+<defs>
+<marker id="ah3" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#5F5E5A"/></marker>
+</defs>
+<rect x="0" y="0" width="680" height="330" fill="#ffffff"/>
+
+<!-- purge tail region -->
+<rect x="55" y="150" width="95" height="86" fill="#F1EFE8"/>
+<text x="102" y="178" font-size="11" fill="#5F5E5A" text-anchor="middle">purge:</text>
+<text x="102" y="192" font-size="11" fill="#5F5E5A" text-anchor="middle">tail-only</text>
+<text x="102" y="206" font-size="11" fill="#5F5E5A" text-anchor="middle">(left of floor)</text>
+
+<!-- in-middle dead zone (reclaim set) -->
+<rect x="186" y="150" width="256" height="86" rx="4" fill="#EEEDFE" stroke="#7F77DD" stroke-dasharray="5 3"/>
+<text x="314" y="186" font-size="12.5" fill="#26215C" text-anchor="middle">in-middle dead zone</text>
+<text x="314" y="203" font-size="11" fill="#534AB7" text-anchor="middle">reclaimed · conservative superset</text>
+
+<!-- axis -->
+<line x1="55" y1="215" x2="625" y2="215" stroke="#888780" stroke-width="1.5" marker-end="url(#ah3)"/>
+<text x="340" y="252" font-size="12" fill="#5F5E5A" text-anchor="middle">version order / trx-id   (older → newer)</text>
+
+<!-- version ticks -->
+<g fill="#B4B2A9">
+<circle cx="90" cy="215" r="3.5"/><circle cx="120" cy="215" r="3.5"/><circle cx="150" cy="215" r="3.5"/>
+<circle cx="210" cy="215" r="3.5"/><circle cx="250" cy="215" r="3.5"/><circle cx="290" cy="215" r="3.5"/>
+<circle cx="330" cy="215" r="3.5"/><circle cx="370" cy="215" r="3.5"/><circle cx="410" cy="215" r="3.5"/>
+<circle cx="470" cy="215" r="3.5"/><circle cx="540" cy="215" r="3.5"/><circle cx="590" cy="215" r="3.5"/>
+</g>
+
+<!-- LLT read view + purge floor -->
+<line x1="150" y1="120" x2="150" y2="236" stroke="#185FA5" stroke-width="2"/>
+<circle cx="150" cy="215" r="5" fill="#185FA5"/>
+<text x="150" y="112" font-size="12" fill="#0C447C" text-anchor="middle">LLT read view</text>
+<text x="150" y="284" font-size="11" fill="#185FA5" text-anchor="middle">purge floor (pinned)</text>
+
+<!-- recent readers -->
+<line x1="470" y1="120" x2="470" y2="236" stroke="#185FA5" stroke-width="2"/>
+<line x1="540" y1="120" x2="540" y2="236" stroke="#185FA5" stroke-width="2"/>
+<circle cx="470" cy="215" r="5" fill="#185FA5"/><circle cx="540" cy="215" r="5" fill="#185FA5"/>
+<text x="505" y="112" font-size="12" fill="#0C447C" text-anchor="middle">recent readers</text>
+
+<!-- needed (keep) brackets in teal -->
+<rect x="442" y="150" width="56" height="86" rx="4" fill="#E1F5EE" stroke="#1D9E75" opacity="0.55"/>
+<text x="505" y="200" font-size="10.5" fill="#0F6E56" text-anchor="middle">kept</text>
+<rect x="150" y="150" width="36" height="86" rx="4" fill="#E1F5EE" stroke="#1D9E75" opacity="0.55"/>
+
+<!-- safety margins -->
+<text x="168" y="143" font-size="10" fill="#0F6E56" text-anchor="middle">margin</text>
+<text x="456" y="143" font-size="10" fill="#0F6E56" text-anchor="middle">margin</text>
+
+<!-- callout -->
+<rect x="55" y="296" width="570" height="26" rx="5" fill="#FAECE7" stroke="#D85A30"/>
+<text x="340" y="313" font-size="12" fill="#4A1B0C" text-anchor="middle">keep set ⊇ {versions any active view needs}  →  over-prune drops only unneeded versions, or causes MISS → vanilla walk — never a wrong serve</text>
+</svg>

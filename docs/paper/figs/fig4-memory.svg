@@ -1,0 +1,46 @@
+<svg viewBox="0 0 680 360" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',Arial,sans-serif" role="img">
+<title>Cache memory bounded by the live-transaction window</title>
+<desc>InnoDB's History List Length grows linearly with the LLT while the cache's retained versions stay bounded near 7,000, so the ratio grows linearly with LLT age.</desc>
+<rect x="0" y="0" width="680" height="360" fill="#ffffff"/>
+
+<!-- axes -->
+<line x1="95" y1="40" x2="95" y2="285" stroke="#B4B2A9"/>
+<line x1="95" y1="285" x2="620" y2="285" stroke="#D3D1C7"/>
+<g font-size="11.5" fill="#888780" text-anchor="end">
+<text x="88" y="288">0</text>
+<text x="88" y="219">200k</text>
+<text x="88" y="153">400k</text>
+<text x="88" y="87">600k</text>
+</g>
+<g stroke="#EFEEE8"><line x1="95" y1="219" x2="620" y2="219"/><line x1="95" y1="153" x2="620" y2="153"/><line x1="95" y1="87" x2="620" y2="87"/></g>
+<text x="30" y="162" font-size="12" fill="#5F5E5A" transform="rotate(-90 30 162)" text-anchor="middle">retained versions</text>
+
+<g font-size="12.5" fill="#2C2C2A" text-anchor="middle">
+<text x="180" y="305">15 s</text><text x="360" y="305">30 s</text><text x="540" y="305">60 s</text>
+<text x="360" y="328" font-size="12" fill="#5F5E5A">LLT duration</text>
+</g>
+
+<!-- InnoDB HLL: linear growth -->
+<polyline points="180,241.3 360,194.4 540,75.7" fill="none" stroke="#D85A30" stroke-width="2.5"/>
+<g fill="#D85A30"><circle cx="180" cy="241.3" r="4.5"/><circle cx="360" cy="194.4" r="4.5"/><circle cx="540" cy="75.7" r="4.5"/></g>
+<text x="180" y="232" font-size="11" fill="#993C1D" text-anchor="middle">132k</text>
+<text x="360" y="185" font-size="11" fill="#993C1D" text-anchor="middle">262k</text>
+<text x="540" y="66" font-size="11" fill="#993C1D" text-anchor="middle">591k</text>
+
+<!-- cache live_versions: flat ~7k -->
+<polyline points="180,282.7 360,282.7 540,282.6" fill="none" stroke="#1D9E75" stroke-width="2.5"/>
+<g fill="#1D9E75"><circle cx="180" cy="282.7" r="4.5"/><circle cx="360" cy="282.7" r="4.5"/><circle cx="540" cy="282.6" r="4.5"/></g>
+<text x="540" y="276" font-size="11" fill="#0F6E56" text-anchor="middle">≈7k (flat)</text>
+
+<!-- ratio labels -->
+<g font-size="12" fill="#444441" text-anchor="middle">
+<text x="180" y="262">19.5×</text><text x="360" y="240">40.5×</text><text x="540" y="170">81.9×</text>
+</g>
+
+<!-- legend -->
+<g font-size="11.5">
+<line x1="150" y1="44" x2="174" y2="44" stroke="#D85A30" stroke-width="2.5"/><circle cx="162" cy="44" r="3.5" fill="#D85A30"/><text x="180" y="48" fill="#2C2C2A">InnoDB HLL (linear in LLT)</text>
+<line x1="380" y1="44" x2="404" y2="44" stroke="#1D9E75" stroke-width="2.5"/><circle cx="392" cy="44" r="3.5" fill="#1D9E75"/><text x="410" y="48" fill="#2C2C2A">cache (bounded by window)</text>
+</g>
+<text x="358" y="348" font-size="11" fill="#5F5E5A" text-anchor="middle">ratio = HLL / cache live_versions  ·  control (no concurrent reader) = 0.9×</text>
+</svg>

@@ -1,0 +1,56 @@
+<svg viewBox="0 0 680 380" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',Arial,sans-serif" role="img">
+<title>The undo-I/O cliff and its flattening by serve</title>
+<desc>Held-read latency across buffer-pool sizes: the vanilla walk climbs a cliff as the buffer pool shrinks, while serve stays flat near 0.16 s.</desc>
+<defs>
+<marker id="ah2" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#888780"/></marker>
+</defs>
+<rect x="0" y="0" width="680" height="380" fill="#ffffff"/>
+
+<g font-size="11.5" fill="#888780">
+<line x1="90" y1="300" x2="630" y2="300" stroke="#D3D1C7"/>
+<line x1="90" y1="224.3" x2="630" y2="224.3" stroke="#EFEEE8"/>
+<line x1="90" y1="148.5" x2="630" y2="148.5" stroke="#EFEEE8"/>
+<line x1="90" y1="72.8" x2="630" y2="72.8" stroke="#EFEEE8"/>
+<text x="82" y="303" text-anchor="end">0.1</text>
+<text x="82" y="227" text-anchor="end">1</text>
+<text x="82" y="151" text-anchor="end">10</text>
+<text x="82" y="76" text-anchor="end">100</text>
+<line x1="90" y1="50" x2="90" y2="300" stroke="#B4B2A9"/>
+</g>
+
+<text x="22" y="175" font-size="12" fill="#5F5E5A" transform="rotate(-90 22 175)" text-anchor="middle">held read latency (s, log scale)</text>
+<g font-size="12.5" fill="#2C2C2A" text-anchor="middle">
+<text x="180" y="320">4 GB</text><text x="360" y="320">256 MB</text><text x="540" y="320">64 MB</text>
+<text x="360" y="342" font-size="12" fill="#5F5E5A">buffer pool (resident → I/O-bound →)</text>
+</g>
+
+<!-- vanilla walk line (the cliff) -->
+<polyline points="180,231.6 360,81.7 540,65.9" fill="none" stroke="#D85A30" stroke-width="2.5"/>
+<g fill="#D85A30">
+<circle cx="180" cy="231.6" r="4.5"/><circle cx="360" cy="81.7" r="4.5"/><circle cx="540" cy="65.9" r="4.5"/>
+</g>
+<text x="180" y="222" font-size="11" fill="#993C1D" text-anchor="middle">0.80 s</text>
+<text x="360" y="73" font-size="11" fill="#993C1D" text-anchor="middle">76 s</text>
+<text x="540" y="57" font-size="11" fill="#993C1D" text-anchor="middle">123 s</text>
+
+<!-- serve line (flat) -->
+<polyline points="180,282.6 360,284.5 540,284.5" fill="none" stroke="#1D9E75" stroke-width="2.5"/>
+<g fill="#1D9E75">
+<circle cx="180" cy="282.6" r="4.5"/><circle cx="360" cy="284.5" r="4.5"/><circle cx="540" cy="284.5" r="4.5"/>
+</g>
+<text x="540" y="299" font-size="11" fill="#0F6E56" text-anchor="middle">≈0.16 s</text>
+
+<!-- payoff annotation at 64M -->
+<line x1="560" y1="65.9" x2="560" y2="284.5" stroke="#888780" stroke-dasharray="3 3" marker-start="url(#ah2)" marker-end="url(#ah2)"/>
+<text x="566" y="180" font-size="12" fill="#444441" text-anchor="start">≈290×</text>
+
+<!-- cliff label -->
+<text x="270" y="135" font-size="12" fill="#993C1D" text-anchor="middle">undo-I/O cliff</text>
+<text x="430" y="270" font-size="12" fill="#0F6E56" text-anchor="middle">serve stays flat (BP-independent)</text>
+
+<!-- legend -->
+<g font-size="11.5">
+<line x1="360" y1="44" x2="384" y2="44" stroke="#D85A30" stroke-width="2.5"/><circle cx="372" cy="44" r="3.5" fill="#D85A30"/><text x="390" y="48" fill="#2C2C2A">vanilla walk</text>
+<line x1="480" y1="44" x2="504" y2="44" stroke="#1D9E75" stroke-width="2.5"/><circle cx="492" cy="44" r="3.5" fill="#1D9E75"/><text x="510" y="48" fill="#2C2C2A">serve (cache)</text>
+</g>
+</svg>

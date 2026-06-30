@@ -1,0 +1,68 @@
+<svg viewBox="0 0 680 410" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI',Arial,sans-serif" role="img">
+<title>AccelerateMVCC architecture and runtime flow</title>
+<desc>Four stages — populate, the in-memory structure, consult/serve, and GC — between InnoDB (the authority) and the derived cache.</desc>
+<defs>
+<marker id="ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#5F5E5A"/></marker>
+</defs>
+<rect x="0" y="0" width="680" height="410" fill="#ffffff"/>
+
+<g font-size="11.5" fill="#2C2C2A">
+<rect x="14" y="10" width="13" height="13" rx="3" fill="#F1EFE8" stroke="#888780"/><text x="32" y="20">InnoDB (authority)</text>
+<rect x="158" y="10" width="13" height="13" rx="3" fill="#E1F5EE" stroke="#1D9E75"/><text x="176" y="20">derived in-memory cache</text>
+<rect x="334" y="10" width="13" height="13" rx="3" fill="#FAECE7" stroke="#D85A30"/><text x="352" y="20">serve (payoff)</text>
+<rect x="452" y="10" width="13" height="13" rx="3" fill="#EEEDFE" stroke="#7F77DD"/><text x="470" y="20">deadzone GC</text>
+</g>
+
+<g font-size="12.5" text-anchor="middle">
+<!-- Stage 1: populate -->
+<text x="14" y="48" text-anchor="start" font-size="12" fill="#5F5E5A">① populate (write path)</text>
+<g>
+<rect x="14" y="56" width="132" height="46" rx="5" fill="#F1EFE8" stroke="#888780"/><text x="80" y="76" fill="#2C2C2A">row update</text><text x="80" y="92" fill="#5F5E5A" font-size="11">under page latch</text>
+<rect x="186" y="56" width="132" height="46" rx="5" fill="#E1F5EE" stroke="#1D9E75"/><text x="252" y="76" fill="#04342C">lock-free ring</text><text x="252" y="92" fill="#0F6E56" font-size="11">enqueue, noexcept</text>
+<rect x="358" y="56" width="132" height="46" rx="5" fill="#E1F5EE" stroke="#1D9E75"/><text x="424" y="76" fill="#04342C">single drainer</text><text x="424" y="92" fill="#0F6E56" font-size="11">sole mutator</text>
+<rect x="530" y="56" width="132" height="46" rx="5" fill="#E1F5EE" stroke="#1D9E75"/><text x="596" y="79" fill="#04342C">insert into</text><text x="596" y="94" fill="#04342C">version chain</text>
+<line x1="146" y1="79" x2="184" y2="79" stroke="#5F5E5A" marker-end="url(#ah)"/>
+<line x1="318" y1="79" x2="356" y2="79" stroke="#5F5E5A" marker-end="url(#ah)"/>
+<line x1="490" y1="79" x2="528" y2="79" stroke="#5F5E5A" marker-end="url(#ah)"/>
+</g>
+
+<!-- Stage 2: structure -->
+<text x="14" y="132" text-anchor="start" font-size="12" fill="#5F5E5A">② in-memory structure</text>
+<g>
+<rect x="14" y="140" width="132" height="46" rx="5" fill="#E1F5EE" stroke="#1D9E75"/><text x="80" y="163" fill="#04342C">Kuku cuckoo hash</text><text x="80" y="178" fill="#0F6E56" font-size="11">key → header, O(1)</text>
+<rect x="186" y="140" width="92" height="46" rx="5" fill="#E1F5EE" stroke="#1D9E75"/><text x="232" y="163" fill="#04342C">row header</text><text x="232" y="178" fill="#0F6E56" font-size="11">epoch list</text>
+<rect x="318" y="140" width="344" height="46" rx="5" fill="#F6FCFA" stroke="#1D9E75"/>
+<rect x="330" y="150" width="98" height="26" rx="4" fill="#E1F5EE" stroke="#5DCAA5"/><text x="379" y="167" fill="#04342C" font-size="11">v_top (head)</text>
+<rect x="438" y="150" width="98" height="26" rx="4" fill="#E1F5EE" stroke="#5DCAA5"/><text x="487" y="167" fill="#04342C" font-size="11">v1</text>
+<rect x="546" y="150" width="104" height="26" rx="4" fill="#E1F5EE" stroke="#5DCAA5"/><text x="598" y="167" fill="#04342C" font-size="11">v2 · writer id · image</text>
+<line x1="428" y1="163" x2="437" y2="163" stroke="#0F6E56" marker-end="url(#ah)"/>
+<line x1="536" y1="163" x2="545" y2="163" stroke="#0F6E56" marker-end="url(#ah)"/>
+<line x1="146" y1="163" x2="184" y2="163" stroke="#5F5E5A" marker-end="url(#ah)"/>
+<line x1="278" y1="163" x2="316" y2="163" stroke="#5F5E5A" marker-end="url(#ah)"/>
+</g>
+
+<!-- Stage 3: consult / serve -->
+<text x="14" y="216" text-anchor="start" font-size="12" fill="#5F5E5A">③ consult / serve (read path)</text>
+<g>
+<rect x="14" y="224" width="150" height="46" rx="5" fill="#F1EFE8" stroke="#888780"/><text x="89" y="247" fill="#2C2C2A">consistent read</text><text x="89" y="262" fill="#5F5E5A" font-size="11">version-build point</text>
+<rect x="204" y="224" width="166" height="46" rx="5" fill="#E1F5EE" stroke="#1D9E75"/><text x="287" y="247" fill="#04342C">consult: lineage walk</text><text x="287" y="262" fill="#0F6E56" font-size="11">+ changes_visible mirror</text>
+<rect x="410" y="224" width="118" height="46" rx="5" fill="#FAECE7" stroke="#D85A30"/><text x="469" y="247" fill="#4A1B0C">HIT</text><text x="469" y="262" fill="#993C1D" font-size="11">serve image</text>
+<rect x="546" y="224" width="116" height="46" rx="5" fill="#F1EFE8" stroke="#888780"/><text x="604" y="247" fill="#2C2C2A">MISS</text><text x="604" y="262" fill="#5F5E5A" font-size="11">vanilla walk</text>
+<line x1="164" y1="247" x2="202" y2="247" stroke="#5F5E5A" marker-end="url(#ah)"/>
+<line x1="370" y1="241" x2="408" y2="241" stroke="#D85A30" marker-end="url(#ah)"/>
+<line x1="370" y1="255" x2="544" y2="255" stroke="#888780" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+</g>
+
+<!-- Stage 4: GC -->
+<text x="14" y="316" text-anchor="start" font-size="12" fill="#5F5E5A">④ deadzone GC (keeps memory compact)</text>
+<g>
+<rect x="14" y="324" width="150" height="46" rx="5" fill="#EEEDFE" stroke="#7F77DD"/><text x="89" y="347" fill="#26215C">active read-view cuts</text><text x="89" y="362" fill="#534AB7" font-size="11">purge_sys + registry</text>
+<rect x="204" y="324" width="166" height="46" rx="5" fill="#EEEDFE" stroke="#7F77DD"/><text x="287" y="347" fill="#26215C">deadzone</text><text x="287" y="362" fill="#534AB7" font-size="11">conservative superset</text>
+<rect x="410" y="324" width="118" height="46" rx="5" fill="#EEEDFE" stroke="#7F77DD"/><text x="469" y="350" fill="#26215C">in-middle</text><text x="469" y="364" fill="#26215C">reclaim</text>
+<rect x="546" y="324" width="116" height="46" rx="5" fill="#E1F5EE" stroke="#1D9E75"/><text x="604" y="347" fill="#04342C" font-size="11">over-prune →</text><text x="604" y="362" fill="#0F6E56" font-size="10.5">MISS → walk (safe)</text>
+<line x1="164" y1="347" x2="202" y2="347" stroke="#5F5E5A" marker-end="url(#ah)"/>
+<line x1="370" y1="347" x2="408" y2="347" stroke="#5F5E5A" marker-end="url(#ah)"/>
+<line x1="528" y1="347" x2="544" y2="347" stroke="#5F5E5A" marker-end="url(#ah)"/>
+</g>
+</g>
+</svg>

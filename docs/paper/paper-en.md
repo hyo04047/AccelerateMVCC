@@ -193,6 +193,14 @@ superset-safety result of §3.4.
 
 ### 3.1 Overview: data structures and flow
 
+![Figure 1](figs/fig1-architecture.svg)
+
+> **Figure 1.** AccelerateMVCC's four stages between InnoDB (the authority) and the derived cache: ① populate
+> (latch-bound ring enqueue → single drainer → chain insert), ② the in-memory structure (cuckoo hash → header
+> → epoch interval-list of version nodes), ③ consult/serve (lineage walk → hit serves the image, miss walks
+> vanilla), and ④ dead-zone GC (read-view cuts → conservative-superset dead zone → in-middle reclaim, where
+> over-prune degrades only to a safe miss→walk).
+
 AccelerateMVCC is an in-memory secondary index keyed by (table_id, clustered primary key). The mapping from a key
 to its version-chain header is an O(1) cuckoo hash (Microsoft Kuku). Each header points at an epoch-bucketed
 *interval list* of that row's versions. Each version node holds the writer transaction id that created it, the id
@@ -232,6 +240,13 @@ LLT pins, which no active view needs and which purge cannot touch. As a result, 
 retains is proportional to the *active-transaction window* and independent of the dataset size (measured in §5.3).
 
 ### 3.4 The superset-safety result (the central novelty)
+
+![Figure 2](figs/fig2-superset.svg)
+
+> **Figure 2.** The dead zone reclaimed in the middle of the chain is kept a conservative superset of the
+> active read views—the keep set ⊇ every version any active view needs, with a safety margin around each view.
+> Over-pruning can therefore only drop a version no view needs, or sever a link into a miss → vanilla walk—
+> never a wrong serve. Purge, pinned at the LLT's floor, cannot reach this in-middle zone.
 
 The tension of §1.2 and §2.4—that a derived cache, because it serves, turns over-reclamation into a wrong
 serve—is excluded *structurally*. The idea is to keep the dead zone a **conservative superset** of the active read
@@ -353,6 +368,13 @@ integration/results/.
 We compare a held analytical read under the vanilla walk (mode 0) and under serve (mode 1, GC on with a drain
 cap). With churn paused before measurement (N = 16):
 
+![Figure 3](figs/fig3-cliff.svg)
+
+> **Figure 3.** As the buffer pool shrinks (4 GB → 256 MB → 64 MB), the vanilla walk climbs an undo-I/O cliff
+> (0.8 s → 76 s → 123 s) while serve stays flat near 0.16 s, independent of buffer-pool size—≈290× at 64 MB.
+> (The curve is the single-run BP sweep that isolates the mechanism; the table below gives the multi-run
+> medians, N = 16, for the 4 GB and 64 MB end points.)
+
 | Buffer pool | Vanilla walk (median) | Serve (median) | Speedup | Degrade |
 |---|---|---|---|---|
 | 64 MB (I/O-bound) | 132.1 s | 0.454 s | **≈290×** | 2/8 |
@@ -380,6 +402,12 @@ with InnoDB's History List Length (HLL) (realistic full table, N = 5):
 | 15 s | ≈123–142 k | ≈6.8–7.0 k | **19.5×** |
 | 30 s | ≈238–286 k | ≈6.9–7.2 k | **40.5×** |
 | 60 s | ≈571–611 k | ≈7.0–7.2 k | **81.9×** |
+
+![Figure 4](figs/fig4-memory.svg)
+
+> **Figure 4.** InnoDB's History List Length grows linearly with the LLT, while the cache's retained versions
+> stay bounded near 7,000, so the ratio grows linearly with LLT age (19.5×/40.5×/81.9× at 15/30/60 s). With no
+> concurrent reader—and therefore no in-middle gap—the control is 0.9×.
 
 The cache's live_versions stays bounded at ≈7 k regardless of LLT duration, while InnoDB's HLL grows linearly with
 the LLT, so the ratio grows linearly with LLT age (consistent across all 15 runs). The 0-reader control is 0.9×:
@@ -414,6 +442,13 @@ verify-serve, 160,713 served records are byte-identical, construct_BAD = 0 (all 
 ≈1.4 M) raises it to 64 %—showing the capacity bound of §7 (design-D8) acting as a sizing knob on a standard
 benchmark (construct_BAD = 0 at either sizing). TPC-C's customer.c_data (≈400 chars, off-page) is handled as
 ineligible by the in-page scope of §3.5/F4 and §7.
+
+![Figure 5](figs/fig5-tpcc-coverage.svg)
+
+> **Figure 5.** Sizing the cuckoo capacity from kuku_log2 = 16 to 21 (to fit the ≈920 k working set) raises the
+> held-scan hit rate from 16 % to 64 %—the capacity bound of §7 acting as a sizing knob—while construct_BAD
+> stays 0 at both sizings. The remaining misses (off-page customer, plus rows beyond capacity) fall back to the
+> vanilla walk.
 
 **The latency speedup is modest** (kuku_log2 = 21, ≈64 % hit, N = 3):
 
