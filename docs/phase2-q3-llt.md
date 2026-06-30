@@ -377,3 +377,60 @@ mysqld/scan/churn logs + `q11_d6.csv` (one row/run) + `q11_d6_run.log` land in `
 `integration/results/d6_bp{64M,4G}_m{0,1}_cap1000_i*_{mysqld,scan,churn}.log` + `q11_d6.csv` + `q11_d6_run.log`.
 **Execution note:** run via WSL (not Git Bash); for unattended / teardown-surviving runs launch the script
 under `setsid` (plain `nohup` lets a terminal-close SIGHUP abort the held-snapshot client → NA rows).
+
+---
+
+# Phase 3 / gate ① — ⑥/⑤ under CONCURRENT churn, MULTI-RUN (DoD literal config) (2026-06-30)
+
+> **Result: under live concurrent HTAP (the deep scans run WHILE churn + GC reclaim are active) the serve
+> stays CORRECT and still flattens the I/O cliff, with an honest concurrency tax on absolute latency.** N
+> runs of the DoD config (deep analytic scans with NO `wait $CH` — churn active underneath; GC on; mode-1
+> serve, drain-cap 1000). **construct_BAD=0 in all 17 runs, including the mode-2 verify-serve gate (~9,000
+> served, byte-identical under live reclaim).** At 64M, serve holds near-full in 6/8 runs (deep1 0.2–3.4 s vs
+> ~50 s vanilla walk = ~15–230×; median 2.84 s ≈ 18×) and degrades to the correct vanilla walk in 2/8
+> (chain-sever under live reclaim). At 4G (resident) serve is a clean ~0.27 s, no degrade.
+
+## Setup
+`integration/scripts/build_q15_multirun.sh [N]` — same fresh-boot harness as q11, but the held REPEATABLE-READ
+snapshot does warm SUM → SLEEP(25) → **three deep SUMs that run WHILE the 8-thread `oltp_update_non_index`
+churn (50 s) is STILL active** (no `wait $CH`). So GC reclaim runs continuously during the read — the
+chain-sever risk fires live, not as one post-hoc storm. deep1 (fully concurrent for the fast serve path) is
+the headline metric (SHOW PROFILES Duration; the physical-read delta is confounded by concurrent churn → not
+recorded). 17 runs: 64M vanilla×3 + serve×8 + verify-serve×3 + 4G serve×3. Logs + `q15_concurrent.csv` land
+in `integration/results/` (gate ②).
+
+## Data (deep1 latency s; served / 3000; construct_BAD)
+| config (concurrent) | median | min – max | n | served (typical) | construct_BAD |
+|---|---|---|---|---|---|
+| 64M vanilla walk | 50.81 | 48.50 – 51.03 | 3 | — (baseline) | 0 |
+| **64M serve (headline)** | **2.84** | 0.22 – 36.66 | 8 | ~2996 (6/8) · ~2200 (2/8 degrade) | 0 |
+| 64M verify-serve (gate) | 45.09 | 41.23 – 49.77 | 3 | ~2999–3000 | **0** |
+| 4G serve | 0.265 | 0.199 – 0.355 | 3 | ~2996 | 0 |
+
+**construct_BAD = 0 in every one of the 17 rows.**
+
+## Reading it
+- **Correctness under live reclaim is the headline gate.** mode-2 verify-serve walks + byte-compares every
+  consult while churn + GC run underneath, across 3 runs (~9,000 served): **construct_BAD=0**. The concurrent
+  HTAP regime — the one the Stage-D DoD literally asked for — never produces a wrong serve.
+- **64M serve, 6/8 runs = near-full serve** (served ~2996/3000, noncontig 2–3): the undo-I/O cliff is still
+  flattened — deep1 0.2–3.4 s vs ~50 s vanilla = ~15–230×. But the absolute serve latency is ~3 s, not the
+  ~0.45 s of churn-paused q11: **under concurrency the 8 churn threads contend on the small (64M) buffer
+  pool's base-table pages**, so even a near-100%-HIT serve pays buffer-pool contention. At **4G (resident)
+  that contention vanishes — serve is a clean ~0.27 s** (faster than 64M concurrent), confirming the ~3 s is
+  contention, not the serve path.
+- **2/8 runs = live chain-sever degrade** (runs 7–8: served drops to 2131–2253, noncontig 745–867, latency
+  → ~36 s): the GC reclaims an interior navigation version mid-read, the lineage chase breaks, consult MISSes,
+  the held read falls to the **correct** vanilla walk. construct_BAD=0. Live reclaim is rougher than q11's
+  post-hoc storm — a degrade can start mid-scan (run 7: deep1 3 s, but deep2/deep3 climb to 11/39 s as reclaim
+  catches up).
+- **⚠️ the script's `degraded` flag (deep1 > 2 s) over-counts here** — it flags the ~3 s near-full-serve runs
+  (which served ~2996 correctly) as "degraded". The TRUE chain-sever degrades are the **served-count drops**
+  (2/8: served ≈ 2200). In the concurrent regime read degrade by served / noncontig, not the > 2 s flag.
+- **vs q11 (churn-paused):** same ~2/8 ≈ 25% chain-sever rate, same construct_BAD=0. The differences are
+  honest concurrency effects — higher absolute serve latency (small-BP contention) and rougher mid-scan
+  degrades (live vs post-hoc reclaim). The concurrent headline is ~18× (median), not ~290×, and the win is
+  the eliminated I/O cliff (50 s → ~3 s) that survives live reclaim while never serving a wrong row.
+
+## Reproduction
+`integration/scripts/build_q15_multirun.sh 8`. Logs: `integration/results/q15_bp{64M,4G}_m{0,1,2}_cap1000_i*_{mysqld,scan,churn}.log` + `q15_concurrent.csv` + `q15_concurrent_run.log`. Run via WSL under `setsid`.
