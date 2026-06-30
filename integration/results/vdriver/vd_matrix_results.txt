@@ -1,0 +1,9 @@
+### running: van_64M (bin=/root/mysqld_vanilla bp=64M rounds=2000)
+RESULT tag=van_64M bp=64M rounds=2000 HLL=2002 deepread_s=NA alive=ALIVE correctness=WRONG(padlen=,expect4000)
+### running: vd_64M (bin=/root/mysqld_vdriver bp=64M rounds=2000)
+RESULT tag=vd_64M bp=64M rounds=2000 HLL=0 deepread_s=0.000914 alive=ALIVE correctness=WRONG(padlen=60000,expect4000)
+### running: van_4G (bin=/root/mysqld_vanilla bp=4G rounds=2000)
+RESULT tag=van_4G bp=4G rounds=2000 HLL=2000 deepread_s=0.486904 alive=ALIVE correctness=CORRECT(ORIG)
+### running: vd_4G (bin=/root/mysqld_vdriver bp=4G rounds=2000)
+RESULT tag=vd_4G bp=4G rounds=2000 HLL=0 deepread_s=0.000861 alive=ALIVE correctness=WRONG(padlen=60000,expect4000)
+===== MATRIX DONE =====

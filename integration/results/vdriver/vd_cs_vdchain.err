@@ -1,0 +1,18 @@
+2026-06-30T14:38:42.543938Z 0 [System] [MY-010116] [Server] /root/mysqld_vdriver (mysqld 8.0.17) starting as process 6921
+2026-06-30T14:38:42.545232Z 0 [Warning] [MY-013242] [Server] --character-set-server: 'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+2026-06-30T14:38:42.545237Z 0 [Warning] [MY-013244] [Server] --collation-server: 'utf8_general_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+2026-06-30T14:38:43.038776Z 0 [Warning] [MY-010068] [Server] CA certificate ca.pem is self signed.
+2026-06-30T14:38:43.046367Z 0 [System] [MY-010931] [Server] /root/mysqld_vdriver: ready for connections. Version: '8.0.17'  socket: '/root/vd.sock'  port: 3306  Source distribution.
+2026-06-30T14:38:43.195535Z 0 [ERROR] [MY-011300] [Server] Plugin mysqlx reported: 'Setup of socket: '/root/vDriver/mysql/mysql-server-8.0/run/mysqlx.sock' failed, can't create lock file /root/vDriver/mysql/mysql-server-8.0/run/mysqlx.sock.lock'
+2026-06-30T14:38:43.195557Z 0 [System] [MY-011323] [Server] X Plugin ready for connections. Bind-address: '::' port: 33060
+2026-06-30T14:38:43.421292Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 0
+2026-06-30T14:38:45.754825Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 4
+2026-06-30T14:38:47.091871Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 3
+2026-06-30T14:38:48.437549Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 6
+2026-06-30T14:38:49.777909Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 2
+2026-06-30T14:38:51.110403Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 3
+2026-06-30T14:38:52.447925Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 3
+2026-06-30T14:38:53.784270Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 3
+2026-06-30T14:38:55.121978Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 5
+2026-06-30T14:38:56.461491Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 5
+2026-06-30T14:38:57.817167Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 6

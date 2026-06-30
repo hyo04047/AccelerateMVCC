@@ -1,0 +1,20 @@
+2026-06-30T14:38:17.292842Z 0 [System] [MY-010116] [Server] /root/mysqld_vanilla_chainlog (mysqld 8.0.17) starting as process 6759
+2026-06-30T14:38:17.294120Z 0 [Warning] [MY-013242] [Server] --character-set-server: 'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
+2026-06-30T14:38:17.294125Z 0 [Warning] [MY-013244] [Server] --collation-server: 'utf8_general_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+2026-06-30T14:38:17.641854Z 0 [Warning] [MY-010068] [Server] CA certificate ca.pem is self signed.
+2026-06-30T14:38:17.649162Z 0 [System] [MY-010931] [Server] /root/mysqld_vanilla_chainlog: ready for connections. Version: '8.0.17'  socket: '/root/vd.sock'  port: 3306  Source distribution.
+2026-06-30T14:38:17.797895Z 0 [ERROR] [MY-011300] [Server] Plugin mysqlx reported: 'Setup of socket: '/root/vDriver/mysql/mysql-server-8.0/run/mysqlx.sock' failed, can't create lock file /root/vDriver/mysql/mysql-server-8.0/run/mysqlx.sock.lock'
+2026-06-30T14:38:17.797909Z 0 [System] [MY-011323] [Server] X Plugin ready for connections. Bind-address: '::' port: 33060
+2026-06-30T14:38:18.156855Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 0
+2026-06-30T14:38:20.520390Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 100
+2026-06-30T14:38:21.863670Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 200
+2026-06-30T14:38:23.231141Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 300
+2026-06-30T14:38:24.577777Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 400
+2026-06-30T14:38:25.911167Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 500
+2026-06-30T14:38:27.231778Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 600
+2026-06-30T14:38:28.567670Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 700
+2026-06-30T14:38:29.890179Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 800
+2026-06-30T14:38:31.216137Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 900
+2026-06-30T14:38:32.562382Z 11 [Warning] [MY-011825] [InnoDB] [HYU_CHAIN]: 1000
+2026-06-30T14:38:34.588238Z 23 [System] [MY-013172] [Server] Received SHUTDOWN from user root. Shutting down mysqld (Version: 8.0.17).
+2026-06-30T14:38:35.701614Z 0 [System] [MY-010910] [Server] /root/mysqld_vanilla_chainlog: Shutdown complete (mysqld 8.0.17)  Source distribution.

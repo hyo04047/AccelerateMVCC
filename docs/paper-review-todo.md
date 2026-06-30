@@ -28,7 +28,22 @@
 
 ## 3. 남은 일 = Tier 3 (새 측정 필요) — 우선순위순
 
-### 3a. ⭐ vDriver head-to-head (최대 임팩트, 사용자 핵심 요청)
+### 3a. ⭐ vDriver head-to-head — **DONE (세션 16, 2026-06-30)** → 상세 `docs/phase3-vdriver.md`, raw `integration/results/vdriver/`
+- **결과**: vDriver MySQL 8.0.17 fork을 same-hardware에 네이티브 빌드 성공(gcc-13 + 로컬 OpenSSL 1.1.1w + boost 1.69;
+  build-config 3 + 표준헤더 7파일 패치, vDriver 로직 불변) → **"toolchain 갭으로 precluded" 우려 반증, fallback 불요.**
+  vanilla-8.0.17도 대조군 빌드. **vDriver native 메트릭(held RO view의 chain walk loop_cnt)**: 누적 churn 0→1000서
+  **vanilla = 0,100,…,1000 (linear) vs vDriver = ≤6 (bounded)**, 둘 다 snapshot 값 정확(11/11 ORIG) = vDriver SIGMOD'20
+  헤드라인 same-hardware 재현. vanilla 64M held deep read **5.0s cliff**(4G 0.49s) = 우리 8.4.10 cliff cross-version 보강.
+  논문 반영: **paper-en §5.7 신규 + §6.1 + References [1] 정확 서지**(Kim et al., SIGMOD'20, DOI 10.1145/3318464.3389714).
+- ⚠️ **vDriver envelope caveat**(논문 §5.7 Note로만, 신중): point-read(id=1, narrow table)엔 정확하나 **넓은 행·secondary
+  index·full-table held scan엔 corrupt/crash**(같은 하니스로 vanilla는 전부 정확 → vDriver-side; 단 misconfig 배제 못함).
+  사용자 결정 = "신중한 방법론 각주로만". 비교는 vDriver 검증 envelope 안에서만 수치 보고.
+- ⚠️ **provenance 교정 필요(사용자 확인)**: 사용자 "vDriver와 같은 연구실 아님·관계 없음" → paper-en §1.2/§2.4/§6.1의
+  "introduced under the group's guidance"·"same group/family" 표현이 사실과 불일치. References "same-group" 문구는 교정함.
+  나머지 provenance 문장은 사용자 확인 후 수정(2023 원 졸프 때 지도 여부 등). **deadzone 차용 attribution 자체는 유지.**
+
+<details><summary>(원래 계획 — 참고용, 위로 대체됨)</summary>
+
 - **코드 있음**: github.com/hyu-scslab/vDriver (한양대 SCSLab). **이미 `/root/vDriver`에 clone됨(1.1GB, WSL 잔존)**.
   MySQL **8.0.17** fork(`/root/vDriver/mysql/mysql-server-8.0`, 842MB) + 그들 sysbench(`mysql/sysbench`) + 벤치
   스크립트(`mysql/script/run_init.py`·`run_11.py`·`calc_chain.py`, metric=version chain length CDF=우리 ⑤ 대응).
@@ -44,6 +59,7 @@
 - **비교 측정(빌드 성공 시)**: vDriver MySQL vs 우리 AccelerateMVCC를 같은 held-read 벤치(q11식: write churn + held
   deep read, BP sweep)에 → latency(vDriver는 짧아진 chain walk vs 우리 serve-skip)·chain-length/memory 비교.
   버전 차이(8.0.17 vs 8.4.10)는 documented confound.
+</details>
 
 ### 3b. 가벼운 측정 (확실한 win, vDriver와 독립 — 먼저 해도 됨)
 - **GC-on memory+speedup 공존**: 현재 §5.3(memory)=GC-on, §5.4/5.5(speedup)=GC-off로 분리됨. GC-on 한 run에서

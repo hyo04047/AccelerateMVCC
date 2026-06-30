@@ -64,12 +64,12 @@ small ones) would vanish. This is our starting point.
 
 ### 1.2 This work's position and related work
 
-This work shares its motivating problem—chain growth under LLTs—with a line of research from the same group, but
+This work shares its motivating problem—chain growth under LLTs—with a related line of research, but
 it does not extend or improve those systems; it is an **independently developed project**. Among the related
 work, vDriver [1] detects the *dead zone* between consecutive active read views—versions no active view can
 see—and reclaims it from the middle of the chain, reaching exactly the region that purge, pinned by an LLT,
 cannot. DIVA [2] bounds chain length logarithmically with an interval tree. Our dead-zone detection is
-**borrowed and adapted from vDriver** (introduced under the group's guidance), which we attribute explicitly;
+**borrowed and adapted from vDriver** [1], which we attribute explicitly;
 the rest of the design—lock-free in-memory version-chain caching, the non-authoritative derived-served model,
 and the superset-safety result below—is our own.
 
@@ -191,7 +191,7 @@ Keeping the in-memory cache compact requires reclaiming versions that are no lon
 situation where an LLT stalls purge, tail-only reclamation (oldest first) is powerless. vDriver [1]
 detects the *dead zone*—the versions between two consecutive active read views that no active view needs—and
 reclaims them from the middle of the chain. We **borrow and adapt** this dead-zone detection for the cache's
-reclamation (the part introduced under the group's guidance, which we attribute). As noted in §1.2, however,
+reclamation (which we attribute to vDriver [1]). As noted in §1.2, however,
 vDriver owns its version store, so a somewhat-stale dead zone is harmless, whereas we *serve*
 non-authoritatively, so reusing the same reclamation as is could produce a wrong serve. Closing that gap is the
 superset-safety result of §3.4.
@@ -530,6 +530,35 @@ served), and ephemeral-cache rebuild after a kill -9 mid-load (crash recovery). 
 standalone sanitizers (UAF/leak/race 0), a full-mysqld AddressSanitizer run is clean—zero reports under concurrent
 drainer ‖ consult ‖ serve ‖ GC ‖ teardown stress (full-mysqld TSan is a documented residual, §7).
 
+### 5.7 Comparison with vDriver (same hardware)
+
+To compare against vDriver [1] by measurement rather than citation, we built its MySQL 8.0.17 InnoDB fork from
+source on the same machine and ran it against a vanilla 8.0.17 build. (Building the 2019 source under gcc-13
+required only a bounded set of toolchain-gap fixes—a local Boost 1.69 and OpenSSL 1.1.1, a CMake-4 policy flag,
+and standard-header includes in seven files—none of which touch vDriver's version-chain logic; details and raw
+outputs are in `docs/phase3-vdriver.md` and `integration/results/vdriver/`.) Using vDriver's own metric—the
+version-chain walk length of a held read-only view, the quantity it logs—under an LLT with accumulating
+committed churn, the vanilla chain grows linearly with the LLT (walk length 100, 200, …, 1000 as churn
+accumulates) while vDriver's stays bounded (≤ 6 throughout), and both return the correct snapshot version. This
+reproduces vDriver's published headline on our hardware. The vanilla build also reproduces the undo-I/O cliff
+independently of our 8.4.10 numbers: a held deep read costs 5.0 s at a 64 MB buffer pool versus 0.49 s at 4 GB.
+
+The comparison places the three designs on one workload family. Vanilla walks an unbounded chain—the cliff.
+vDriver bounds the chain by reclaiming dead-zone versions *inside the engine's version store*, then still walks
+the (short) on-disk chain. AccelerateMVCC serves the visible version from an external in-memory cache (walk
+length zero) with no engine modification and the no-wrong-serve guarantee of §3. All three remove the cliff;
+the distinction is architectural position and the correctness guarantee, not raw speed in vDriver's point-read
+regime. The version difference (vDriver 8.0.17 vs our 8.4.10) is a documented confound; the chain-length
+mechanism is version-independent.
+
+> **Note (scope of the vDriver comparison).** We restrict this measurement to the workload vDriver was validated
+> for—a read-only point read, its own chain-length metric. When we drove its prototype outside that envelope—a
+> held *full-table* analytical scan over wider rows, or a secondary-indexed table under indexed-column churn—its
+> reconstruction returned a corrupted row image or aborted in the version-build path on our setup, while the
+> identical harness on the vanilla build was correct throughout. We did not pursue those shapes on vDriver and
+> cannot exclude a configuration we did not replicate; we therefore report numbers only inside vDriver's
+> validated regime.
+
 ## 6. Related Work
 
 ### 6.1 Reclaiming version chains under LLTs (a related line)
@@ -546,8 +575,9 @@ whether one improves the other but **architectural position**: those systems own
 dead zone is harmless, whereas we serve non-authoritatively, so over-pruning would be a wrong serve—and the
 superset-safety result of §3.4 that prevents it is needed by our design and unnecessary for the owned-store ones.
 That zero-engine-ownership position is itself the practical significance: the design ports to any disk-based MVCC
-engine without touching its storage. (Exact bibliographic details for vDriver, DIVA, and vWeaver are to be
-confirmed against the source papers; see References.)
+engine without touching its storage. A same-hardware measured comparison with vDriver—reproducing its bounded
+version-chain headline against a vanilla build, and placing the three designs on one workload family—is in §5.7.
+(Bibliographic details for DIVA and vWeaver are to be confirmed against the source papers; see References.)
 
 ### 6.2 Position relative to the buffer pool and caching
 
@@ -628,11 +658,10 @@ invariant (TLA+).
 
 ## References
 
-> Bibliographic details for the same-group systems (vDriver, DIVA, vWeaver) are to be confirmed against the source
-> papers before any submission; entries below give the known venue/year with a placeholder where a detail is
-> uncertain.
+> The vDriver entry is the confirmed citation. Bibliographic details for DIVA and vWeaver are still to be
+> confirmed against the source papers before any submission (venue/year known, placeholder where uncertain).
 
-[1] vDriver — *Long-lived Transactions Made Less Harmful.* SIGMOD 2020. [authors to confirm]
+[1] Jong-Bin Kim, Hyunsoo Cho, Kihwang Kim, Jaeseon Yu, Sooyong Kang, and Hyungsoo Jung. *Long-lived Transactions Made Less Harmful.* SIGMOD 2020. DOI 10.1145/3318464.3389714.
 
 [2] DIVA. VLDB 2022. [title and authors to confirm]
 
