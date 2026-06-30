@@ -14,8 +14,9 @@ In hybrid transactional/analytical (HTAP) workloads, a single long-lived transac
 view that stalls InnoDB's purge, so MVCC version chains—the undo-log chains—grow unbounded for as long as the
 LLT lives. An analytical read under that snapshot must walk these ever-longer chains, reconstructing each
 visible version by replaying undo deltas and pulling many undo pages into the buffer pool. When the buffer pool
-is small this produces an *undo-I/O cliff*: in our integrated setup a held deep read costs 0.8 s at a 4 GB
-buffer pool but 123 s at 64 MB, with `row_search_mvcc` and related reconstruction accounting for ~45 % of CPU.
+is small this produces an *undo-I/O cliff*: in our integrated setup a held deep read costs about 0.8 s at a 4 GB
+buffer pool but about 123 s at 64 MB (a single illustrative run across buffer-pool sizes; §5.2 reports the
+multi-run medians), with `row_search_mvcc` and related reconstruction accounting for ~45 % of CPU.
 
 We present **AccelerateMVCC**, a derived, ephemeral, *non-authoritative* in-memory cache that keeps, per row,
 the metadata and a small in-page image of each version, so that a reader's visible version can be located and—
@@ -27,11 +28,13 @@ over-reclamation to a cache miss that falls back to InnoDB's correct walk. We ar
 invariant semi-formally through four firewalls on the hit path.
 
 Integrated into InnoDB 8.4.10, AccelerateMVCC flattens held-read latency across buffer-pool sizes (≈290× median
-at 64 MB), keeps cache memory bounded by the live-transaction window rather than the dataset (its advantage over
-InnoDB's History List Length growing linearly with LLT age: 19.5×/40.5×/81.9× at 15/30/60 s), and serves
-byte-identical answers in every experiment (construct_BAD = 0), generalizing to composite and string keys,
-secondary indexes, savepoints, crash recovery, and the standard TPC-C benchmark. We are equally explicit about
-where the cache does *not* help—when base-table I/O, not undo reconstruction, is the bottleneck.
+at 64 MB, with a 25 % tail that degrades to the correct walk—§5.2), keeps cache memory bounded by the
+live-transaction window rather than the dataset (its advantage over InnoDB's History List Length growing
+linearly with LLT age: 19.5×/40.5×/81.9× at 15/30/60 s), and serves answers that are byte-identical to the
+vanilla walk on every verified serve (construct_BAD = 0—the count of served records whose bytes differed from
+the vanilla reconstruction, here zero throughout), generalizing to composite and string keys, secondary
+indexes, savepoints, crash recovery, and the TPC-C transaction mix. We are equally explicit about where the
+cache does *not* help—when base-table I/O, not undo reconstruction, is the bottleneck.
 
 ## 1. Introduction
 
@@ -49,8 +52,9 @@ Reading deeply under that same snapshot is then expensive. For each row, InnoDB 
 replaying undo deltas top-down to reconstruct the visible version. The cost is acute at small buffer pools,
 where the undo pages needed for reconstruction are fetched from disk again and again—an *undo-I/O cliff*—and the
 fetched pages pollute the buffer pool, dragging down concurrent OLTP. In our integrated setup, a held deep read
-over a churned table costs about 0.8 s when a 4 GB buffer pool holds the working set, but about 123 s at 64 MB,
-and reconstruction dominates CPU (~45 %).
+over a churned table costs about 0.8 s when a 4 GB buffer pool holds the working set, but about 123 s at 64 MB
+(a single illustrative run; the multi-run medians, ≈1.1 s and ≈132 s, are in §5.2), and reconstruction dominates
+CPU (~45 %).
 
 Crucially, this cost is a property of the *storage form*, not of the algorithm. What a reader needs—which
 version is visible, and its contents—is small, but it is scattered across the undo log as deltas, forcing
@@ -62,9 +66,9 @@ small ones) would vanish. This is our starting point.
 
 This work shares its motivating problem—chain growth under LLTs—with a line of research from the same group, but
 it does not extend or improve those systems; it is an **independently developed project**. Among the related
-work, vDriver (SIGMOD '20) detects the *dead zone* between consecutive active read views—versions no active view
-can see—and reclaims it from the middle of the chain, reaching exactly the region that purge, pinned by an LLT,
-cannot. DIVA (VLDB '22) bounds chain length logarithmically with an interval tree. Our dead-zone detection is
+work, vDriver [1] detects the *dead zone* between consecutive active read views—versions no active view can
+see—and reclaims it from the middle of the chain, reaching exactly the region that purge, pinned by an LLT,
+cannot. DIVA [2] bounds chain length logarithmically with an interval tree. Our dead-zone detection is
 **borrowed and adapted from vDriver** (introduced under the group's guidance), which we attribute explicitly;
 the rest of the design—lock-free in-memory version-chain caching, the non-authoritative derived-served model,
 and the superset-safety result below—is our own.
@@ -126,14 +130,15 @@ middle-of-chain reclamation without a hot mutex.
 ### 1.5 Results in brief
 
 Integrated into InnoDB 8.4.10, AccelerateMVCC removes the undo-I/O cliff of held analytical reads, improving
-latency by about 290× (median) over the vanilla walk at a 64 MB buffer pool. About one run in four degrades to
-the correct vanilla walk when GC reclaims navigation versions in real time under a small buffer pool—still
-correct, performance-only. Cache memory stays bounded over the LLT's lifetime, so its advantage over InnoDB's
-History List Length grows linearly with LLT age (19.5×/40.5×/81.9× at 15/30/60 s). Every served answer is
-byte-identical to the vanilla walk (construct_BAD = 0), and this holds for composite and string keys,
-secondary-index reads, savepoint rollback, crash recovery, and the standard TPC-C benchmark. We are equally
-explicit about the precise conditions under which the cache helps—when undo reconstruction, not base-table I/O,
-is the bottleneck.
+latency by about 290× (median) over the vanilla walk at a 64 MB buffer pool. About one serve run in four degrades
+to the correct vanilla walk when GC reclaims navigation versions in real time under a small buffer pool, so the
+mean over the eight runs is ≈4×—the gain is honestly a median with a 25 % degrade tail (§5.2)—and every degrade
+is still correct, performance-only. Cache memory stays bounded over the LLT's lifetime, so its advantage over
+InnoDB's History List Length grows linearly with LLT age (19.5×/40.5×/81.9× at 15/30/60 s). Every verified serve
+is byte-identical to the vanilla walk (construct_BAD = 0), and this holds for composite and string keys,
+secondary-index reads, savepoint rollback, crash recovery, and the TPC-C transaction mix. We are equally explicit
+about the precise conditions under which the cache helps—when undo reconstruction, not base-table I/O, is the
+bottleneck.
 
 ## 2. Background and Motivation
 
@@ -170,8 +175,10 @@ With chains long, a deep analytical read under the LLT's snapshot triggers the s
 over the full length of each row's chain. This cost is sensitive to the buffer-pool size. In our integrated setup,
 after applying write-heavy churn to a 1,000-row table, a held snapshot reading the whole table deeply costs about
 0.8 s at a 4 GB buffer pool (table and undo resident) but about 123 s at 64 MB (undo pages fetched from disk
-repeatedly)—a cliff of more than 150×. Under this condition row_search_mvcc and the reconstruction path take ~45 %
-of CPU, and the fetched undo pages pollute the buffer pool, lowering concurrent OLTP throughput as well.
+repeatedly)—a cliff of more than 150×. (These figures are a single illustrative sweep across buffer-pool sizes;
+§5.2's multi-run medians for the 4 GB and 64 MB end points are ≈1.1 s and ≈132 s.) Under this condition
+row_search_mvcc and the reconstruction path take ~45 % of CPU, and the fetched undo pages pollute the buffer
+pool, lowering concurrent OLTP throughput as well.
 
 The key observation, again, is that the cost comes from the *storage form*, not the algorithm. The information a
 reader needs is small, but its delta encoding in the on-disk undo log forces reconstruction and page I/O on every
@@ -181,7 +188,7 @@ reconstruction CPU while a small one is spared the undo I/O and pollution.
 ### 2.4 The borrowed building block: vDriver's dead zone (attributed)
 
 Keeping the in-memory cache compact requires reclaiming versions that are no longer needed—but in exactly the
-situation where an LLT stalls purge, tail-only reclamation (oldest first) is powerless. vDriver (SIGMOD '20)
+situation where an LLT stalls purge, tail-only reclamation (oldest first) is powerless. vDriver [1]
 detects the *dead zone*—the versions between two consecutive active read views that no active view needs—and
 reclaims them from the middle of the chain. We **borrow and adapt** this dead-zone detection for the cache's
 reclamation (the part introduced under the group's guidance, which we attribute). As noted in §1.2, however,
@@ -202,7 +209,7 @@ superset-safety result of §3.4.
 > over-prune degrades only to a safe miss→walk).
 
 AccelerateMVCC is an in-memory secondary index keyed by (table_id, clustered primary key). The mapping from a key
-to its version-chain header is an O(1) cuckoo hash (Microsoft Kuku). Each header points at an epoch-bucketed
+to its version-chain header is an O(1) cuckoo hash (Microsoft Kuku [6]). Each header points at an epoch-bucketed
 *interval list* of that row's versions. Each version node holds the writer transaction id that created it, the id
 of the immediately preceding version (version_trx-id), undo-locator metadata, and a small in-page image of the
 row—a verbatim copy of the full physical record, in-page and below a size cap.
@@ -249,22 +256,41 @@ retains is proportional to the *active-transaction window* and independent of th
 > never a wrong serve. Purge, pinned at the LLT's floor, cannot reach this in-middle zone.
 
 The tension of §1.2 and §2.4—that a derived cache, because it serves, turns over-reclamation into a wrong
-serve—is excluded *structurally*. The idea is to keep the dead zone a **conservative superset** of the active read
-views: any version that *might* be needed by some active view is never placed in the reclamation set (the boundary
-is always over-approximated on the safe side).
+serve—is excluded *structurally* by how the dead zone is built. The argument has one hypothesis we state
+explicitly, because everything rests on it: **the registry of active read views (§3.3) is a superset of the
+truly-active views.** This holds for three reasons, each failing only in the safe direction. (i) A view publishes
+its boundary into the registry under the same trx_sys mutex InnoDB already holds when it opens the view, *before*
+the view is usable for any read—so an ADD is reliable and ordered happens-before the view can serve a query.
+(ii) Removal on view close is lazy and can only over-retain, never drop a still-live view. (iii) When the
+registry's fixed-size pool overflows, it falls back to a conservative floor that keeps *more* versions, never
+fewer.
 
-Under this invariant, for a single version V and a single read view, reclamation has only two outcomes. (i) If V
+From this registry the dead zone is the set of in-middle holes between consecutive views, and its boundaries are
+constructed conservatively. Each hole's right edge is the *next* view's up_limit_id, which is at most the exact
+active-id edge, so each constructed hole is a subset of the true dead region—it errs toward keeping versions. The
+{begin, up} pair of each view is read torn-free through a per-slot seqlock: a torn read could widen a hole and
+over-prune, so a detected tear forces the conservative reading. The construction is also bounded (clamped at a
+fixed number of holes) and degrades to the floor of (iii) under overflow; both drop holes only in the
+under-reclaim direction. The net effect is the invariant we need: the **keep set is a conservative superset** of
+every version any active view might need.
+
+Given that invariant, for a single version V and a single read view reclamation has only two outcomes. (i) If V
 is needed by no active view, reclaiming it is harmless. (ii) If V is needed by some active view, then by the
-superset definition V is never in the reclamation set at all. The dangerous third case—"reclaim a needed V"—arises
-only under under-approximation, which the superset invariant rules out. So even when reclamation severs a lineage
-link in the cache, it has either dropped a version that reader did not need, or left a miss at the severed point
-that sends consult to the vanilla walk. Neither is a wrong serve. That is: **under the superset invariant, every
+superset construction V is never in the reclamation set. The dangerous third case—reclaiming a needed V—arises
+only under under-approximation, which the construction above rules out. So even when reclamation severs a lineage
+link in the cache, it has either dropped a version that reader did not need or left a miss at the severed point
+that sends consult to the vanilla walk. Neither is a wrong serve: **under the superset invariant, every
 over-reclamation is performance-only (miss→walk), and there is no path by which reclamation breaks correctness.**
 
-This result is the work's central contribution. Owned-store designs like vDriver and DIVA need no such result,
-because for them a stale dead zone is harmless; a non-authoritative, serving, derived cache needs the superset for
-correctness, since for it over-pruning *is* a wrong serve. And because the superset is maintained without any new
-lock (via the A+B sources of §3.3), it licenses safe middle-of-chain reclamation without a hot mutex.
+It is worth telling two things apart here. The *superset boundary itself*—keep what any active view needs,
+reclaim the in-middle dead zone—is essentially vDriver's dead-zone correctness condition, adapted from it and
+attributed (§2.4). What is new is the **serving-reduction**: for a non-authoritative cache that *serves*
+reconstructed records, that same boundary is exactly what turns every over-reclamation into a safe miss rather
+than a wrong answer. Owned-store designs like vDriver [1] and DIVA [2] need no such result—for them a stale dead
+zone is merely policy—precisely because they never serve under an external authority. This serving-reduction,
+not the boundary, is the central contribution. And because the superset is maintained without any new lock (the
+A+B sources of §3.3 piggyback on locks InnoDB already holds), it licenses safe middle-of-chain reclamation
+without a hot mutex.
 
 ### 3.5 The no-wrong-serve invariant: four firewalls
 
@@ -295,12 +321,15 @@ which is correct. The serve result is therefore one of {a hit that is provably c
 vanilla-correct}, and **a wrong row is unreachable in the result space.** The argument is a semi-formal,
 code-grounded hand argument (machine checking is future work, §7); it is also supported empirically by the mode-2
 verify-serve of the evaluation, which compares every served record against the vanilla walk byte-for-byte
-(construct_BAD = 0 throughout).
+(construct_BAD = 0 throughout). Finally, F1–F4 secure the serving path *given a correctly-bounded chain*; the one
+case they cannot catch on their own—a strictly-interior over-prune bridged by a cross-generation version, which
+F3's link-gap check cannot see—is closed not by a firewall but by §3.4, which forbids GC from removing that
+version in the first place. §3.4 is therefore a premise of F3's soundness, not a parallel layer.
 
 ### 3.6 Concurrency model
 
-The hot path (reads and inserts) is lock-free. Unlink consistency is maintained with marked pointers (Harris), and
-safe memory reclamation with per-traversal epoch-based reclamation (EBR). Because a single off-latch drainer is
+The hot path (reads and inserts) is lock-free. Unlink consistency is maintained with marked pointers (Harris [4]),
+and safe memory reclamation with per-traversal epoch-based reclamation (EBR [5]). Because a single off-latch drainer is
 the only mutator of the index (the single-producer invariant), the versions of a row accumulate at the head in
 the commit order the latch serialized, append-only; and GC runs on a separate leaf-domain thread that does not
 touch the head epoch, so it is disjoint from the drainer's appends.
@@ -308,9 +337,13 @@ touch the head epoch, so it is disjoint from the drainer's appends.
 Serve's memory safety rests on the EBR guard, taken before consult's first dereference and spanning through the
 copy of the image into the caller's buffer: because reclamation stamps a higher epoch only after unlinking, a
 guard-protected traversal never reaches a freed node, and the served record is copied into the caller's buffer so
-no raw pointer escapes the facade. The mode-1 (serve-only) ship path, which has no self-verification because it
-skips the walk, adds a gc_generation second firewall (catching a reclaim-vs-probe race) and a 1-in-N walk-audit on
-top of the structural firewalls of §3.5.
+no raw pointer escapes the facade. The mode-1 (serve-only) ship path skips the walk and has no per-row self-check,
+so its no-wrong-serve property rests entirely on F1–F4 and the superset of §3.4. Two runtime mechanisms back it
+but are *not* relied on for soundness, since each can only demote a hit to a miss: a gc_generation gate and a
+1-in-N walk-audit. The gate is a race detector—EBR prevents use-after-free, but a concurrent retire can still
+logically prune an interior link of the chain between the guard's snapshot and the hit's return, so the gate
+re-checks gc_generation at the hit site and demotes to a miss on any change—and the audit is a sampling tripwire
+that compares served records against the vanilla walk.
 
 ## 4. Implementation
 
@@ -341,8 +374,8 @@ compares bytes, and substitutes the cache record only on a match—re-verifying 
 as a correctness gate. **Mode 1 (serve-only, the ship performance path):** it skips the walk and returns the cache
 record. Mode 1 has no self-check, so beyond the structural firewalls of §3.5 it is backed by a gc_generation
 second firewall and a 1-in-N walk-audit (sampling against the vanilla walk and tripping on a mismatch). The
-dead-zone GC, the drain cap (the ⑥ stabilizer), the image cap, and the cuckoo capacity (kuku_log2) are likewise
-environment-tunable.
+dead-zone GC, the drain cap (the held-read-payoff stabilizer), the image cap, and the cuckoo capacity (kuku_log2)
+are likewise environment-tunable.
 
 ### 4.4 Vendoring
 
@@ -363,17 +396,35 @@ verify-serve is byte-identical to the vanilla walk). Headline configurations are
 as median with min/max and a degrade rate, not as a single run; raw logs and CSVs are archived under
 integration/results/.
 
-### 5.2 The ⑥ held-read serve payoff (headline)
+The platform is a single workstation (Table 1). We note up front that this is a single-platform, single-author
+setup, and that the undo-I/O cliff's magnitude depends on the storage medium—so the absolute cliff numbers are one
+platform's instance of the effect, not a universal constant. Reads run at REPEATABLE READ.
+
+| Component | Configuration |
+|---|---|
+| CPU | AMD Ryzen 7 9800X3D (8 cores / 16 threads) |
+| RAM | ≈30 GB (allocated to the WSL2 guest) |
+| Storage | NVMe SSD (host), exposed as an ext4 virtual disk to WSL2 |
+| OS | Ubuntu on WSL2, Windows 11 host |
+| DBMS | MySQL 8.4.10, built with gcc-13 |
+| Isolation | REPEATABLE READ |
+| InnoDB | buffer pool 64 MB / 256 MB / 4 GB (varied); `innodb_flush_log_at_trx_commit = 0`; redo-log capacity 8 GB; 4 purge threads |
+| Drivers | sysbench `oltp_*` and sysbench-tpcc; a held REPEATABLE-READ snapshot issues the analytical read |
+
+> **Table 1.** Evaluation platform.
+
+### 5.2 The held-read serve payoff (headline)
 
 We compare a held analytical read under the vanilla walk (mode 0) and under serve (mode 1, GC on with a drain
-cap). With churn paused before measurement (N = 16):
+cap). With churn paused before measurement (serve N = 8 at each buffer pool; vanilla baselines N = 3):
 
 ![Figure 3](figs/fig3-cliff.svg)
 
 > **Figure 3.** As the buffer pool shrinks (4 GB → 256 MB → 64 MB), the vanilla walk climbs an undo-I/O cliff
-> (0.8 s → 76 s → 123 s) while serve stays flat near 0.16 s, independent of buffer-pool size—≈290× at 64 MB.
-> (The curve is the single-run BP sweep that isolates the mechanism; the table below gives the multi-run
-> medians, N = 16, for the 4 GB and 64 MB end points.)
+> (0.8 s → 76 s → 123 s) while serve stays flat near 0.16 s, independent of buffer-pool size—≈775× at 64 MB.
+> (The curve is a single-run BP sweep that isolates the mechanism, so its 64 MB gap is the single-run ≈775×; the
+> table below reports the multi-run medians—N = 8 serve runs—whose 64 MB median ratio is ≈290×, with a 25 %
+> degrade tail.)
 
 | Buffer pool | Vanilla walk (median) | Serve (median) | Speedup | Degrade |
 |---|---|---|---|---|
@@ -384,14 +435,17 @@ At 64 MB serve is about 290× (median) faster than the vanilla walk; the mechani
 (physical reads drop from ≈1.4 M under vanilla to ≈4 k under serve). In 2 of the 8 serve runs, however, GC
 reclaiming a navigation version in real time severs the chain and latency degrades to 87–121 s—but consult then
 returns a miss and falls back to the correct vanilla walk, so **construct_BAD = 0 holds**; this is a
-performance-only event, and the drain cap stabilizes the degrade rate to ≈1/4. At 4 GB (resident) there is no undo
-I/O, so only the reconstruction CPU is saved and the gain is a smaller ≈2.4×. In the concurrent-HTAP regime
-(reading while churn runs—the literal DoD configuration, N = 17) serve is ≈18× (median), and **mode-2 verify-serve
-stays construct_BAD = 0 even under concurrent GC reclamation** (≈9,000 served, all byte-identical); the higher
-absolute latency than in the churn-paused case is the contention of the churn threads on base-table pages in a
-small buffer pool.
+performance-only event, and the drain cap stabilizes the degrade rate to ≈1/4. Because of those two degrades the
+eight-run serve sample is bimodal—median 0.454 s, but mean ≈26 s and max 121 s—so the payoff is honestly a
+median ≈290× with a 25 % tail back on the cliff, not a uniform ≈290×; an application that cannot tolerate a
+1-in-4 chance of a ~100 s read should treat the median as a best case. At 4 GB (resident) there is no undo I/O,
+so only the reconstruction CPU is saved and the gain is a smaller ≈2.4×. In the concurrent-HTAP regime (reading
+while the churn is still live, N = 8 serve runs of 17 total across configs) serve is ≈18× (median), and **mode-2
+verify-serve stays construct_BAD = 0 even under concurrent GC reclamation** (≈9,000 served, all byte-identical);
+the higher absolute latency than in the churn-paused case is the contention of the churn threads on base-table
+pages in a small buffer pool.
 
-### 5.3 The ⑤ memory bound
+### 5.3 The memory bound
 
 Under an LLT plus concurrent HTAP readers, we compare the number of versions the cache retains (live_versions)
 with InnoDB's History List Length (HLL) (realistic full table, N = 5):
@@ -412,8 +466,9 @@ with InnoDB's History List Length (HLL) (realistic full table, N = 5):
 The cache's live_versions stays bounded at ≈7 k regardless of LLT duration, while InnoDB's HLL grows linearly with
 the LLT, so the ratio grows linearly with LLT age (consistent across all 15 runs). The 0-reader control is 0.9×:
 with no in-middle gap the cache tracks InnoDB—the advantage comes entirely from the gap that concurrent read-view
-readers create (§3.3). This demonstrates, in integration, the ⑤ property that memory is proportional to the
-live-transaction window and independent of the dataset.
+readers create (§3.3). This demonstrates, in integration, the property that cache memory is proportional to the
+live-transaction window and independent of the dataset. (The control's 0.9× is expected, not a regression: with
+no concurrent reader there is no in-middle gap to reclaim, so the cache simply tracks InnoDB.)
 
 ### 5.4 Effective speedup
 
@@ -427,9 +482,10 @@ delete/insert (miss-inducing) pattern (GC off, N = 3):
 | 64 MB | 4.25 s | 0.147 s | **≈29×** | 99.5–99.8 % |
 
 The held analytical reader hits ≥ 99.5 % even under delete+reinsert churn, because its consistent snapshot
-predates the churn and so needs only the original versions, which are cached (the previously reported "22 % miss"
-was the short readers near the chain head—a population the cache does not target). At the I/O-bound 64 MB, undo
-reads drop from 25–33 k to ≈450, for ≈29×.
+predates the churn and so needs only the original versions, which are cached. (One might expect the
+delete+reinsert churn to cause misses; it does, but only for short readers near the chain head, whose snapshot is
+recent—not for the held analytical reader, whose snapshot predates the churn. The cache targets the latter.) At
+the I/O-bound 64 MB, undo reads drop from 25–33 k to ≈450, for ≈29×.
 
 ### 5.5 Standard benchmark: TPC-C
 
@@ -462,7 +518,9 @@ at 64 MB mode-0 and mode-1 read about the same (≈245 k), because a large TPC-C
 is dominated by **base-table page I/O**, so even though serve eliminates undo reconstruction (CPU plus undo I/O)
 for the ≈64 % hit rows, it cannot remove the base-table I/O floor. The gain is thus mostly the saved
 reconstruction CPU (visible even at 4 GB resident, 1.3×). This is not a defect but an honest boundary on where the
-cache helps (§7).
+cache helps (§7). We measure one held STOCK aggregation here, not the full CH-benCHmark query set, so "TPC-C" in
+this paper means the TPC-C dataset and transaction mix under a single analytical-query shape, not full-benchmark
+coverage.
 
 ### 5.6 Workload breadth and sanitizers
 
@@ -476,14 +534,20 @@ drainer ‖ consult ‖ serve ‖ GC ‖ teardown stress (full-mysqld TSan is a 
 
 ### 6.1 Reclaiming version chains under LLTs (a related line)
 
-This work is in the same line as research that shares the problem of chain growth under LLTs (§1.2). vDriver
-(SIGMOD '20) detects the dead zone between active read views and reclaims it from the middle of the chain; DIVA
-(VLDB '22) bounds chain length logarithmically with an interval tree; vWeaver belongs to the same family. Our
-dead-zone detection is borrowed and adapted from vDriver, with attribution (§2.4), and the rest of the design was
-developed independently. The essential difference is not whether one improves the other but **architectural
-position**: those systems own the version store, so a stale dead zone is harmless, whereas we serve
-non-authoritatively over an InnoDB that remains the authority, so over-pruning would be a wrong serve—and the
-superset-safety result (§3.4) that prevents it is unique to our design and unnecessary for the owned-store ones.
+This work is in the same line as research on chain growth under LLTs (§1.2). vDriver [1] detects the dead zone
+between active read views and reclaims it from the middle of the chain; DIVA [2] bounds chain length
+logarithmically with an interval tree; vWeaver [3] is a related design from the same family that, unlike DIVA,
+does not modify version storage. The family thus spans a spectrum of how much of the engine is changed—from
+vWeaver's lighter touch to DIVA's modification of version storage. AccelerateMVCC sits at the *no
+engine-ownership* end of that spectrum: it modifies neither the index nor the version store, keeping a derived
+external cache while InnoDB remains the authority. Our dead-zone detection is borrowed and adapted from vDriver,
+with attribution (§2.4); the rest of the design was developed independently. The essential difference is not
+whether one improves the other but **architectural position**: those systems own the version store, so a stale
+dead zone is harmless, whereas we serve non-authoritatively, so over-pruning would be a wrong serve—and the
+superset-safety result of §3.4 that prevents it is needed by our design and unnecessary for the owned-store ones.
+That zero-engine-ownership position is itself the practical significance: the design ports to any disk-based MVCC
+engine without touching its storage. (Exact bibliographic details for vDriver, DIVA, and vWeaver are to be
+confirmed against the source papers; see References.)
 
 ### 6.2 Position relative to the buffer pool and caching
 
@@ -497,9 +561,10 @@ tier as the buffer pool, not a move to an in-memory DBMS.
 
 ### 6.3 In-memory version stores and lock-free structures
 
-In-memory MVCC systems such as H-Store/HyPer hold versions in memory but own the store's authority. This work
-differs in keeping the disk-based DBMS's authority and placing only a derived secondary index in memory. On the
-lock-free side, it applies a marked-pointer (Harris) list and EBR to the hot-path reads and reclamation (§3.6).
+In-memory MVCC systems such as H-Store [7] and HyPer [8] hold versions in memory but own the store's authority.
+This work differs in keeping the disk-based DBMS's authority and placing only a derived secondary index in
+memory. On the lock-free side, it applies a marked-pointer (Harris [4]) list and EBR [5] to the hot-path reads
+and reclamation (§3.6).
 
 ## 7. Limitations and Discussion
 
@@ -519,8 +584,12 @@ independent of the dataset; and (B) a per-key floor term, proportional to the di
 GC-independent). Term (B) is capped at the cuckoo capacity N, and overflow is handled by graceful non-admission
 (vanilla fallback, construct_BAD = 0). So "memory ∝ working set" holds **as long as the working set fits within
 capacity N**, which the operator sizes by a formula (demonstrated on TPC-C in §5.5). Tracking a *shifting* working
-set beyond N with LRU eviction is left unimplemented—its lock-free safety cost exceeds the payoff—and treated as
-scope.
+set beyond N with LRU eviction is left unimplemented. Lock-free eviction here is non-trivial: freeing a header and
+its cuckoo slot while concurrent readers may hold EBR guards into that key means coordinating a Kuku erase with
+the marked-pointer / EBR reclamation, and we judged that safety cost to outweigh the payoff for the target
+workloads. When the working set drifts past N the behavior is graceful rather than a collapse—the admitted keys
+keep serving and newcomers fall back to the vanilla walk, so coverage settles at a stable fraction—though we have
+not measured a drifting-key workload, and leave both the eviction mechanism and that measurement as scope.
 
 ### 7.3 The effective regime: undo-I/O-bound vs base-I/O-bound
 
@@ -546,10 +615,35 @@ the reconstruction result directly. The correctness tension that arises the mome
 (over-reclamation = a wrong serve) is excluded structurally by keeping the dead zone a conservative superset of the
 active views (the superset-safety result) together with four firewalls, so that every cache failure converges to
 the slow correct answer (the vanilla walk). In an InnoDB 8.4.10 integration, held analytical-read latency flattens
-across buffer-pool sizes (≈290× at 64 MB), cache memory stays bounded by the live-transaction window, and every
-served answer is byte-identical to vanilla (construct_BAD = 0), confirmed up to the standard TPC-C benchmark; at
-the same time we bound honestly the regime in which the cache helps (undo-I/O-bound).
+across buffer-pool sizes (≈290× median at 64 MB), cache memory stays bounded by the live-transaction window, and every
+served answer is byte-identical to vanilla (construct_BAD = 0), confirmed up to the TPC-C transaction mix; at the
+same time we bound honestly the regime in which the cache helps (undo-I/O-bound). The practical value of the
+result is that it accelerates undo reconstruction with *zero* modification to the storage engine that remains the
+authority—the cache is a derived, external index—so the same superset-safe serving design should port to any
+disk-based MVCC engine.
 
 For future work we leave generalizing the superset-safe, derived-served cache to other storage engines, indexes,
 and isolation levels, to distributed MVCC, and to persistent memory, and formally verifying the no-wrong-serve
 invariant (TLA+).
+
+## References
+
+> Bibliographic details for the same-group systems (vDriver, DIVA, vWeaver) are to be confirmed against the source
+> papers before any submission; entries below give the known venue/year with a placeholder where a detail is
+> uncertain.
+
+[1] vDriver — *Long-lived Transactions Made Less Harmful.* SIGMOD 2020. [authors to confirm]
+
+[2] DIVA. VLDB 2022. [title and authors to confirm]
+
+[3] vWeaver. [venue, year, title, and authors to confirm]
+
+[4] T. L. Harris. *A Pragmatic Implementation of Non-Blocking Linked-Lists.* DISC 2001.
+
+[5] K. Fraser. *Practical Lock-Freedom.* PhD thesis, University of Cambridge, 2004 (epoch-based reclamation).
+
+[6] Microsoft Kuku — a cuckoo hashing library. https://github.com/microsoft/Kuku
+
+[7] R. Kallman et al. *H-Store: A High-Performance, Distributed Main Memory Transaction Processing System.* VLDB 2008.
+
+[8] A. Kemper and T. Neumann. *HyPer: A Hybrid OLTP&OLAP Main Memory Database System Based on Virtual Memory Snapshots.* ICDE 2011.
