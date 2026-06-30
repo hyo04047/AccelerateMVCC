@@ -7,6 +7,18 @@
 > 최종 갱신: **2026-06-29** (세션 13 — Phase-3 전 최종 검토: 멀티에이전트 review→triage, **동시-HTAP ⑥/⑤ 확인(DoD config)**, hardening 4건 + 512B(A) wide-in-page 구현·실증, future-work 재분류. **개발 완전 완료(동시성까지 실측), 다음 = Phase 3**)
 
 ## 현재 위치 (한눈에)
+- **세션 14–15 (2026-06-30) — Phase 3 측정 + 논문 + 3자 리뷰 (대량 진행, 세션 이동).** ⓐ **gate ① error-bar
+  멀티런 4종**(q11 ⑥ payoff 64M ~290× median·2/8 degrade · q15 동시-HTAP ~18× · q3 메모리 19.5/40.5/81.9× ·
+  q5 effective 64M ~29×; **전 run construct_BAD=0**; raw-log+CSV `integration/results/`). ⓑ **④ 표준 TPC-C 평가**
+  (`build_q17_tpcc_{smoke,latency}.sh`·`docs/phase3-tpcc.md`: serve byte-정확·**D8 sizing 16%→64% kuku16→21**·D6
+  wide-row·latency ~1.4×=undo-reconstruction-accelerator regime; `ACCEL_KUKU_LOG2` env 추가·mysqld 재빌드). ⓒ
+  **논문 한/영 초안 §1–§8 + figure 5종**(`docs/paper/paper-{en,ko}.md`, **en=canonical native·ko=참고/번역투**;
+  related-work 프레이밍=독립진행·deadzone만 vDriver 차용). ⓓ **3자 리뷰 패널(6 agents) → "Major revision
+  (accept-able core)" + 리비전 라운드 1**(Tier 1+2 반영, `da50c9f`). **재개 지점 = `docs/paper-review-todo.md`**
+  (리뷰 verdict·Tier 1+2 완료·Tier 3 남은 측정·**vDriver 빌드 레시피**). **다음 = ⭐ vDriver head-to-head 빌드
+  timeboxed 시도**(코드 있음, `/root/vDriver` 이미 clone=MySQL 8.0.17 fork; Docker 없어 gcc-13 native 빌드 리스크,
+  wall이면 발표수치 인용 fallback) + 가벼운 Tier 3(GC-on memory+speedup 공존·N≥5 vanilla·중간 hot-table·CH 쿼리).
+  커밋 `c26027f`…`da50c9f` 전부 push. ⚠️ 실행 인프라(WSL·**setsid**·pkill `-x` 함정)=메모리 `acceleratemvcc-integration-run-infra`.
 - **세션 13 — Phase-3 전 최종 검토 + 잔여 dev 완료.** 멀티에이전트 검토(38 findings)→사용자 원칙(개선=지금·새설계만
   향후연구)으로 전수 triage. **핵심: DoD 원문 config(churn 도는 중 held read)를 처음 측정(`build_q15_concurrent.sh`)** —
   GC-on/off 모두 64M serve 0.2~3.9s vs vanilla 60s(~16–300×)·mode-2 construct_BAD=0 → **동시성에서도 헤드라인 생존,
