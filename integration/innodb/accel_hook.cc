@@ -412,8 +412,13 @@ void accel_init() noexcept {
   if (const char *to = std::getenv("ACCEL_TAIL_ONLY")) {
     if (to[0] == '1') g_tail_only = true;              // ⓠ3: tail-only GC baseline (models InnoDB purge)
   }
+  unsigned kuku_log2 = 16;  // default: 2^16 = 64k-bin cuckoo (~43k keys @ ~0.66 load)
+  if (const char *kl = std::getenv("ACCEL_KUKU_LOG2")) {
+    long v = std::strtol(kl, nullptr, 10);
+    if (v >= 10 && v <= 26) kuku_log2 = (unsigned)v;  // ④ TPC-C / D8 sizing: size the cuckoo to the working set
+  }
   try {
-    g_accel = new mvcc::Accelerate_mvcc(0, 16);  // dynamic keys, 64k-bin cuckoo, BG GC NOT started
+    g_accel = new mvcc::Accelerate_mvcc(0, kuku_log2);  // dynamic keys, cuckoo sized by ACCEL_KUKU_LOG2 (default 16), BG GC NOT started
     g_accel->set_consult_fg_reclaim(g_consult_fg);  // D-5 FG-α (default off)
     g_accel->set_dummy_drain_cap(g_drain_cap);      // D-5 GC-tuning (0 = unlimited)
     g_accel->set_gc_tail_only(g_tail_only);         // ⓠ3: tail-only baseline (default off = deadzone)

@@ -1,0 +1,26 @@
+2026-06-30T09:23:50.010483Z 0 [System] [MY-015015] [Server] MySQL Server - start.
+2026-06-30T09:23:50.326158Z 0 [System] [MY-010116] [Server] /root/mysql-build/runtime_output_directory/mysqld (mysqld 8.4.10) starting as process 1383
+2026-06-30T09:23:50.335497Z 1 [System] [MY-013576] [InnoDB] InnoDB initialization has started.
+[accel] init: drainer started, accelerator constructed (gc=0 tail_only=0 retention_ms=0)
+2026-06-30T09:23:51.277896Z 1 [System] [MY-013577] [InnoDB] InnoDB initialization has ended.
+2026-06-30T09:23:51.519773Z 0 [Warning] [MY-010068] [Server] CA certificate ca.pem is self signed.
+2026-06-30T09:23:51.520554Z 0 [System] [MY-013602] [Server] Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.
+2026-06-30T09:23:51.552534Z 0 [System] [MY-010931] [Server] /root/mysql-build/runtime_output_directory/mysqld: ready for connections. Version: '8.4.10'  socket: '/root/mysql.sock'  port: 3309  Source distribution.
+2026-06-30T09:23:54.174482Z 11 [Warning] [MY-013360] [Server] Plugin mysql_native_password reported: ''mysql_native_password' is deprecated and will be removed in a future release. Please use caching_sha2_password instead'
+2026-06-30T09:23:54.174547Z 14 [Warning] [MY-013360] [Server] Plugin mysql_native_password reported: ''mysql_native_password' is deprecated and will be removed in a future release. Please use caching_sha2_password instead'
+2026-06-30T09:23:54.174551Z 16 [Warning] [MY-013360] [Server] Plugin mysql_native_password reported: ''mysql_native_password' is deprecated and will be removed in a future release. Please use caching_sha2_password instead'
+2026-06-30T09:23:54.174652Z 12 [Warning] [MY-013360] [Server] Plugin mysql_native_password reported: ''mysql_native_password' is deprecated and will be removed in a future release. Please use caching_sha2_password instead'
+2026-06-30T09:23:54.174683Z 10 [Warning] [MY-013360] [Server] Plugin mysql_native_password reported: ''mysql_native_password' is deprecated and will be removed in a future release. Please use caching_sha2_password instead'
+2026-06-30T09:23:54.174666Z 13 [Warning] [MY-013360] [Server] Plugin mysql_native_password reported: ''mysql_native_password' is deprecated and will be removed in a future release. Please use caching_sha2_password instead'
+2026-06-30T09:24:20.467612Z 20 [System] [MY-013172] [Server] Received SHUTDOWN from user root. Shutting down mysqld (Version: 8.4.10).
+[accel] shutdown: enq=117277 drained=117277 dropped=0 pk_buckets=1024/1024 live_epoch_buckets=0
+[accel] consult: calls=140153 hit=91752 miss{absent=48292 novisible=0 noncontig=108 ineligible=1 gcrace=0} | construct_ok=91752 construct_BAD=0 | auth_mode=0 served=0 gen_gate=1
+[accel] audit: mode=0 audit_n=1024 mode1_hits=0 audited=0 (mode-1: ok+bad==audited, bad==0)
+[accel] noncontig split: head_writer_gate=108 (cache head behind live row) chase_break=0 (GC severed a mid-chain link)
+[accel] view-registry: open_calls=10504 published=10504 unpublished=11019 publish_on=1 live_snapshot=0 floor=none clock=20283
+[accel] construct_BAD detail: trx_same=0 (right version, bytes differ) trx_diff=0 (WRONG version: older=0 [cache behind] newer=0 [visibility])
+[accel] newer split: vanilla_sees=0 (cross-generation: ct visible, off vanilla's chain) vanilla_hides=0 (input mismatch: consult got different view limits)
+[accel] gc: enabled=0 retired{total=0 windowed=0 dummy=0} live_buckets=0 clock=20283
+[accel] fg-alpha: consult_fg=0 coop_dead_seen=0 | drain_cap=0 dummy_pending=3091
+2026-06-30T09:24:23.674715Z 0 [System] [MY-010910] [Server] /root/mysql-build/runtime_output_directory/mysqld: Shutdown complete (mysqld 8.4.10)  Source distribution.
+2026-06-30T09:24:23.675772Z 0 [System] [MY-015016] [Server] MySQL Server - end.

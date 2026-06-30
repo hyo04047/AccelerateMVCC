@@ -1,0 +1,71 @@
+=== ④ TPC-C LATENCY (scale=2, kuku_log2=21, GC off): held STOCK deep read, vanilla vs serve, BP sweep. N=3 ===
+Tue Jun 30 18:18:00 KST 2026
+--- loading pristine TPC-C (scale=2) once ---
+
+CONCAT('pristine stock rows=', COUNT(*))
+pristine stock rows=200000
+pristine snapshot saved (8.4G)
+
+########## bp4G_m0_i1 (kuku=21, N=3) ##########
+>> bp4G_m0_i1 | deep_stock=0.32196750s deep_oline=0.45954325s phys=4253     HIT%=65.1   construct_BAD=0   served=0       
+
+########## bp4G_m0_i2 (kuku=21, N=3) ##########
+>> bp4G_m0_i2 | deep_stock=0.31796775s deep_oline=0.37813000s phys=4367     HIT%=64.6   construct_BAD=0   served=0       
+
+########## bp4G_m0_i3 (kuku=21, N=3) ##########
+>> bp4G_m0_i3 | deep_stock=0.34002300s deep_oline=0.36399725s phys=4348     HIT%=64.0   construct_BAD=0   served=0       
+
+########## bp4G_m1_i1 (kuku=21, N=3) ##########
+>> bp4G_m1_i1 | deep_stock=0.25770050s deep_oline=0.27257725s phys=4365     HIT%=63.8   construct_BAD=0   served=166372  
+
+########## bp4G_m1_i2 (kuku=21, N=3) ##########
+>> bp4G_m1_i2 | deep_stock=0.25260550s deep_oline=0.26543250s phys=4348     HIT%=64.8   construct_BAD=0   served=169233  
+
+########## bp4G_m1_i3 (kuku=21, N=3) ##########
+>> bp4G_m1_i3 | deep_stock=0.22523525s deep_oline=0.25531650s phys=4368     HIT%=65.2   construct_BAD=0   served=171767  
+
+########## bp64M_m0_i1 (kuku=21, N=3) ##########
+>> bp64M_m0_i1 | deep_stock=1.27240075s deep_oline=0.84319250s phys=266054   HIT%=65.5   construct_BAD=0   served=0       
+
+########## bp64M_m0_i2 (kuku=21, N=3) ##########
+>> bp64M_m0_i2 | deep_stock=1.22932600s deep_oline=0.82621025s phys=229313   HIT%=63.7   construct_BAD=0   served=0       
+
+########## bp64M_m0_i3 (kuku=21, N=3) ##########
+>> bp64M_m0_i3 | deep_stock=1.42935375s deep_oline=0.93989400s phys=247481   HIT%=65.6   construct_BAD=0   served=0       
+
+########## bp64M_m1_i1 (kuku=21, N=3) ##########
+>> bp64M_m1_i1 | deep_stock=0.89857675s deep_oline=0.70793675s phys=244855   HIT%=66.1   construct_BAD=0   served=105396  
+
+########## bp64M_m1_i2 (kuku=21, N=3) ##########
+>> bp64M_m1_i2 | deep_stock=0.92861125s deep_oline=0.65296825s phys=253428   HIT%=67.3   construct_BAD=0   served=93545   
+
+########## bp64M_m1_i3 (kuku=21, N=3) ##########
+>> bp64M_m1_i3 | deep_stock=0.86347800s deep_oline=0.69856200s phys=236390   HIT%=64.7   construct_BAD=0   served=104784  
+
+=== RAW CSV (/mnt/c/Users/USER/projects/AccelerateMVCC/integration/results/q17_tpcc_latency.csv) ===
+iter,bp,mode,deep_stock_lat_s,deep_oline_lat_s,phys_reads,consult_calls,hit,hit_pct,construct_BAD,served,hll
+1,4G,0,0.32196750,0.45954325,4253,264342,172112,65.1,0,0,19416
+2,4G,0,0.31796775,0.37813000,4367,263288,170117,64.6,0,0,19513
+3,4G,0,0.34002300,0.36399725,4348,258894,165587,64.0,0,0,19510
+1,4G,1,0.25770050,0.27257725,4365,261115,166534,63.8,0,166372,15752
+2,4G,1,0.25260550,0.26543250,4348,261265,169398,64.8,0,169233,19137
+3,4G,1,0.22523525,0.25531650,4368,263578,171934,65.2,0,171767,19338
+1,64M,0,1.27240075,0.84319250,266054,140153,91752,65.5,0,0,9099
+2,64M,0,1.22932600,0.82621025,229313,146936,93595,63.7,0,0,10361
+3,64M,0,1.42935375,0.93989400,247481,156477,102679,65.6,0,0,10636
+1,64M,1,0.89857675,0.70793675,244855,159676,105499,66.1,0,105396,10625
+2,64M,1,0.92861125,0.65296825,253428,139235,93636,67.3,0,93545,9192
+3,64M,1,0.86347800,0.69856200,236390,162129,104886,64.7,0,104784,10680
+
+=== SUMMARY (deep STOCK latency s; speedup = median(m0)/median(m1)) ===
+BP=     mode0 (vanilla): min=0.3180 median=0.3220 max=0.3400 n=3 construct_BAD_total=0
+BP=     mode1 (serve)  : min=0.2252 median=0.2526 max=0.2577 n=3 construct_BAD_total=0
+  -> BP=4G speedup = 0.3220 / 0.2526 = 1.3x
+
+BP=     mode0 (vanilla): min=1.2293 median=1.2724 max=1.4294 n=3 construct_BAD_total=0
+BP=     mode1 (serve)  : min=0.8635 median=0.8986 max=0.9286 n=3 construct_BAD_total=0
+  -> BP=64M speedup = 1.2724 / 0.8986 = 1.4x
+
+Note: TPC-C HIT ~64% (kuku=21) so the serve speedup is coverage-diluted vs sbtest ~100% (honest).
+=== DONE ===
+Tue Jun 30 18:28:13 KST 2026

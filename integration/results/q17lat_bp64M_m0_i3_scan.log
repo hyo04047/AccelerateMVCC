@@ -1,0 +1,19 @@
+tag	s
+scan_warm	10997040
+SLEEP(25)
+0
+tag	s
+scan_deep_stock	10997040
+tag	s
+scan_deep_oline	903592524.71
+=== PROFILES ===
+=== PROFILES ===
+Query_ID	Duration	Query
+1	0.00015200	SET profiling_history_size=50
+2	0.00006750	START TRANSACTION WITH CONSISTENT SNAPSHOT
+3	1.21170950	SELECT 'scan_warm' tag, SUM(s_quantity) s FROM stock1
+4	25.00043800	SELECT SLEEP(25)
+5	1.42935375	SELECT 'scan_deep_stock' tag, SUM(s_quantity+s_ytd+s_order_cnt+s_remote_cnt) s FROM stock1
+6	0.93989400	SELECT 'scan_deep_oline' tag, SUM(ol_amount+ol_quantity) s FROM order_line1
+7	0.00015850	COMMIT
+8	0.00009225	SELECT '=== PROFILES ==='

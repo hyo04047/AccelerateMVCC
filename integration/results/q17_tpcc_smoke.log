@@ -1,0 +1,38 @@
+=== ④ TPC-C SMOKE (scale=2 warehouses, mode-2 verify-serve, 4G resident, GC off) ===
+Tue Jun 30 18:13:43 KST 2026
+--- loading TPC-C (scale=2) ---
+
+loading tables: 1 for warehouse: 1
+
+--- row counts (eligibility-relevant tables) ---
+t	n
+stock	200000
+customer	60000
+order_line	599203
+orders	60000
+--- is customer.c_data stored off-page? (avg length) ---
+avg_c_data_len	max_len
+399.6592	500
+--- running TPC-C mix (8 threads, 50s) concurrent with the held scans ---
+History list length 17360
+
+--- held-scan SUMs + per-scan latency (Duration) ---
+scan_warm	10997040
+scan_deep_stock	10997040
+scan_deep_cust	0.00
+scan_deep_oline	903592524.71
+3	0.03481000	SELECT 'scan_warm' tag, SUM(s_quantity) s FROM stock1
+5	0.28855675	SELECT 'scan_deep_stock' tag, SUM(s_quantity+s_ytd+s_order_cnt+s_remote_cnt) s FROM stock1
+6	0.06665450	SELECT 'scan_deep_cust'  tag, SUM(c_balance+c_ytd_payment) s FROM customer1
+7	0.37344875	SELECT 'scan_deep_oline' tag, SUM(ol_amount+ol_quantity) s FROM order_line1
+
+--- TPC-C churn tps ---
+
+--- [accel] coverage + correctness (consult breakdown; ineligible = wide/off-page rows -> vanilla) ---
+[accel] consult: calls=253291 hit=160713 miss{absent=79879 novisible=0 noncontig=312 ineligible=12387 gcrace=0} | construct_ok=160713 construct_BAD=0 | auth_mode=2 served=160713 gen_gate=1
+--- [accel] drained (populate from TPC-C churn) ---
+[accel] shutdown: enq=232950 drained=232950 dropped=0 pk_buckets=1024/1024 live_epoch_buckets=0
+
+GATE: construct_BAD must be 0. Expect HITs on stock/order_line (eligible), ineligible on customer (wide c_data).
+=== DONE ===
+Tue Jun 30 18:14:57 KST 2026

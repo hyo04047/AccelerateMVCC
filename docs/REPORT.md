@@ -159,6 +159,13 @@ construct_BAD=0(full-PK FNV 일반화·savepoint rollback 버전 미서빙). ful
 (drainer‖consult‖serve‖GC‖teardown 동시 스트레스, 리포트 0). drainer는 단일 consumer로 64-thread oltp_write_only
 (~183k write-q/s, 525만 버전)서도 dropped=0으로 따라잡음(populate 비병목).
 
+**표준 벤치 (CH-benCHmark / TPC-C).** sysbench-tpcc(scale=2, ~920k 행)의 실 TPC-C mix churn 위에서 held STOCK
+분석 read를 측정: **construct_BAD=0**(mode-2 verify-serve 160k+ served byte-동일·composite-PK 전부 일반화) ·
+coverage가 **Kuku 용량에 비례**(held-scan HIT **16%@`kuku_log2=16` → 64%@21** = design-D8 sizing을 표준 벤치서
+실증, sizing 무관 construct_BAD=0) · customer(c_data off-page ~400자)는 **ineligible**(design-D6 wide-row). serve
+latency는 **~1.3×(4G)·~1.4×(64M)** 로 modest — phys read가 mode0≈mode1(~245k)라 large-table base-page I/O가 지배
+(stock 200k행 ≫ 64M BP)하고 serve는 undo 재구성만 제거하기 때문. 상세 [phase3-tpcc.md](phase3-tpcc.md).
+
 ## 6. Limitations & Threats to Validity (위협 요인)
 
 정직한 한계·위협 요인 (논문 Evaluation 전 명시):
@@ -183,7 +190,13 @@ construct_BAD=0(full-PK FNV 일반화·savepoint rollback 버전 미서빙). ful
   graceful non-admission(vanilla fallback·construct_BAD=0·crash 없음). 따라서 "memory ∝ working set"은 **working
   set이 용량 N에 드는 한** defensible — *이동하는* working set 추적용 LRU eviction은 lock-free 안전성 cost≫payoff
   (적대 리뷰)로 **미구현, 스코프로 처리**. 정밀 bound·sizing 공식(`kuku_log2 ≥ ceil(log2(hot keys/load factor))`)은
-  **`docs/design-D8-memory-scope.md`**.
+  **`docs/design-D8-memory-scope.md`**. **표준 TPC-C(scale=2)서 실증**: default `kuku_log2=16`은 ~920k working
+  set의 ~16%만 cover, `=21`로 키우면 64% — sizing이 표준 벤치서도 작동(phase3-tpcc.md §2).
+- **effective regime = undo-I/O-bound, not base-I/O-bound (정직한 경계).** 캐시는 *undo 재구성*을 제거한다 → 큰
+  이득(q5 ~29×·⑥ ~190–290×)은 **undo I/O가 병목**일 때(hot·BP-resident 소형 테이블/hot subset, 깊은 체인). **cold
+  large-table 스캔(TPC-C stock 200k @ 64M)은 base-table 페이지 I/O가 지배**(phys mode0≈mode1)라 serve가 재구성 CPU만
+  아껴 **~1.3–1.4×**(construct_BAD=0). 헤드라인 HTAP(hot working set held reader)은 전자 regime — 표준 TPC-C 실측이
+  이 경계를 정직하게 못박음([phase3-tpcc.md](phase3-tpcc.md) §4).
 - **full-mysqld TSan = documented residual.** standalone TSan이 accel race 표면(drainer‖consult‖cuts-GC)을
   덮고, MySQL-under-TSan은 무거운 suppression + 5–10× 둔화 대비 marginal value가 낮아 미실행.
 - **in-memory navigation은 최적화 대상이 아니다.** consult 비용은 OLTP 트랜잭션 비용(I/O·lock)의 무시할
