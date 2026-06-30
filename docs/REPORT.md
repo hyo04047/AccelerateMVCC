@@ -163,10 +163,13 @@ construct_BAD=0(full-PK FNV 일반화·savepoint rollback 버전 미서빙). ful
 
 정직한 한계·위협 요인 (논문 Evaluation 전 명시):
 
-- **measurement variance (⑥ DONE, 나머지 진행).** **⑥는 멀티런 완료**(gate ①, 2026-06-30): 64M serve N=8
-  median 0.45s/~290×·**2/8 degrade**(=문서화된 1/4 비결정성을 N=8로 정량화)·construct_BAD=0 전 18 run
-  ([phase2-q3-llt.md](phase2-q3-llt.md) *Phase 3 / gate ①*). **잔여 = ⓠ3/ⓠ5 등 다른 통합 헤드라인은 아직 단일
-  run** → N≥3–5 재측·median+min/max 필요. drain-cap "X/N degrade" 표는 이미 그 규율을 따른다.
+- **measurement variance (gate ① DONE, 2026-06-30).** 모든 통합 헤드라인이 멀티런/error-bar 위에 섬:
+  **⑥ payoff** — q11(churn-paused, N=8): 64M serve median 0.45s/~290×·2/8 degrade(=문서화된 1/4 비결정성을
+  N=8로 정량화); q15(동시-HTAP DoD, N=8): 64M serve ~18× median·mode-2 verify-serve construct_BAD=0. **⑤ 메모리
+  비율** — q3(N=5): 19.5×/40.5×/81.9× @15/30/60s·live_versions ~7k bounded. **effective speedup** — q5(N=3, GC
+  off): 64M ~29×·resident ~2.8–2.9×·held reader HIT 99.5–99.8%. **전 run construct_BAD=0.** 상세
+  [phase2-q3-llt.md](phase2-q3-llt.md) *Phase 3 / gate ①* 섹션들 + `integration/results/q{11,15,3,5}*.csv`(raw,
+  gate ②). drain-cap "X/N degrade" 표도 동일 규율.
 - **cache scope = in-page row (정직한 scope 한계).** 이미지 cap(`ACCEL_IMG_MAX`, 기본 512B)을 build-time으로
   올리면 >512B여도 **전부 in-page인 wide row는 안전하게 캐시·서빙**된다(in-page=byte-identical 캡처; design-D6 (A),
   `build_q16_widerow.sh`서 ~1.35KB 행 cap=2048 빌드 HIT 1000/1000·construct_BAD=0, cap=512 대조 ineligible로

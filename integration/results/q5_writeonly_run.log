@@ -1,0 +1,94 @@
+=== ⓠ5 effective-speedup MULTI-RUN (oltp_write_only churn + held deep reader, GC off). N=3 ===
+Tue Jun 30 17:25:31 KST 2026
+
+########## bp4G_m0_i1 (N=3) ##########
+>> bp4G_m0_i1 | deep1=0.25726200s phys=0         HIT%=99.3   construct_BAD=0   served=0        HLL=88768
+
+########## bp4G_m0_i2 (N=3) ##########
+>> bp4G_m0_i2 | deep1=0.30438050s phys=0         HIT%=99.7   construct_BAD=0   served=0        HLL=87721
+
+########## bp4G_m0_i3 (N=3) ##########
+>> bp4G_m0_i3 | deep1=0.28255050s phys=0         HIT%=99.8   construct_BAD=0   served=0        HLL=89422
+
+########## bp4G_m1_i1 (N=3) ##########
+>> bp4G_m1_i1 | deep1=0.12088950s phys=0         HIT%=99.8   construct_BAD=0   served=1995     HLL=87536
+
+########## bp4G_m1_i2 (N=3) ##########
+>> bp4G_m1_i2 | deep1=0.09682775s phys=0         HIT%=99.5   construct_BAD=0   served=1989     HLL=87480
+
+########## bp4G_m1_i3 (N=3) ##########
+>> bp4G_m1_i3 | deep1=0.07973700s phys=0         HIT%=99.5   construct_BAD=0   served=1989     HLL=88861
+
+########## bp256M_m0_i1 (N=3) ##########
+>> bp256M_m0_i1 | deep1=0.28085000s phys=0         HIT%=99.7   construct_BAD=0   served=0        HLL=92067
+
+########## bp256M_m0_i2 (N=3) ##########
+>> bp256M_m0_i2 | deep1=0.23896625s phys=0         HIT%=99.8   construct_BAD=0   served=0        HLL=90815
+
+########## bp256M_m0_i3 (N=3) ##########
+>> bp256M_m0_i3 | deep1=0.26407850s phys=0         HIT%=99.8   construct_BAD=0   served=0        HLL=91336
+
+########## bp256M_m1_i1 (N=3) ##########
+>> bp256M_m1_i1 | deep1=0.09534175s phys=0         HIT%=99.9   construct_BAD=0   served=1997     HLL=90363
+
+########## bp256M_m1_i2 (N=3) ##########
+>> bp256M_m1_i2 | deep1=0.12699950s phys=0         HIT%=99.5   construct_BAD=0   served=1989     HLL=88412
+
+########## bp256M_m1_i3 (N=3) ##########
+>> bp256M_m1_i3 | deep1=0.08986925s phys=0         HIT%=99.9   construct_BAD=0   served=1997     HLL=87647
+
+########## bp64M_m0_i1 (N=3) ##########
+>> bp64M_m0_i1 | deep1=3.81252475s phys=30536     HIT%=99.8   construct_BAD=0   served=0        HLL=80823
+
+########## bp64M_m0_i2 (N=3) ##########
+>> bp64M_m0_i2 | deep1=4.38433325s phys=32837     HIT%=99.8   construct_BAD=0   served=0        HLL=81399
+
+########## bp64M_m0_i3 (N=3) ##########
+>> bp64M_m0_i3 | deep1=4.24671825s phys=25110     HIT%=99.7   construct_BAD=0   served=0        HLL=79889
+
+########## bp64M_m1_i1 (N=3) ##########
+>> bp64M_m1_i1 | deep1=0.14645800s phys=468       HIT%=99.5   construct_BAD=0   served=1989     HLL=80883
+
+########## bp64M_m1_i2 (N=3) ##########
+>> bp64M_m1_i2 | deep1=0.13121000s phys=351       HIT%=99.8   construct_BAD=0   served=1995     HLL=81635
+
+########## bp64M_m1_i3 (N=3) ##########
+>> bp64M_m1_i3 | deep1=0.18063250s phys=542       HIT%=99.8   construct_BAD=0   served=1995     HLL=80375
+
+=== RAW CSV (/mnt/c/Users/USER/projects/AccelerateMVCC/integration/results/q5_writeonly.csv) ===
+iter,bp,mode,deep1_lat_s,phys_reads,consult_calls,hit,hit_pct,construct_BAD,served,innodb_hll
+1,4G,0,0.25726200,0,2000,1986,99.3,0,0,88768
+2,4G,0,0.30438050,0,2000,1994,99.7,0,0,87721
+3,4G,0,0.28255050,0,2000,1996,99.8,0,0,89422
+1,4G,1,0.12088950,0,2000,1996,99.8,0,1995,87536
+2,4G,1,0.09682775,0,2000,1990,99.5,0,1989,87480
+3,4G,1,0.07973700,0,2000,1990,99.5,0,1989,88861
+1,256M,0,0.28085000,0,2000,1994,99.7,0,0,92067
+2,256M,0,0.23896625,0,2000,1996,99.8,0,0,90815
+3,256M,0,0.26407850,0,2000,1996,99.8,0,0,91336
+1,256M,1,0.09534175,0,2000,1998,99.9,0,1997,90363
+2,256M,1,0.12699950,0,2000,1990,99.5,0,1989,88412
+3,256M,1,0.08986925,0,2000,1998,99.9,0,1997,87647
+1,64M,0,3.81252475,30536,2000,1996,99.8,0,0,80823
+2,64M,0,4.38433325,32837,2000,1996,99.8,0,0,81399
+3,64M,0,4.24671825,25110,2000,1994,99.7,0,0,79889
+1,64M,1,0.14645800,468,2000,1990,99.5,0,1989,80883
+2,64M,1,0.13121000,351,2000,1996,99.8,0,1995,81635
+3,64M,1,0.18063250,542,2000,1996,99.8,0,1995,80375
+
+=== SUMMARY (deep1 latency s; speedup = median(m0)/median(m1)) ===
+BP=      mode0 (vanilla): min=0.2573 median=0.2826 max=0.3044 n=3 construct_BAD_total=0
+BP=      mode1 (serve)  : min=0.0797 median=0.0968 max=0.1209 n=3 construct_BAD_total=0
+  -> BP=4G speedup = 0.2826 / 0.0968 = 2.9x
+
+BP=      mode0 (vanilla): min=0.2390 median=0.2641 max=0.2808 n=3 construct_BAD_total=0
+BP=      mode1 (serve)  : min=0.0899 median=0.0953 max=0.1270 n=3 construct_BAD_total=0
+  -> BP=256M speedup = 0.2641 / 0.0953 = 2.8x
+
+BP=      mode0 (vanilla): min=3.8125 median=4.2467 max=4.3843 n=3 construct_BAD_total=0
+BP=      mode1 (serve)  : min=0.1312 median=0.1465 max=0.1806 n=3 construct_BAD_total=0
+  -> BP=64M speedup = 4.2467 / 0.1465 = 29.0x
+
+construct_BAD must be 0 in every row. (GC off here -> serve does not chain-sever; expect no degrade.)
+=== DONE ===
+Tue Jun 30 17:43:21 KST 2026

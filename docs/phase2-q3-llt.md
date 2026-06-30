@@ -15,8 +15,10 @@
   the rest does not yet. **[⑥ gate ① DONE 2026-06-30]** ⑥ now HAS multi-run error bars — see the *Phase 3 /
   gate ① — ⑥ multi-run* section at the bottom (64M serve median 0.45 s ≈ 290×, 2/8 degrade to the correct
   walk, construct_BAD=0 in all 18 runs). **ⓠ3 now has multi-run error bars too** (see the *Multi-run error
-  bars* block in the ⓠ3 section: median 19.5×/40.5×/81.9× @15/30/60s, live_versions ~7k bounded). ⓠ5 is
-  still single-run.
+  bars* block in the ⓠ3 section: median 19.5×/40.5×/81.9× @15/30/60s, live_versions ~7k bounded). **ⓠ5 also
+  has multi-run error bars now** (see its *Multi-run* block: 64M ~29×, resident ~2.8–2.9×, HIT 99.5–99.8%).
+  **gate ① is fully closed** — every integration headline (⑥ q11/q15, ⑤ q3, effective q5) now stands on
+  median + min/max with construct_BAD=0 throughout.
 - **Raw run logs were not retained** (overwritten per run; only the ASan log survives). Phase 3 must archive
   the `[accel] retention:`/`consult:` lines into `integration/results/` so each table cell is verifiable.
   **[gate ② — ⑥/q11 DONE]** the q11 multi-run archives every per-run mysqld/scan/churn log + `q11_d6.csv`
@@ -156,6 +158,20 @@ the MISS effect from the ⑥ chain-sever). `integration/scripts/build_q5_writeon
 | 4G | 0.263 s | 0.089 s | ~2.9× | 0 → 0 (resident) | 99.8% | 0 |
 | 256M | 0.288 s | 0.085 s | ~3.4× | 0 → 0 (resident) | 100% | 0 |
 | **64M** | **2.673 s** | **0.078 s** | **~34×** | **23,783 → 352** | 99.8% | 0 |
+
+**Multi-run error bars (gate ①, 2026-06-30, `build_q5_multirun.sh`, N=3, GC off → no chain-sever degrade):**
+
+| BP | vanilla median | serve median | speedup | phys reads (m0→m1) | HIT% |
+|---|---|---|---|---|---|
+| 4G | 0.283 s (0.257–0.304) | 0.097 s (0.080–0.121) | **2.9×** | 0 → 0 | 99.3–99.8% |
+| 256M | 0.264 s (0.239–0.281) | 0.095 s (0.090–0.127) | **2.8×** | 0 → 0 | 99.5–99.9% |
+| **64M** | **4.25 s (3.81–4.38)** | **0.147 s (0.131–0.181)** | **~29×** | **25–33 k → 351–542** | 99.5–99.8% |
+
+construct_BAD=0 in all 18 runs. The held analytic reader HITs ~99.5–99.8% across every run — the delete+reinsert
+churn does not drop the cache's target reader, confirming the "22% MISS" was short head-readers, not this one.
+Resident (4G/256M) ~2.8–2.9× (reconstruction CPU saved); I/O-bound (64M) ~29× (undo reads 25–33 k → ~450). The
+64M ~29× vs the single-run ~34× is just a deeper vanilla baseline this run (~4.25 s vs 2.67 s) — same mechanism,
+same order. GC off here, so serve never chain-severs (no degrade, tight ranges).
 
 ## Reading it
 - **The held reader HITs ~100%** because its consistent snapshot predates the churn: it needs each row's
