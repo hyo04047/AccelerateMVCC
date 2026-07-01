@@ -136,7 +136,7 @@ analytic read의 latency를 vanilla walk vs serve로 비교: vanilla는 buffer-p
 절벽을 맞지만(4G 0.8s → 64M 123s), **serve는 BP와 무관하게 ~0.16s로 평탄** → 4G ~5×·256M ~490×·64M ~775×
 (GC-off serve-only). 물리 read 80만~140만 → 0~8로 소멸. GC-on에서도 생존(~190×, `ACCEL_DRAIN_CAP`으로 안정화).
 **멀티런(gate ①, N=8 @64M, 2026-06-30)**: GC-on ship setting(mode-1 serve·drain-cap 1000)서 serve **median
-0.45s → ~290×**(6/8 hold)·**2/8은 chain-sever로 vanilla walk에 degrade(87–121s)**·4G ~2.4×, **전 18 run
+0.45s → ~210×**(N=6 vanilla baseline 96s; 6/8 hold)·**2/8은 chain-sever로 vanilla walk에 degrade(87–121s)**·4G ~2.4×, **전 18 run
 construct_BAD=0**(degrade=perf-only). 상세 [phase2-q3-llt.md](phase2-q3-llt.md) *Phase 3 / gate ①*.
 이 우위는 **InnoDB undo-walk I/O 절벽 제거**에서 오며 인메모리 navigation의 big-O가 아니다(체인 깊이는 GC가
 flat ~80–92로 유계 유지).
@@ -171,7 +171,7 @@ latency는 **~1.3×(4G)·~1.4×(64M)** 로 modest — phys read가 mode0≈mode1
 정직한 한계·위협 요인 (논문 Evaluation 전 명시):
 
 - **measurement variance (gate ① DONE, 2026-06-30).** 모든 통합 헤드라인이 멀티런/error-bar 위에 섬:
-  **⑥ payoff** — q11(churn-paused, N=8): 64M serve median 0.45s/~290×·2/8 degrade(=문서화된 1/4 비결정성을
+  **⑥ payoff** — q11(churn-paused, N=8): 64M serve median 0.45s/~210×(N=6 vanilla 96s)·2/8 degrade(=문서화된 1/4 비결정성을
   N=8로 정량화); q15(동시-HTAP DoD, N=8): 64M serve ~18× median·mode-2 verify-serve construct_BAD=0. **⑤ 메모리
   비율** — q3(N=5): 19.5×/40.5×/81.9× @15/30/60s·live_versions ~7k bounded. **effective speedup** — q5(N=3, GC
   off): 64M ~29×·resident ~2.8–2.9×·held reader HIT 99.5–99.8%. **전 run construct_BAD=0.** 상세
