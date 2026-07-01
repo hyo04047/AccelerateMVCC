@@ -1,0 +1,16 @@
+tag	s
+scan_warm	679715
+SLEEP(48)
+0
+tag	s
+scan_deep1	679715
+=== PROFILES ===
+=== PROFILES ===
+Query_ID	Duration	Query
+1	0.00010050	SET profiling_history_size=50
+2	0.00009575	START TRANSACTION WITH CONSISTENT SNAPSHOT
+3	0.00046050	SELECT 'scan_warm' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+4	48.00054875	SELECT SLEEP(48)
+5	94.65430925	SELECT 'scan_deep1' tag, SUM(k+LENGTH(c)+LENGTH(pad)) s FROM sbtest1
+6	0.00047075	COMMIT
+7	0.00037450	SELECT '=== PROFILES ==='

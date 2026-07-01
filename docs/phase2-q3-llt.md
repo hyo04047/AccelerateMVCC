@@ -13,7 +13,7 @@
   payoff), which is **known non-deterministic** (3/4 hold ~190×, 1/4 degrades to the correct walk under a
   small-BP reclaim storm — design-D5-gc §12.2). The drain-cap "X/N degrade" table already has this discipline;
   the rest does not yet. **[⑥ gate ① DONE 2026-06-30]** ⑥ now HAS multi-run error bars — see the *Phase 3 /
-  gate ① — ⑥ multi-run* section at the bottom (64M serve median 0.45 s ≈ 290×, 2/8 degrade to the correct
+  gate ① — ⑥ multi-run* section at the bottom (64M serve median 0.45 s ≈ 210× over the N=6 96 s baseline, 2/8 degrade to the correct
   walk, construct_BAD=0 in all 18 runs). **ⓠ3 now has multi-run error bars too** (see the *Multi-run error
   bars* block in the ⓠ3 section: median 19.5×/40.5×/81.9× @15/30/60s, live_versions ~7k bounded). **ⓠ5 also
   has multi-run error bars now** (see its *Multi-run* block: 64M ~29×, resident ~2.8–2.9×, HIT 99.5–99.8%).
@@ -192,7 +192,7 @@ dead-zone GC reclaims the delete+reinsert *cross-generation* lineage faster than
 in the small pool → the cache walk goes non-contiguous → miss → correct vanilla walk. Lowering the drain-cap
 (1000→200) cuts the noncontig (~700→~290 avg) and lifts hit toward ~88%, but does not fully recover the 64M
 gain — the GC-off ≈29× is genuinely a GC-off figure. **The ⑥ single-held-reader payoff (update churn,
-oltp_update_non_index) is unaffected: HIT ~100%, ≈290× at 64M with GC on** (q18-v1 / §5.2). This is the ⑤/⑥
+oltp_update_non_index) is unaffected: HIT ~100%, ≈210× at 64M with GC on** (q18-v1 / §5.2). This is the ⑤/⑥
 tension (design-D5-gc §12) surfacing specifically in the delete+reinsert workload at a very small buffer pool —
 bounded memory (§5.3, live_versions ~7k with concurrent readers) and the held-scan serve trade off there, both
 always correct. Reflected in paper-en §5.4 + §7.3.
@@ -388,7 +388,7 @@ The integration sizes Kuku at `kuku_log2 = 16` (65,536 bins, 2 hash funcs). A 20
 > **Result: the ⑥ payoff is real but non-deterministic at small BP — now quantified with N runs instead of
 > one.** Re-running the SHIP-setting held-read serve (mode-1 serve-only, GC on, `ACCEL_DRAIN_CAP=1000`)
 > replaces the single-run "~775×/190×" headline with **median + min/max + a degrade rate**. At 64M the serve
-> holds at ~0.45 s in **6/8 runs (~290× over the ~132 s vanilla walk)** and degrades to the correct vanilla
+> holds at ~0.45 s in **6/8 runs (~210× over the ~96 s vanilla walk, N=6)** and degrades to the correct vanilla
 > walk in **2/8 runs** (chain-sever → consult MISS → walk). At 4G (resident) serve is ~0.46 s vs ~1.1 s
 > vanilla (**~2.4×**), no degrade. **construct_BAD=0 in all 18 runs** — every degrade is perf-only, never a
 > wrong row.
@@ -404,7 +404,8 @@ mysqld/scan/churn logs + `q11_d6.csv` (one row/run) + `q11_d6_run.log` land in `
 ## Data (latency s; construct_BAD; physical reads)
 | config | median | min – max | n | degrade | physical reads |
 |---|---|---|---|---|---|
-| 64M vanilla walk | 132.1 | 102.5 – 133.4 | 3 | (baseline) | ~1.1–1.5 M |
+| 64M vanilla walk (N=3) | 132.1 | 102.5 – 133.4 | 3 | (baseline) | ~1.1–1.5 M |
+| 64M vanilla walk (N=6 re-measure, §3b `build_q11_van64_multirun.sh`) | 96.1 | 89.3 – 117.6 | 6 | (baseline) | ~0.5–0.6 M |
 | **64M serve (headline)** | **0.454** | 0.379 – 121.2 | 8 | **2/8** | ~4,000 (degrade run: ~1.0–1.4 M) |
 | 4G vanilla walk | 1.106 | 1.102 – 1.109 | 2 | 0 | 0 (resident) |
 | 4G serve | 0.462 | 0.411 – 0.553 | 3 | 0 | 0 (resident) |
@@ -412,7 +413,8 @@ mysqld/scan/churn logs + `q11_d6.csv` (one row/run) + `q11_d6_run.log` land in `
 **construct_BAD = 0 in every one of the 18 rows.**
 
 ## Reading it
-- **Headline (64M, I/O-bound):** when serve holds (6/8) it is ~0.45 s → **~290×** over the ~132 s walk; the
+- **Headline (64M, I/O-bound):** when serve holds (6/8) it is ~0.45 s → **~210×** over the ~96 s walk (a firmer
+  N=6 vanilla re-measurement medians 96 s; the earlier N=3 132 s gave ~290× — the cliff baseline is noisy); the
   mechanism is undo-I/O elimination (physical reads ~4,000 vs ~1.4 M). **2/8 runs degrade** to 87–121 s — the
   documented chain-sever events (design-D5-gc §12): the GC reclaims an interior navigation version, the lineage
   chase breaks, consult returns MISS (noncontig), and the held read falls to the **correct** vanilla walk
@@ -422,11 +424,12 @@ mysqld/scan/churn logs + `q11_d6.csv` (one row/run) + `q11_d6_run.log` land in `
   version-reconstruction CPU (no undo I/O to remove), so the win is modest and stable (phys=0 both modes) —
   consistent with the mechanism.
 - **The vanilla baseline itself varies** 102–133 s across runs (churn-depth dependent); earlier single-run
-  sessions saw 98–123 s. So the *held ratio* sits in a ~190–290× band depending on the baseline — reporting
-  median + range is the honest form, not a single "775×".
+  sessions saw 98–123 s, and an N=6 re-measurement medians 96 s (89–118). So the *held ratio* sits in a
+  ~190–290× band depending on the baseline; the firmer N=6 median gives **~210×** (the value now in paper §5.2).
+  Reporting median + range is the honest form, not a single "775×".
 - **vs the old 0.16 s / 775×:** that was GC-OFF serve-only (back-edge chase, since NO-GO). The SHIP path is
   GC-ON map-walk consult at ~0.45 s (≈ design-D5-gc's 0.45 s first-scan / 0.22 s reuse). The headline is now
-  stated at the shippable, GC-on, bounded-memory setting — honest and still ~290×.
+  stated at the shippable, GC-on, bounded-memory setting — honest and ~210× (N=6 baseline; ~290× on the N=3 baseline).
 - This is the gate-① deliverable: the ⑥ headline stands on median + distribution + a degrade rate. The degrade
   is the honest cost of small-BP serve under a GC reclaim storm; drain-cap 1000 holds it to ~1/4
   (design-D5-gc §13.2) and it is always correct.

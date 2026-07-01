@@ -1,0 +1,35 @@
+=== ⑥ 64M VANILLA baseline N=6 (q11 ship config, GC on) ===
+Wed Jul  1 19:42:26 KST 2026
+
+########## bp64M_m0_i1 (N=6) ##########
+>> bp64M_m0_i1 : deep1_lat=93.01814725s phys=514245
+
+########## bp64M_m0_i2 (N=6) ##########
+>> bp64M_m0_i2 : deep1_lat=94.65430925s phys=541923
+
+########## bp64M_m0_i3 (N=6) ##########
+>> bp64M_m0_i3 : deep1_lat=117.61665650s phys=564679
+
+########## bp64M_m0_i4 (N=6) ##########
+>> bp64M_m0_i4 : deep1_lat=97.58059900s phys=543037
+
+########## bp64M_m0_i5 (N=6) ##########
+>> bp64M_m0_i5 : deep1_lat=99.62112500s phys=563730
+
+########## bp64M_m0_i6 (N=6) ##########
+>> bp64M_m0_i6 : deep1_lat=89.30564500s phys=516863
+
+=== RAW CSV ===
+iter,bp,mode,deep1_lat_s,phys_reads
+1,64M,0,93.01814725,514245
+2,64M,0,94.65430925,541923
+3,64M,0,117.61665650,564679
+4,64M,0,97.58059900,543037
+5,64M,0,99.62112500,563730
+6,64M,0,89.30564500,516863
+
+=== SUMMARY (64M vanilla deep read latency) ===
+min=89.306 median=96.117 max=117.617 n=6
+Prior N=3 median 132.1s (102-133). Serve N=8 median 0.454s -> 290x = median(vanilla)/0.454.
+=== DONE ===
+Wed Jul  1 19:58:05 KST 2026

@@ -27,7 +27,7 @@ keeping the reclamation boundary a **conservative superset** of all active read 
 over-reclamation to a cache miss that falls back to InnoDB's correct walk. We argue this *no-wrong-serve*
 invariant semi-formally through four firewalls on the hit path.
 
-Integrated into InnoDB 8.4.10, AccelerateMVCC flattens held-read latency across buffer-pool sizes (≈290× median
+Integrated into InnoDB 8.4.10, AccelerateMVCC flattens held-read latency across buffer-pool sizes (≈210× median
 at 64 MB, with a 25 % tail that degrades to the correct walk—§5.2), keeps cache memory bounded by the
 live-transaction window rather than the dataset (its advantage over InnoDB's History List Length growing
 linearly with LLT age: 19.5×/40.5×/81.9× at 15/30/60 s), and serves answers that are byte-identical to the
@@ -53,7 +53,7 @@ replaying undo deltas top-down to reconstruct the visible version. The cost is a
 where the undo pages needed for reconstruction are fetched from disk again and again—an *undo-I/O cliff*—and the
 fetched pages pollute the buffer pool, dragging down concurrent OLTP. In our integrated setup, a held deep read
 over a churned table costs about 0.8 s when a 4 GB buffer pool holds the working set, but about 123 s at 64 MB
-(a single illustrative run; the multi-run medians, ≈1.1 s and ≈132 s, are in §5.2), and reconstruction dominates
+(a single illustrative run; the multi-run medians, ≈1.1 s and ≈96 s, are in §5.2), and reconstruction dominates
 CPU (~45 %).
 
 Crucially, this cost is a property of the *storage form*, not of the algorithm. What a reader needs—which
@@ -118,7 +118,7 @@ middle-of-chain reclamation without a hot mutex.
   lock-free ring enqueue under the page latch, a single off-latch drainer as the sole mutator, consult at the
   consistent-read version-build point, and an authoritative walk-skipping serve—adds negligible cost to the
   transaction hot path (§4).
-- **A multi-run, error-bar evaluation.** Held-read latency flattens across buffer-pool sizes (≈290× median at
+- **A multi-run, error-bar evaluation.** Held-read latency flattens across buffer-pool sizes (≈210× median at
   64 MB); cache memory stays bounded by the live-transaction window (advantage linear in LLT age); effective
   speedup and concurrent-HTAP behavior are measured on real mysqld; and every served answer is byte-identical to
   the vanilla walk (construct_BAD = 0 throughout) (§5).
@@ -130,7 +130,7 @@ middle-of-chain reclamation without a hot mutex.
 ### 1.5 Results in brief
 
 Integrated into InnoDB 8.4.10, AccelerateMVCC removes the undo-I/O cliff of held analytical reads, improving
-latency by about 290× (median) over the vanilla walk at a 64 MB buffer pool. About one serve run in four degrades
+latency by about 210× (median) over the vanilla walk at a 64 MB buffer pool. About one serve run in four degrades
 to the correct vanilla walk when GC reclaims navigation versions in real time under a small buffer pool, so the
 mean over the eight runs is ≈4×—the gain is honestly a median with a 25 % degrade tail (§5.2)—and every degrade
 is still correct, performance-only. Cache memory stays bounded over the LLT's lifetime, so its advantage over
@@ -176,7 +176,7 @@ over the full length of each row's chain. This cost is sensitive to the buffer-p
 after applying write-heavy churn to a 1,000-row table, a held snapshot reading the whole table deeply costs about
 0.8 s at a 4 GB buffer pool (table and undo resident) but about 123 s at 64 MB (undo pages fetched from disk
 repeatedly)—a cliff of more than 150×. (These figures are a single illustrative sweep across buffer-pool sizes;
-§5.2's multi-run medians for the 4 GB and 64 MB end points are ≈1.1 s and ≈132 s.) Under this condition
+§5.2's multi-run medians for the 4 GB and 64 MB end points are ≈1.1 s and ≈96 s.) Under this condition
 row_search_mvcc and the reconstruction path take ~45 % of CPU, and the fetched undo pages pollute the buffer
 pool, lowering concurrent OLTP throughput as well.
 
@@ -423,21 +423,23 @@ cap). With churn paused before measurement (serve N = 8 at each buffer pool; van
 > **Figure 3.** As the buffer pool shrinks (4 GB → 256 MB → 64 MB), the vanilla walk climbs an undo-I/O cliff
 > (0.8 s → 76 s → 123 s) while serve stays flat near 0.16 s, independent of buffer-pool size—≈775× at 64 MB.
 > (The curve is a single-run BP sweep that isolates the mechanism, so its 64 MB gap is the single-run ≈775×; the
-> table below reports the multi-run medians—N = 8 serve runs—whose 64 MB median ratio is ≈290×, with a 25 %
+> table below reports the multi-run medians—N = 8 serve runs—whose 64 MB median ratio is ≈210×, with a 25 %
 > degrade tail.)
 
 | Buffer pool | Vanilla walk (median) | Serve (median) | Speedup | Degrade |
 |---|---|---|---|---|
-| 64 MB (I/O-bound) | 132.1 s | 0.454 s | **≈290×** | 2/8 |
+| 64 MB (I/O-bound) | ≈96 s | 0.454 s | **≈210×** | 2/8 |
 | 4 GB (resident) | 1.106 s | 0.462 s | ≈2.4× | 0 |
 
-At 64 MB serve is about 290× (median) faster than the vanilla walk; the mechanism is the elimination of undo I/O
-(physical reads drop from ≈1.4 M under vanilla to ≈4 k under serve). In 2 of the 8 serve runs, however, GC
+At 64 MB serve is about 210× (median) faster than the vanilla walk; the mechanism is the elimination of undo I/O
+(physical reads drop from the ≈0.5–1.4 M range under vanilla to ≈4 k under serve). The vanilla 64 MB cliff is
+itself a noisy undo-I/O baseline—≈90–130 s across runs (an N = 6 re-measurement medians ≈96 s; an earlier N = 3
+campaign 132 s)—so this multiplier is a median over a variable baseline, not a precise constant. In 2 of the 8 serve runs, however, GC
 reclaiming a navigation version in real time severs the chain and latency degrades to 87–121 s—but consult then
 returns a miss and falls back to the correct vanilla walk, so **construct_BAD = 0 holds**; this is a
 performance-only event, and the drain cap stabilizes the degrade rate to ≈1/4. Because of those two degrades the
 eight-run serve sample is bimodal—median 0.454 s, but mean ≈26 s and max 121 s—so the payoff is honestly a
-median ≈290× with a 25 % tail back on the cliff, not a uniform ≈290×; an application that cannot tolerate a
+median ≈210× with a 25 % tail back on the cliff, not a uniform ≈210×; an application that cannot tolerate a
 1-in-4 chance of a ~100 s read should treat the median as a best case. At 4 GB (resident) there is no undo I/O,
 so only the reconstruction CPU is saved and the gain is a smaller ≈2.4×. In the concurrent-HTAP regime (reading
 while the churn is still live, N = 8 serve runs of 17 total across configs) serve is ≈18× (median), and **mode-2
@@ -494,7 +496,7 @@ GC on, the effective speedup **survives down to a 128 MB buffer pool** (≈2.6×
 walk turns non-contiguous and misses to the correct vanilla walk; the hit rate falls and the speedup drops to
 ≈1.3× (still byte-correct, construct_BAD = 0). At 64 MB this compounds with the undo-I/O cliff—the fallback walk
 is now disk-bound—so the GC-off ≈29× does not persist under GC. The single-held-reader payoff of §5.2 (update
-churn) is *unaffected*: it holds ≈290× at 64 MB with GC on. This trade is therefore specific to the
+churn) is *unaffected*: it holds ≈210× at 64 MB with GC on. This trade is therefore specific to the
 delete+reinsert effective-speedup workload at a very small buffer pool, where the bounded-memory reclaim (§5.3)
 and the held-scan serve trade off—both always correct (miss → walk).
 
@@ -524,7 +526,7 @@ ineligible by the in-page scope of §3.5/F4 and §7.
 | 4 GB | 0.322 s | 0.253 s | ≈1.3× | ≈4.3 k / ≈4.4 k |
 | 64 MB | 1.272 s | 0.899 s | **≈1.4×** | ≈248 k / ≈245 k |
 
-Unlike sbtest's ≈29×–290× (§5.2, §5.4), the gain is only ≈1.4×, and the physical-reads column shows directly why:
+Unlike sbtest's ≈29×–210× (§5.2, §5.4), the gain is only ≈1.4×, and the physical-reads column shows directly why:
 at 64 MB mode-0 and mode-1 read about the same (≈245 k), because a large TPC-C table (stock's 200 k rows ≫ 64 MB)
 is dominated by **base-table page I/O**, so even though serve eliminates undo reconstruction (CPU plus undo I/O)
 for the ≈64 % hit rows, it cannot remove the base-table I/O floor. The gain is thus mostly the saved
@@ -634,7 +636,7 @@ not measured a drifting-key workload, and leave both the eviction mechanism and 
 
 ### 7.3 The effective regime: undo-I/O-bound vs base-I/O-bound
 
-As §5.5 showed, the cache's large gains (≈29×–290×) arise when undo reconstruction / undo I/O is the bottleneck—a
+As §5.5 showed, the cache's large gains (≈29×–210×) arise when undo reconstruction / undo I/O is the bottleneck—a
 hot, buffer-pool-resident (small) table or a hot subset with deep chains. A cold, large-table analytical scan is
 dominated by base-table page I/O, so serve saves only the reconstruction CPU and the gain is ≈1.3–1.4× (still
 byte-correct). This work's headline HTAP scenario—a held analytical reader over a hot working set—is in the former
@@ -659,7 +661,7 @@ the reconstruction result directly. The correctness tension that arises the mome
 (over-reclamation = a wrong serve) is excluded structurally by keeping the dead zone a conservative superset of the
 active views (the superset-safety result) together with four firewalls, so that every cache failure converges to
 the slow correct answer (the vanilla walk). In an InnoDB 8.4.10 integration, held analytical-read latency flattens
-across buffer-pool sizes (≈290× median at 64 MB), cache memory stays bounded by the live-transaction window, and every
+across buffer-pool sizes (≈210× median at 64 MB), cache memory stays bounded by the live-transaction window, and every
 served answer is byte-identical to vanilla (construct_BAD = 0), confirmed up to the TPC-C transaction mix; at the
 same time we bound honestly the regime in which the cache helps (undo-I/O-bound). The practical value of the
 result is that it accelerates undo reconstruction with *zero* modification to the storage engine that remains the
