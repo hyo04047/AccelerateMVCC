@@ -1,0 +1,148 @@
+2026-07-01T07:11:21.061766Z 0 [System] [MY-015015] [Server] MySQL Server - start.
+2026-07-01T07:11:21.280684Z 0 [System] [MY-010116] [Server] /root/mysql-build/runtime_output_directory/mysqld (mysqld 8.4.10) starting as process 2230
+2026-07-01T07:11:21.287166Z 1 [System] [MY-013576] [InnoDB] InnoDB initialization has started.
+[accel] init: drainer started, accelerator constructed (gc=1 tail_only=0 retention_ms=1000)
+2026-07-01T07:11:21.842519Z 1 [System] [MY-013577] [InnoDB] InnoDB initialization has ended.
+2026-07-01T07:11:22.090920Z 0 [Warning] [MY-010068] [Server] CA certificate ca.pem is self signed.
+2026-07-01T07:11:22.091577Z 0 [System] [MY-013602] [Server] Channel mysql_main configured to support TLS. Encrypted connections are now supported for this channel.
+2026-07-01T07:11:22.118321Z 0 [System] [MY-010931] [Server] /root/mysql-build/runtime_output_directory/mysqld: ready for connections. Version: '8.4.10'  socket: '/root/mysql.sock'  port: 3309  Source distribution.
+[accel] retention: t_ms=1000 max=2 p50=1 capped=0 keys=437 sampled_sum=453 drained=530 entries_retired=0 dropped=0 live_versions=530 headers=506 long_live=0
+2026-07-01T07:11:23.066170Z 8 [Warning] [MY-013360] [Server] Plugin mysql_native_password reported: ''mysql_native_password' is deprecated and will be removed in a future release. Please use caching_sha2_password instead'
+[accel] retention: t_ms=2001 max=2 p50=1 capped=0 keys=452 sampled_sum=468 drained=580 entries_retired=0 dropped=0 live_versions=580 headers=530 long_live=0
+[accel] retention: t_ms=3003 max=2 p50=1 capped=0 keys=452 sampled_sum=468 drained=580 entries_retired=0 dropped=0 live_versions=580 headers=530 long_live=0
+[accel] retention: t_ms=4006 max=70 p50=1 capped=0 keys=661 sampled_sum=1115 drained=6153 entries_retired=715 dropped=0 live_versions=5438 headers=1297 long_live=75
+[accel] gc: cycles=5 retired{windowed=1277 dummy=103} live_buckets=100 views=8 norm_clock=12575
+[accel] gc: cycles=10 retired{windowed=4476 dummy=603} live_buckets=133 views=9 norm_clock=25051
+[accel] retention: t_ms=5009 max=66 p50=1 capped=0 keys=674 sampled_sum=1230 drained=15918 entries_retired=9908 dropped=0 live_versions=6010 headers=1496 long_live=183
+[accel] gc: cycles=15 retired{windowed=6789 dummy=1244} live_buckets=174 views=8 norm_clock=37557
+[accel] gc: cycles=20 retired{windowed=9411 dummy=2001} live_buckets=198 views=8 norm_clock=50144
+[accel] retention: t_ms=6012 max=62 p50=1 capped=0 keys=674 sampled_sum=1220 drained=25743 entries_retired=19705 dropped=0 live_versions=6038 headers=1521 long_live=198
+[accel] gc: cycles=25 retired{windowed=12086 dummy=2755} live_buckets=246 views=7 norm_clock=62521
+[accel] retention: t_ms=7016 max=75 p50=1 capped=0 keys=674 sampled_sum=1306 drained=35128 entries_retired=29410 dropped=0 live_versions=5718 headers=1527 long_live=198
+[accel] gc: cycles=30 retired{windowed=15508 dummy=3564} live_buckets=163 views=8 norm_clock=75049
+[accel] gc: cycles=35 retired{windowed=17753 dummy=4383} live_buckets=185 views=9 norm_clock=87577
+[accel] retention: t_ms=8018 max=57 p50=1 capped=0 keys=674 sampled_sum=1163 drained=44206 entries_retired=39403 dropped=0 live_versions=4803 headers=1529 long_live=185
+[accel] gc: cycles=40 retired{windowed=20443 dummy=5121} live_buckets=222 views=9 norm_clock=100005
+[accel] retention: t_ms=9021 max=80 p50=1 capped=0 keys=674 sampled_sum=1368 drained=52882 entries_retired=46984 dropped=0 live_versions=5898 headers=1530 long_live=247
+[accel] gc: cycles=45 retired{windowed=23167 dummy=5946} live_buckets=229 views=6 norm_clock=112539
+[accel] retention: t_ms=10024 max=64 p50=1 capped=0 keys=674 sampled_sum=1258 drained=62089 entries_retired=55817 dropped=0 live_versions=6272 headers=1530 long_live=233
+[accel] gc: cycles=50 retired{windowed=26538 dummy=6735} live_buckets=157 views=7 norm_clock=125022
+[accel] gc: cycles=55 retired{windowed=28780 dummy=7545} live_buckets=177 views=7 norm_clock=137536
+[accel] retention: t_ms=11026 max=75 p50=1 capped=0 keys=674 sampled_sum=1300 drained=71394 entries_retired=64646 dropped=0 live_versions=6748 headers=1530 long_live=202
+[accel] gc: cycles=60 retired{windowed=31409 dummy=8329} live_buckets=203 views=9 norm_clock=150053
+[accel] retention: t_ms=12029 max=78 p50=1 capped=0 keys=676 sampled_sum=1316 drained=81568 entries_retired=74646 dropped=0 live_versions=6922 headers=1534 long_live=218
+[accel] gc: cycles=65 retired{windowed=34070 dummy=9123} live_buckets=243 views=8 norm_clock=162529
+[accel] gc: cycles=70 retired{windowed=37417 dummy=9958} live_buckets=152 views=9 norm_clock=175064
+[accel] retention: t_ms=13036 max=81 p50=1 capped=0 keys=676 sampled_sum=1357 drained=91705 entries_retired=85819 dropped=0 live_versions=5886 headers=1534 long_live=202
+[accel] gc: cycles=75 retired{windowed=39727 dummy=10771} live_buckets=174 views=8 norm_clock=187620
+[accel] gc: cycles=80 retired{windowed=42332 dummy=11613} live_buckets=203 views=9 norm_clock=200049
+[accel] retention: t_ms=14039 max=60 p50=1 capped=0 keys=676 sampled_sum=1216 drained=100647 entries_retired=94678 dropped=0 live_versions=5969 headers=1534 long_live=203
+[accel] gc: cycles=85 retired{windowed=44934 dummy=12424} live_buckets=241 views=8 norm_clock=212557
+[accel] retention: t_ms=15042 max=73 p50=1 capped=0 keys=676 sampled_sum=1288 drained=110071 entries_retired=104443 dropped=0 live_versions=5628 headers=1534 long_live=193
+[accel] gc: cycles=90 retired{windowed=48285 dummy=13213} live_buckets=158 views=9 norm_clock=225027
+[accel] gc: cycles=95 retired{windowed=50500 dummy=14003} live_buckets=186 views=9 norm_clock=237575
+[accel] retention: t_ms=16044 max=79 p50=1 capped=0 keys=676 sampled_sum=1363 drained=121614 entries_retired=115850 dropped=0 live_versions=5764 headers=1534 long_live=211
+[accel] gc: cycles=100 retired{windowed=53184 dummy=14808} live_buckets=204 views=9 norm_clock=250105
+[accel] gc: cycles=105 retired{windowed=55842 dummy=15634} live_buckets=237 views=9 norm_clock=262584
+[accel] retention: t_ms=17046 max=72 p50=1 capped=0 keys=676 sampled_sum=1305 drained=132506 entries_retired=125832 dropped=0 live_versions=6674 headers=1534 long_live=237
+[accel] gc: cycles=110 retired{windowed=59263 dummy=16408} live_buckets=173 views=9 norm_clock=275047
+[accel] retention: t_ms=18050 max=53 p50=1 capped=0 keys=676 sampled_sum=1202 drained=144040 entries_retired=137018 dropped=0 live_versions=7022 headers=1534 long_live=169
+[accel] gc: cycles=115 retired{windowed=61477 dummy=17193} live_buckets=194 views=7 norm_clock=287622
+[accel] gc: cycles=120 retired{windowed=64209 dummy=17981} live_buckets=218 views=7 norm_clock=300000
+[accel] retention: t_ms=19052 max=73 p50=1 capped=0 keys=676 sampled_sum=1290 drained=155065 entries_retired=149393 dropped=0 live_versions=5672 headers=1534 long_live=192
+[accel] gc: cycles=125 retired{windowed=66846 dummy=18761} live_buckets=242 views=7 norm_clock=312526
+[accel] gc: cycles=130 retired{windowed=70191 dummy=19562} live_buckets=161 views=9 norm_clock=325044
+[accel] retention: t_ms=20054 max=72 p50=1 capped=0 keys=676 sampled_sum=1285 drained=166236 entries_retired=159648 dropped=0 live_versions=6588 headers=1534 long_live=211
+[accel] gc: cycles=135 retired{windowed=72442 dummy=20382} live_buckets=189 views=7 norm_clock=337541
+[accel] gc: cycles=140 retired{windowed=75145 dummy=21243} live_buckets=208 views=6 norm_clock=350101
+[accel] retention: t_ms=21057 max=70 p50=1 capped=0 keys=676 sampled_sum=1298 drained=177390 entries_retired=170868 dropped=0 live_versions=6522 headers=1534 long_live=233
+[accel] gc: cycles=145 retired{windowed=77829 dummy=22055} live_buckets=234 views=7 norm_clock=362579
+[accel] gc: cycles=150 retired{windowed=81336 dummy=22839} live_buckets=157 views=9 norm_clock=375090
+[accel] retention: t_ms=22060 max=45 p50=1 capped=0 keys=676 sampled_sum=1133 drained=188658 entries_retired=182022 dropped=0 live_versions=6636 headers=1534 long_live=157
+[accel] gc: cycles=155 retired{windowed=83600 dummy=23627} live_buckets=179 views=9 norm_clock=387591
+[accel] retention: t_ms=23062 max=60 p50=1 capped=0 keys=676 sampled_sum=1218 drained=199439 entries_retired=194446 dropped=0 live_versions=4993 headers=1534 long_live=187
+[accel] gc: cycles=160 retired{windowed=86281 dummy=24418} live_buckets=212 views=9 norm_clock=400090
+[accel] gc: cycles=165 retired{windowed=88908 dummy=25204} live_buckets=236 views=9 norm_clock=412559
+[accel] retention: t_ms=24065 max=67 p50=1 capped=0 keys=676 sampled_sum=1261 drained=209751 entries_retired=204454 dropped=0 live_versions=5297 headers=1534 long_live=188
+[accel] gc: cycles=170 retired{windowed=92276 dummy=26039} live_buckets=163 views=9 norm_clock=425061
+[accel] gc: cycles=175 retired{windowed=94532 dummy=26814} live_buckets=193 views=9 norm_clock=437572
+[accel] retention: t_ms=25067 max=82 p50=1 capped=0 keys=676 sampled_sum=1349 drained=220497 entries_retired=214656 dropped=0 live_versions=5841 headers=1534 long_live=193
+[accel] gc: cycles=180 retired{windowed=97164 dummy=27622} live_buckets=216 views=8 norm_clock=450015
+[accel] retention: t_ms=26069 max=81 p50=1 capped=0 keys=676 sampled_sum=1373 drained=231717 entries_retired=225852 dropped=0 live_versions=5865 headers=1534 long_live=211
+[accel] gc: cycles=185 retired{windowed=99805 dummy=28391} live_buckets=236 views=8 norm_clock=462592
+[accel] gc: cycles=190 retired{windowed=103214 dummy=29214} live_buckets=161 views=8 norm_clock=475053
+[accel] retention: t_ms=27072 max=73 p50=1 capped=0 keys=676 sampled_sum=1306 drained=242580 entries_retired=235848 dropped=0 live_versions=6732 headers=1534 long_live=236
+[accel] gc: cycles=195 retired{windowed=105469 dummy=30008} live_buckets=200 views=8 norm_clock=487590
+[accel] gc: cycles=200 retired{windowed=108211 dummy=30748} live_buckets=216 views=9 norm_clock=500023
+[accel] retention: t_ms=28074 max=51 p50=1 capped=0 keys=676 sampled_sum=1178 drained=253976 entries_retired=246999 dropped=0 live_versions=6977 headers=1534 long_live=177
+[accel] gc: cycles=205 retired{windowed=110841 dummy=31528} live_buckets=252 views=8 norm_clock=512531
+[accel] gc: cycles=210 retired{windowed=114224 dummy=32334} live_buckets=170 views=8 norm_clock=525067
+[accel] retention: t_ms=29079 max=70 p50=1 capped=0 keys=676 sampled_sum=1262 drained=264899 entries_retired=259453 dropped=0 live_versions=5446 headers=1534 long_live=195
+[accel] gc: cycles=215 retired{windowed=116469 dummy=33143} live_buckets=176 views=7 norm_clock=537525
+[accel] gc: cycles=220 retired{windowed=119157 dummy=33910} live_buckets=202 views=9 norm_clock=550052
+[accel] retention: t_ms=30081 max=72 p50=1 capped=0 keys=676 sampled_sum=1283 drained=277502 entries_retired=270842 dropped=0 live_versions=6660 headers=1534 long_live=227
+[accel] gc: cycles=225 retired{windowed=121807 dummy=34680} live_buckets=234 views=7 norm_clock=562540
+[accel] gc: cycles=230 retired{windowed=125203 dummy=35477} live_buckets=156 views=7 norm_clock=575175
+[accel] retention: t_ms=31082 max=77 p50=1 capped=0 keys=676 sampled_sum=1307 drained=290264 entries_retired=284508 dropped=0 live_versions=5756 headers=1534 long_live=181
+[accel] gc: cycles=235 retired{windowed=127432 dummy=36299} live_buckets=187 views=7 norm_clock=587525
+[accel] gc: cycles=240 retired{windowed=130042 dummy=37047} live_buckets=224 views=8 norm_clock=600025
+[accel] retention: t_ms=32084 max=79 p50=1 capped=0 keys=676 sampled_sum=1402 drained=302886 entries_retired=295834 dropped=0 live_versions=7052 headers=1534 long_live=249
+[accel] gc: cycles=245 retired{windowed=132727 dummy=37878} live_buckets=236 views=9 norm_clock=612606
+[accel] gc: cycles=250 retired{windowed=136084 dummy=38638} live_buckets=172 views=8 norm_clock=625037
+[accel] retention: t_ms=33086 max=60 p50=1 capped=0 keys=676 sampled_sum=1183 drained=315700 entries_retired=309680 dropped=0 live_versions=6020 headers=1534 long_live=222
+[accel] gc: cycles=255 retired{windowed=138384 dummy=39472} live_buckets=182 views=9 norm_clock=637613
+[accel] gc: cycles=260 retired{windowed=141136 dummy=40227} live_buckets=211 views=7 norm_clock=650004
+[accel] retention: t_ms=34088 max=49 p50=1 capped=0 keys=676 sampled_sum=1136 drained=328869 entries_retired=322046 dropped=0 live_versions=6823 headers=1534 long_live=158
+[accel] gc: cycles=265 retired{windowed=143878 dummy=41003} live_buckets=233 views=8 norm_clock=662630
+[accel] gc: cycles=270 retired{windowed=147286 dummy=41787} live_buckets=158 views=9 norm_clock=675126
+[accel] retention: t_ms=35090 max=76 p50=1 capped=0 keys=676 sampled_sum=1304 drained=341453 entries_retired=334702 dropped=0 live_versions=6751 headers=1534 long_live=208
+[accel] gc: cycles=275 retired{windowed=149538 dummy=42575} live_buckets=198 views=9 norm_clock=687739
+[accel] gc: cycles=280 retired{windowed=152219 dummy=43341} live_buckets=222 views=9 norm_clock=700091
+[accel] retention: t_ms=36093 max=49 p50=1 capped=0 keys=676 sampled_sum=1138 drained=353869 entries_retired=347073 dropped=0 live_versions=6796 headers=1534 long_live=160
+[accel] gc: cycles=285 retired{windowed=154892 dummy=44129} live_buckets=235 views=9 norm_clock=712529
+[accel] gc: cycles=290 retired{windowed=158331 dummy=44906} live_buckets=151 views=8 norm_clock=725112
+[accel] retention: t_ms=37095 max=73 p50=1 capped=0 keys=676 sampled_sum=1291 drained=365073 entries_retired=359495 dropped=0 live_versions=5578 headers=1534 long_live=176
+[accel] gc: cycles=295 retired{windowed=160555 dummy=45702} live_buckets=181 views=9 norm_clock=737602
+[accel] gc: cycles=300 retired{windowed=163173 dummy=46517} live_buckets=204 views=9 norm_clock=750006
+[accel] retention: t_ms=38098 max=68 p50=1 capped=0 keys=676 sampled_sum=1261 drained=376075 entries_retired=369697 dropped=0 live_versions=6378 headers=1534 long_live=204
+[accel] gc: cycles=305 retired{windowed=165814 dummy=47345} live_buckets=235 views=9 norm_clock=762568
+[accel] retention: t_ms=39101 max=69 p50=1 capped=0 keys=676 sampled_sum=1294 drained=387358 entries_retired=380844 dropped=0 live_versions=6514 headers=1534 long_live=234
+[accel] gc: cycles=310 retired{windowed=169186 dummy=48157} live_buckets=166 views=7 norm_clock=775028
+[accel] gc: cycles=315 retired{windowed=171448 dummy=48956} live_buckets=192 views=9 norm_clock=787543
+[accel] retention: t_ms=40104 max=53 p50=1 capped=0 keys=676 sampled_sum=1171 drained=399079 entries_retired=392026 dropped=0 live_versions=7053 headers=1534 long_live=182
+[accel] gc: cycles=320 retired{windowed=174080 dummy=49747} live_buckets=232 views=8 norm_clock=800026
+[accel] gc: cycles=325 retired{windowed=176789 dummy=50520} live_buckets=239 views=9 norm_clock=812507
+[accel] retention: t_ms=41106 max=71 p50=1 capped=0 keys=676 sampled_sum=1298 drained=411227 entries_retired=404712 dropped=0 live_versions=6515 headers=1534 long_live=198
+[accel] gc: cycles=330 retired{windowed=180190 dummy=51356} live_buckets=157 views=8 norm_clock=825017
+[accel] gc: cycles=335 retired{windowed=182427 dummy=52137} live_buckets=179 views=8 norm_clock=837684
+[accel] retention: t_ms=42108 max=45 p50=1 capped=0 keys=676 sampled_sum=1111 drained=423673 entries_retired=417041 dropped=0 live_versions=6632 headers=1534 long_live=163
+[accel] gc: cycles=340 retired{windowed=185105 dummy=52958} live_buckets=213 views=8 norm_clock=850136
+[accel] gc: cycles=345 retired{windowed=187880 dummy=53741} live_buckets=237 views=9 norm_clock=862606
+[accel] retention: t_ms=43110 max=61 p50=1 capped=0 keys=676 sampled_sum=1211 drained=436974 entries_retired=430910 dropped=0 live_versions=6064 headers=1534 long_live=237
+[accel] gc: cycles=350 retired{windowed=191343 dummy=54555} live_buckets=153 views=9 norm_clock=875092
+[accel] gc: cycles=355 retired{windowed=193590 dummy=55337} live_buckets=182 views=8 norm_clock=887638
+[accel] retention: t_ms=44111 max=79 p50=1 capped=0 keys=676 sampled_sum=1343 drained=450398 entries_retired=444740 dropped=0 live_versions=5658 headers=1534 long_live=179
+[accel] gc: cycles=360 retired{windowed=196368 dummy=56141} live_buckets=204 views=7 norm_clock=900011
+[accel] gc: cycles=365 retired{windowed=199067 dummy=56919} live_buckets=240 views=8 norm_clock=912502
+[accel] gc: cycles=370 retired{windowed=202495 dummy=57712} live_buckets=152 views=7 norm_clock=925081
+[accel] retention: t_ms=45113 max=35 p50=1 capped=0 keys=676 sampled_sum=1037 drained=463204 entries_retired=457085 dropped=0 live_versions=6119 headers=1534 long_live=152
+[accel] gc: cycles=375 retired{windowed=204715 dummy=58471} live_buckets=182 views=8 norm_clock=937529
+[accel] gc: cycles=380 retired{windowed=207382 dummy=59361} live_buckets=209 views=9 norm_clock=950044
+[accel] retention: t_ms=46116 max=64 p50=1 capped=0 keys=676 sampled_sum=1237 drained=475884 entries_retired=469740 dropped=0 live_versions=6144 headers=1534 long_live=209
+[accel] gc: cycles=385 retired{windowed=210024 dummy=60125} live_buckets=228 views=8 norm_clock=962533
+[accel] retention: t_ms=47118 max=82 p50=1 capped=0 keys=676 sampled_sum=1376 drained=486793 entries_retired=480863 dropped=0 live_versions=5930 headers=1534 long_live=214
+[accel] gc: cycles=390 retired{windowed=213380 dummy=60984} live_buckets=157 views=9 norm_clock=975104
+[accel] retention: t_ms=48121 max=62 p50=1 capped=0 keys=676 sampled_sum=1237 drained=489536 entries_retired=484470 dropped=0 live_versions=5066 headers=1534 long_live=182
+[accel] retention: t_ms=49125 max=62 p50=1 capped=0 keys=676 sampled_sum=1237 drained=489536 entries_retired=484470 dropped=0 live_versions=5066 headers=1534 long_live=182
+2026-07-01T07:12:11.704915Z 31 [System] [MY-013172] [Server] Received SHUTDOWN from user root. Shutting down mysqld (Version: 8.4.10).
+[accel] shutdown: enq=489536 drained=489536 dropped=0 pk_buckets=676/1024 live_epoch_buckets=182
+[accel] consult: calls=2489679 hit=2114897 miss{absent=126 novisible=0 noncontig=374030 ineligible=0 gcrace=626} | construct_ok=2065 construct_BAD=0 | auth_mode=1 served=2112832 gen_gate=1
+[accel] audit: mode=1 audit_n=1024 mode1_hits=2114897 audited=2065 (mode-1: ok+bad==audited, bad==0)
+[accel] noncontig split: head_writer_gate=372030 (cache head behind live row) chase_break=2000 (GC severed a mid-chain link)
+[accel] view-registry: open_calls=77486 published=77486 unpublished=77931 publish_on=1 live_snapshot=0 floor=none clock=979104
+[accel] construct_BAD detail: trx_same=0 (right version, bytes differ) trx_diff=0 (WRONG version: older=0 [cache behind] newer=0 [visibility])
+[accel] newer split: vanilla_sees=0 (cross-generation: ct visible, off vanilla's chain) vanilla_hides=0 (input mismatch: consult got different view limits)
+[accel] gc: enabled=1 retired{total=274580 windowed=213430 dummy=61150} live_buckets=182 clock=979104
+[accel] fg-alpha: consult_fg=0 coop_dead_seen=0 | drain_cap=1000 dummy_pending=1046
+2026-07-01T07:12:12.702574Z 0 [System] [MY-010910] [Server] /root/mysql-build/runtime_output_directory/mysqld: Shutdown complete (mysqld 8.4.10)  Source distribution.
+2026-07-01T07:12:12.703985Z 0 [System] [MY-015016] [Server] MySQL Server - end.
