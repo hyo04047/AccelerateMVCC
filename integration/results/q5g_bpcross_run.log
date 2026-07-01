@@ -1,0 +1,64 @@
+=== q5 GC-ON BP crossover (128M, 96M; oltp_write_only, cap 500). N=3 ===
+Wed Jul  1 18:54:45 KST 2026
+
+########## bp128M_m0_i1 ##########
+>> bp128M_m0_i1 : deep1=0.27496925s phys=0 HIT%=99.7 noncontig=3 construct_BAD=0 served=0
+
+########## bp128M_m0_i2 ##########
+>> bp128M_m0_i2 : deep1=0.21720325s phys=0 HIT%=99.9 noncontig=1 construct_BAD=0 served=0
+
+########## bp128M_m0_i3 ##########
+>> bp128M_m0_i3 : deep1=0.24529475s phys=0 HIT%=99.7 noncontig=3 construct_BAD=0 served=0
+
+########## bp128M_m1_i1 ##########
+>> bp128M_m1_i1 : deep1=0.09023700s phys=0 HIT%=99.9 noncontig=1 construct_BAD=0 served=999
+
+########## bp128M_m1_i2 ##########
+>> bp128M_m1_i2 : deep1=0.07981225s phys=0 HIT%=99.7 noncontig=3 construct_BAD=0 served=997
+
+########## bp128M_m1_i3 ##########
+>> bp128M_m1_i3 : deep1=0.09268525s phys=0 HIT%=99.5 noncontig=5 construct_BAD=0 served=995
+
+########## bp96M_m0_i1 ##########
+>> bp96M_m0_i1 : deep1=0.27679725s phys=0 HIT%=76.6 noncontig=234 construct_BAD=0 served=0
+
+########## bp96M_m0_i2 ##########
+>> bp96M_m0_i2 : deep1=0.27015625s phys=0 HIT%=77.4 noncontig=226 construct_BAD=0 served=0
+
+########## bp96M_m0_i3 ##########
+>> bp96M_m0_i3 : deep1=0.25168275s phys=1 HIT%=76.9 noncontig=231 construct_BAD=0 served=0
+
+########## bp96M_m1_i1 ##########
+>> bp96M_m1_i1 : deep1=0.19761350s phys=0 HIT%=79.2 noncontig=208 construct_BAD=0 served=792
+
+########## bp96M_m1_i2 ##########
+>> bp96M_m1_i2 : deep1=0.20774300s phys=0 HIT%=77.6 noncontig=224 construct_BAD=0 served=776
+
+########## bp96M_m1_i3 ##########
+>> bp96M_m1_i3 : deep1=0.21100375s phys=0 HIT%=0.0 noncontig=1000 construct_BAD=0 served=0
+
+=== RAW CSV ===
+iter,bp,mode,cap,deep1_lat_s,phys_reads,hit,hit_pct,noncontig,construct_BAD,served
+1,128M,0,500,0.27496925,0,997,99.7,3,0,0
+2,128M,0,500,0.21720325,0,999,99.9,1,0,0
+3,128M,0,500,0.24529475,0,997,99.7,3,0,0
+1,128M,1,500,0.09023700,0,999,99.9,1,0,999
+2,128M,1,500,0.07981225,0,997,99.7,3,0,997
+3,128M,1,500,0.09268525,0,995,99.5,5,0,995
+1,96M,0,500,0.27679725,0,766,76.6,234,0,0
+2,96M,0,500,0.27015625,0,774,77.4,226,0,0
+3,96M,0,500,0.25168275,1,769,76.9,231,0,0
+1,96M,1,500,0.19761350,0,792,79.2,208,0,792
+2,96M,1,500,0.20774300,0,776,77.6,224,0,776
+3,96M,1,500,0.21100375,0,0,0.0,1000,0,0
+
+=== SUMMARY (GC on, cap 500) ===
+BP=128M  mode0 : median=0.2453 n=3 avg_HIT%=100 construct_BAD=0
+BP=128M  mode1 : median=0.0902 n=3 avg_HIT%=100 construct_BAD=0
+  -> BP=128M speedup = 2.7x
+BP=96M   mode0 : median=0.2702 n=3 avg_HIT%=77 construct_BAD=0
+BP=96M   mode1 : median=0.2077 n=3 avg_HIT%=52 construct_BAD=0
+  -> BP=96M speedup = 1.3x
+Anchors: 256M ~3.3x HIT99.8 (works), 64M 1.3-2.3x HIT0-88 (breaks). Crossover between.
+=== DONE ===
+Wed Jul  1 19:06:22 KST 2026

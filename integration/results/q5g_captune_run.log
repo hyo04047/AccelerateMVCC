@@ -1,0 +1,49 @@
+=== q5 GC-ON 64M drain-cap recovery sweep. N=3 ===
+Wed Jul  1 17:09:56 KST 2026
+
+########## m0_cap1000_i1 ##########
+>> m0_cap1000_i1 : deep1=4.47759475s phys=22131 HIT%=30.5 noncontig=695 construct_BAD=0 served=0
+
+########## m0_cap1000_i2 ##########
+>> m0_cap1000_i2 : deep1=6.25447275s phys=26232 HIT%=30.9 noncontig=691 construct_BAD=0 served=0
+
+########## m0_cap1000_i3 ##########
+>> m0_cap1000_i3 : deep1=3.45548525s phys=13188 HIT%=28.1 noncontig=719 construct_BAD=0 served=0
+
+########## m1_cap500_i1 ##########
+>> m1_cap500_i1 : deep1=1.96714400s phys=8872 HIT%=66.0 noncontig=340 construct_BAD=0 served=660
+
+########## m1_cap500_i2 ##########
+>> m1_cap500_i2 : deep1=0.92073575s phys=3202 HIT%=29.4 noncontig=706 construct_BAD=0 served=294
+
+########## m1_cap500_i3 ##########
+>> m1_cap500_i3 : deep1=4.72002150s phys=21797 HIT%=29.1 noncontig=709 construct_BAD=0 served=291
+
+########## m1_cap200_i1 ##########
+>> m1_cap200_i1 : deep1=4.24139100s phys=19474 HIT%=36.1 noncontig=639 construct_BAD=0 served=361
+
+########## m1_cap200_i2 ##########
+>> m1_cap200_i2 : deep1=2.40075550s phys=11394 HIT%=88.0 noncontig=120 construct_BAD=0 served=880
+
+########## m1_cap200_i3 ##########
+>> m1_cap200_i3 : deep1=2.94321375s phys=13202 HIT%=88.0 noncontig=120 construct_BAD=0 served=880
+
+=== RAW CSV ===
+iter,mode,cap,deep1_lat_s,phys_reads,hit,hit_pct,noncontig,construct_BAD,served
+1,0,1000,4.47759475,22131,305,30.5,695,0,0
+2,0,1000,6.25447275,26232,309,30.9,691,0,0
+3,0,1000,3.45548525,13188,281,28.1,719,0,0
+1,1,500,1.96714400,8872,660,66.0,340,0,660
+2,1,500,0.92073575,3202,294,29.4,706,0,294
+3,1,500,4.72002150,21797,291,29.1,709,0,291
+1,1,200,4.24139100,19474,361,36.1,639,0,361
+2,1,200,2.40075550,11394,880,88.0,120,0,880
+3,1,200,2.94321375,13202,880,88.0,120,0,880
+
+=== SUMMARY (64M, GC on) ===
+mode0 vanilla        : median=4.4776 n=3 avg_noncontig=702 construct_BAD=0
+mode1 serve cap=500  : median=1.9671 n=3 avg_noncontig=585 construct_BAD=0
+mode1 serve cap=200  : median=2.9432 n=3 avg_noncontig=293 construct_BAD=0
+cap=1000 was median 3.14s / HIT 0-65% / noncontig high. Recovery = lower cap -> less noncontig -> HIT up -> speedup up.
+=== DONE ===
+Wed Jul  1 17:19:08 KST 2026

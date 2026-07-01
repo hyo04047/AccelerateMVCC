@@ -173,6 +173,30 @@ Resident (4G/256M) ~2.8–2.9× (reconstruction CPU saved); I/O-bound (64M) ~29�
 64M ~29× vs the single-run ~34× is just a deeper vanilla baseline this run (~4.25 s vs 2.67 s) — same mechanism,
 same order. GC off here, so serve never chain-severs (no degrade, tight ranges).
 
+**Phase 3 / §3b — the same effective-speedup workload with GC ON** (2026-06-30; `build_q5_gcon.sh` +
+`q5g_captune.sh`/`q5g_bpcross.sh` in scratchpad, raw in `integration/results/q5_gcon*.csv`, `q5g_*`). The
+reviewer noted §5.4 was GC off, so it could be a GC-off artifact. Re-measured GC on (drain-cap 500–1000)
+(`integration/scripts/build_q5_gcon.sh`, `build_q5g_captune.sh`, `build_q5g_bpcross.sh`; also
+`build_q18_gc_coexist.sh` for the bounded-memory+serve coexistence run):
+
+| BP (GC on) | speedup | HIT% | note |
+|---|---|---|---|
+| 4 GB | ≈2.6× | 99.7% | survives (≈ GC-off 2.9×) |
+| 256 MB | ≈3.3× | 99.8% | survives |
+| **128 MB** | **≈2.7×** | **99.7%** | **survives — crossover is just below here** |
+| 96 MB | ≈1.3× | 52–77% | breaks (noncontig sever), but undo still resident so latency stays ~0.2 s |
+| 64 MB | ≈1.3× | 0–88% | breaks AND hits the undo-I/O cliff (fallback walk disk-bound, 3–4 s) |
+
+construct_BAD=0 in every run. So the effective speedup **survives GC-on down to ~128 MB**; below that, the
+dead-zone GC reclaims the delete+reinsert *cross-generation* lineage faster than the single drainer rebuilds it
+in the small pool → the cache walk goes non-contiguous → miss → correct vanilla walk. Lowering the drain-cap
+(1000→200) cuts the noncontig (~700→~290 avg) and lifts hit toward ~88%, but does not fully recover the 64M
+gain — the GC-off ≈29× is genuinely a GC-off figure. **The ⑥ single-held-reader payoff (update churn,
+oltp_update_non_index) is unaffected: HIT ~100%, ≈290× at 64M with GC on** (q18-v1 / §5.2). This is the ⑤/⑥
+tension (design-D5-gc §12) surfacing specifically in the delete+reinsert workload at a very small buffer pool —
+bounded memory (§5.3, live_versions ~7k with concurrent readers) and the held-scan serve trade off there, both
+always correct. Reflected in paper-en §5.4 + §7.3.
+
 ## Reading it
 - **The held reader HITs ~100%** because its consistent snapshot predates the churn: it needs each row's
   ORIGINAL version (cached), not the new generations that delete+reinsert creates. The 22% MISS was about

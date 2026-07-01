@@ -487,6 +487,17 @@ delete+reinsert churn to cause misses; it does, but only for short readers near 
 recent—not for the held analytical reader, whose snapshot predates the churn. The cache targets the latter.) At
 the I/O-bound 64 MB, undo reads drop from 25–33 k to ≈450, for ≈29×.
 
+These figures are with GC **off**, to isolate the effective speedup from the §5.2 chain-sever. Re-measured with
+GC on, the effective speedup **survives down to a 128 MB buffer pool** (≈2.6× at 4 GB, ≈3.3× at 256 MB, ≈2.7× at
+128 MB; hit ≥ 99.5 %, construct_BAD = 0). Below that (96 MB, 64 MB) the dead-zone GC reclaims the delete+reinsert
+*cross-generation* lineage faster than the single-consumer drainer rebuilds it in the small pool, so the cache
+walk turns non-contiguous and misses to the correct vanilla walk; the hit rate falls and the speedup drops to
+≈1.3× (still byte-correct, construct_BAD = 0). At 64 MB this compounds with the undo-I/O cliff—the fallback walk
+is now disk-bound—so the GC-off ≈29× does not persist under GC. The single-held-reader payoff of §5.2 (update
+churn) is *unaffected*: it holds ≈290× at 64 MB with GC on. This trade is therefore specific to the
+delete+reinsert effective-speedup workload at a very small buffer pool, where the bounded-memory reclaim (§5.3)
+and the held-scan serve trade off—both always correct (miss → walk).
+
 ### 5.5 Standard benchmark: TPC-C
 
 We measure a held STOCK analytical read over the real TPC-C transaction mix of a standard HTAP benchmark
@@ -627,7 +638,10 @@ As §5.5 showed, the cache's large gains (≈29×–290×) arise when undo recon
 hot, buffer-pool-resident (small) table or a hot subset with deep chains. A cold, large-table analytical scan is
 dominated by base-table page I/O, so serve saves only the reconstruction CPU and the gain is ≈1.3–1.4× (still
 byte-correct). This work's headline HTAP scenario—a held analytical reader over a hot working set—is in the former
-regime. The boundary is not a defect but an honest statement of the cache's applicability.
+regime. The boundary is not a defect but an honest statement of the cache's applicability. A second, orthogonal
+boundary is the GC setting at very small buffer pools: the largest small-pool effective-speedup figures (§5.4)
+are with GC off, and with GC on the memory-bounding dead-zone reclaim (§5.3) and the held-scan serve trade off
+below ≈128 MB for the delete+reinsert workload—the single-held-reader update-churn payoff (§5.2) is unaffected.
 
 ### 7.4 Limits of the correctness argument
 
